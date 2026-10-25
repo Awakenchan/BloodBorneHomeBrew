@@ -97,7 +97,6 @@ namespace BloodborneLauncher
                 SystemDecorations = SystemDecorations.None;
 
             var ws = Workspace.Current;
-            RestoreWindowPlacement(ws.Settings);
             // Layout, read once at start (Settings › Layout restarts the launcher to switch).
             var args = Environment.GetCommandLineArgs();
             var forced = Array.IndexOf(args, "--layout") is var at and >= 0 && at + 1 < args.Length ? args[at + 1] : null;
@@ -869,89 +868,8 @@ namespace BloodborneLauncher
             DiscordPresence.Update(Workspace.Current.Settings, running, _gameStartedUtc);
         }
 
-        /// <summary>The size and position the window had when it was last closed (settings.json:
-        /// window_width, window_height, window_x, window_y, window_maximized), else the default size.
-        /// Either way it is made to fit the screen it opens on: the sizes are in device-independent
-        /// units, so at 150% or 200% Windows scaling 1040 x 780 is larger than a 1080p screen. A saved
-        /// position that no screen shows any more (a monitor unplugged) is dropped and the window
-        /// opens centred.</summary>
-        private void RestoreWindowPlacement(LauncherSettings settings)
-        {
-            try
-            {
-                double width = Width, height = Height;
-                int savedWidth = settings.Int("window_width"), savedHeight = settings.Int("window_height");
-                if (savedWidth >= 400 && savedHeight >= 300)
-                {
-                    width = savedWidth;
-                    height = savedHeight;
-                }
-                Avalonia.Platform.Screen? screen = null;
-                PixelPoint? place = null;
-                if (settings.Str("window_x").Length > 0 && settings.Str("window_y").Length > 0)
-                {
-                    var saved = new PixelPoint(settings.Int("window_x"), settings.Int("window_y"));
-                    // The title bar must be on a screen, or the window could not be moved back.
-                    screen = Screens?.ScreenFromPoint(new PixelPoint(saved.X + 120, saved.Y + 20));
-                    if (screen != null) place = saved;
-                }
-                screen ??= Screens?.Primary ?? Screens?.All.FirstOrDefault();
-                if (screen != null)
-                {
-                    var area = screen.WorkingArea;
-                    var scale = screen.Scaling > 0 ? screen.Scaling : 1.0;
-                    double maxWidth = area.Width / scale - 16, maxHeight = area.Height / scale - 16;
-                    MinWidth = Math.Min(MinWidth, maxWidth);
-                    MinHeight = Math.Min(MinHeight, maxHeight);
-                    width = Math.Max(MinWidth, Math.Min(width, maxWidth));
-                    height = Math.Max(MinHeight, Math.Min(height, maxHeight));
-                    if (place is { } at)
-                    {
-                        int widthPx = (int)Math.Round(width * scale), heightPx = (int)Math.Round(height * scale);
-                        place = new PixelPoint(
-                            Math.Clamp(at.X, area.X, Math.Max(area.X, area.Right - widthPx)),
-                            Math.Clamp(at.Y, area.Y, Math.Max(area.Y, area.Bottom - heightPx)));
-                    }
-                }
-                Width = width;
-                Height = height;
-                if (place is { } position)
-                {
-                    WindowStartupLocation = WindowStartupLocation.Manual;
-                    Position = position;
-                }
-                if (settings.Bool("window_maximized"))
-                    WindowState = WindowState.Maximized;
-            }
-            catch (Exception)
-            {
-                // The default size, centred.
-            }
-        }
-
-        /// <summary>Called as the window closes. A maximised window keeps the size and position it
-        /// had before; a minimised or hidden one (the --play start) saves nothing.</summary>
-        private void SaveWindowPlacement()
-        {
-            if (_directPlay || !IsVisible) return;
-            var settings = Workspace.Current.Settings;
-            if (WindowState == WindowState.Maximized)
-            {
-                settings.Set("window_maximized", true);
-            }
-            else if (WindowState == WindowState.Normal)
-            {
-                settings.Set("window_maximized", false);
-                settings.Set("window_width", (int)Math.Round(ClientSize.Width));
-                settings.Set("window_height", (int)Math.Round(ClientSize.Height));
-                settings.Set("window_x", Position.X);
-                settings.Set("window_y", Position.Y);
-            }
-        }
-
         private void OnClosing(object? sender, WindowClosingEventArgs e)
         {
-            SaveWindowPlacement();
             Workspace.Current.SaveNow();
             if (_closing || !Workspace.Current.Game.Running)
             {
