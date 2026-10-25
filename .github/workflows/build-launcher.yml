@@ -16,7 +16,8 @@ jobs:
           dotnet publish launcher/windows/BloodborneLauncher/BloodborneLauncher.csproj -c Release -r win-x64
           --self-contained true -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
-          -p:DebugType=none -o build-launcher
+          -p:DebugType=none -p:Version=0.9.37 -p:InformationalVersion=0.9.37
+          -o build-launcher
       - uses: actions/upload-artifact@v4
         with:
           name: Lantern-Engine-launcher
