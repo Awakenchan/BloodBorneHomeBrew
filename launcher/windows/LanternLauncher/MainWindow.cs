@@ -97,6 +97,7 @@ namespace BloodborneLauncher
                 SystemDecorations = SystemDecorations.None;
 
             var ws = Workspace.Current;
+            RestoreWindowPlacement(ws.Settings);
             // Layout, read once at start (Settings › Layout restarts the launcher to switch).
             var args = Environment.GetCommandLineArgs();
             var forced = Array.IndexOf(args, "--layout") is var at and >= 0 && at + 1 < args.Length ? args[at + 1] : null;
@@ -868,8 +869,59 @@ namespace BloodborneLauncher
             DiscordPresence.Update(Workspace.Current.Settings, running, _gameStartedUtc);
         }
 
+        /// <summary>The size and position the window had when it was last closed (settings.json:
+        /// window_width, window_height, window_x, window_y, window_maximized). A saved position that no
+        /// screen shows any more (a monitor unplugged) is dropped and the window opens centred.</summary>
+        private void RestoreWindowPlacement(LauncherSettings settings)
+        {
+            try
+            {
+                int width = settings.Int("window_width"), height = settings.Int("window_height");
+                if (width < MinWidth || height < MinHeight) return;
+                Width = width;
+                Height = height;
+                if (settings.Str("window_x").Length > 0 && settings.Str("window_y").Length > 0)
+                {
+                    var at = new PixelPoint(settings.Int("window_x"), settings.Int("window_y"));
+                    var grip = new PixelPoint(at.X + 120, at.Y + 20); // on the title bar
+                    if (Screens?.All.Any(screen => screen.WorkingArea.Contains(grip)) == true)
+                    {
+                        WindowStartupLocation = WindowStartupLocation.Manual;
+                        Position = at;
+                    }
+                }
+                if (settings.Bool("window_maximized"))
+                    WindowState = WindowState.Maximized;
+            }
+            catch (Exception)
+            {
+                // The default size, centred.
+            }
+        }
+
+        /// <summary>Called as the window closes. A maximised window keeps the size and position it
+        /// had before; a minimised or hidden one (the --play start) saves nothing.</summary>
+        private void SaveWindowPlacement()
+        {
+            if (_directPlay || !IsVisible) return;
+            var settings = Workspace.Current.Settings;
+            if (WindowState == WindowState.Maximized)
+            {
+                settings.Set("window_maximized", true);
+            }
+            else if (WindowState == WindowState.Normal)
+            {
+                settings.Set("window_maximized", false);
+                settings.Set("window_width", (int)Math.Round(ClientSize.Width));
+                settings.Set("window_height", (int)Math.Round(ClientSize.Height));
+                settings.Set("window_x", Position.X);
+                settings.Set("window_y", Position.Y);
+            }
+        }
+
         private void OnClosing(object? sender, WindowClosingEventArgs e)
         {
+            SaveWindowPlacement();
             Workspace.Current.SaveNow();
             if (_closing || !Workspace.Current.Game.Running)
             {
