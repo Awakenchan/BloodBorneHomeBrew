@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Runs indirect_clamp.comp with the production dispatch limits. Inspect adversarial counts
+// without executing them; only the known one-workgroup case feeds vkCmdDispatchIndirect.
+// Plain Vulkan 1.3 compute with VK_KHR_push_descriptor; run under the validation layer.
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -10,8 +13,14 @@
 #include <vector>
 
 #include "video_core/host_shaders/indirect_clamp_comp.h"
+#include "video_core/renderer_vulkan/indirect_dispatch_limits.h"
 
 namespace {
+
+static_assert(Vulkan::IndirectDispatchLimits({0xffffffffu, 65535u, 65535u}) ==
+              std::array<uint32_t, 3>{65535u, 65535u, 65535u});
+static_assert(Vulkan::IndirectDispatchLimits({128u, 64u, 32u}) ==
+              std::array<uint32_t, 3>{128u, 64u, 32u});
 
 #define CHECK(call)                                                                               \
     do {                                                                                          \
@@ -145,10 +154,12 @@ Vk Init() {
     return vk;
 }
 
-}
+} // namespace
 
 int main() {
     Vk vk = Init();
+    // The pipeline as ClampDispatchArgs makes it: two storage buffers by push descriptors, 16
+    // bytes of push constants (the limits and the counts' first dword).
     std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
     for (uint32_t i = 0; i < 2; ++i) {
         bindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -185,20 +196,28 @@ int main() {
     vkDestroyShaderModule(vk.device, module, nullptr);
 
     const uint64_t align = vk.limits.minStorageBufferOffsetAlignment;
+    // Each result occupies 16 bytes, even on RADV's four-byte storage alignment.
+    const uint64_t stride = std::max<uint64_t>(align, 16);
     Buffer game = MakeBuffer(vk, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     Buffer stream = MakeBuffer(vk, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
     Buffer scratch = MakeBuffer(vk, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    const uint64_t wrong_at = align + 12, sane_at = 8 * align + 4;
-    const std::array<uint32_t, 3> wrong{3063677180u, 1, 1}, sane{5, 3, 2};
-    std::memcpy(reinterpret_cast<uint8_t*>(game.mapped) + wrong_at, wrong.data(), 12);
-    std::memcpy(reinterpret_cast<uint8_t*>(game.mapped) + sane_at, sane.data(), 12);
-    const std::array<uint64_t, 2> slots{0, align};
+    const std::array<uint64_t, 4> args{stride + 12, 4 * stride + 4, 8 * stride + 4,
+                                       12 * stride + 4};
+    const std::array<uint32_t, 3> wrong{2811384408u, 1, 1}, sane{1, 1, 1},
+                                   other_axes{7, 70000u, 0xffffffffu}, normal{5, 3, 2};
+    const std::array<std::array<uint32_t, 3>, 4> values{wrong, sane, other_axes, normal};
+    for (size_t n = 0; n < values.size(); ++n) {
+        std::memcpy(reinterpret_cast<uint8_t*>(game.mapped) + args[n], values[n].data(), 12);
+    }
+    const std::array<uint64_t, 4> slots{0, stride, 2 * stride, 3 * stride};
+    const auto& device_counts = vk.limits.maxComputeWorkGroupCount;
+    const auto limits = Vulkan::IndirectDispatchLimits(
+        {device_counts[0], device_counts[1], device_counts[2]});
 
     const VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                          .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     CHECK(vkBeginCommandBuffer(vk.cmd, &begin));
-    const std::array<uint64_t, 2> args{wrong_at, sane_at};
-    for (uint32_t n = 0; n < 2; ++n) {
+    for (uint32_t n = 0; n < args.size(); ++n) {
         const uint64_t offset = args[n];
         const uint64_t src_offset = offset / align * align;
         const uint64_t src_size = offset - src_offset + 12;
@@ -212,9 +231,7 @@ int main() {
                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                          .pBufferInfo = &infos[i]};
         }
-        const std::array<uint32_t, 4> push{vk.limits.maxComputeWorkGroupCount[0],
-                                           vk.limits.maxComputeWorkGroupCount[1],
-                                           vk.limits.maxComputeWorkGroupCount[2],
+        const std::array<uint32_t, 4> push{limits[0], limits[1], limits[2],
                                            uint32_t((offset - src_offset) / 4)};
         vkCmdBindPipeline(vk.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vk.push_descriptors(vk.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 2, writes.data());
@@ -229,13 +246,17 @@ int main() {
                                           .memoryBarrierCount = 1,
                                           .pMemoryBarriers = &clamped};
         vkCmdPipelineBarrier2(vk.cmd, &dependency);
-        const std::array<VkDescriptorBufferInfo, 2> again{{{game.buffer, src_offset, src_size},
-                                                           {scratch.buffer, slots[n], 16}}};
-        for (uint32_t i = 0; i < 2; ++i) {
-            writes[i].pBufferInfo = &again[i];
+        // Never dispatch the adversarial counts, even if a regression leaves them uncapped.
+        // The same shader stands in for the game only for the one-workgroup safe case.
+        if (n == 1) {
+            const std::array<VkDescriptorBufferInfo, 2> again{{{game.buffer, src_offset, src_size},
+                                                               {scratch.buffer, slots[n], 16}}};
+            for (uint32_t i = 0; i < 2; ++i) {
+                writes[i].pBufferInfo = &again[i];
+            }
+            vk.push_descriptors(vk.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 2, writes.data());
+            vkCmdDispatchIndirect(vk.cmd, stream.buffer, slots[n]);
         }
-        vk.push_descriptors(vk.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 2, writes.data());
-        vkCmdDispatchIndirect(vk.cmd, stream.buffer, slots[n]);
     }
     const VkMemoryBarrier2 to_host{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -260,12 +281,10 @@ int main() {
                     want[1], want[2], ok ? "ok" : "WRONG");
         failures += !ok;
     };
-    const std::array<uint32_t, 3> limit{std::min(wrong[0], vk.limits.maxComputeWorkGroupCount[0]),
-                                        std::min(wrong[1], vk.limits.maxComputeWorkGroupCount[1]),
-                                        std::min(wrong[2], vk.limits.maxComputeWorkGroupCount[2])};
-    expect("wrong counts clamped", stream.mapped + slots[0] / 4, limit);
+    expect("large X count capped", stream.mapped + slots[0] / 4, {65535, 1, 1});
     expect("sane counts kept", stream.mapped + slots[1] / 4, sane);
-    expect("indirect dispatch of the clamped counts", scratch.mapped + slots[0] / 4, limit);
+    expect("large Y/Z counts capped", stream.mapped + slots[2] / 4, {7, 65535, 65535});
+    expect("normal multi-axis counts kept", stream.mapped + slots[3] / 4, normal);
     expect("indirect dispatch of the sane counts", scratch.mapped + slots[1] / 4, sane);
     std::printf("Indirect clamp: %s\n", failures ? "FAILED" : "all ok");
     return failures ? 1 : 0;

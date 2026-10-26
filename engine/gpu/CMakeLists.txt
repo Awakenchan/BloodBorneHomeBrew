@@ -357,7 +357,7 @@ add_dependencies(camera-motion-test host_shaders)
 # bbport: indirect_clamp.comp as Rasterizer::ClampDispatchArgs records it, then an indirect
 # dispatch from its output (run it under the validation layer); plain Vulkan, no bbgpu.
 add_executable(indirect-clamp-test EXCLUDE_FROM_ALL ../tests/test_indirect_clamp.cpp)
-target_include_directories(indirect-clamp-test PRIVATE ${SHADER_INCLUDE})
+target_include_directories(indirect-clamp-test PRIVATE ${SHADER_INCLUDE} shadps4)
 target_compile_options(indirect-clamp-test PRIVATE -UNDEBUG -Wall -Werror)
 target_link_libraries(indirect-clamp-test PRIVATE Vulkan::Vulkan)
 add_dependencies(indirect-clamp-test host_shaders)
