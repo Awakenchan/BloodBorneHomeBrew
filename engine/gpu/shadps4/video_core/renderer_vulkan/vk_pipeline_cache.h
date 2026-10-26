@@ -27,6 +27,11 @@ namespace AmdGpu {
 class Liverpool;
 }
 
+namespace Vulkan {
+/// True for the game's SSAO pixel shader while GTAO stands in for it (BB_GTAO).
+bool IsGtaoReplacement(u64 pgm_hash, Shader::HwStage stage);
+} // namespace Vulkan
+
 namespace Serialization {
 struct Archive;
 }

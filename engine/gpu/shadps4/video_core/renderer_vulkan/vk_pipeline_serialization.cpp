@@ -19,6 +19,7 @@
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/info.h"
 #include "video_core/cache_storage.h"
+#include "video_core/host_shaders/gtao_frag.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -418,6 +419,12 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         word += count;
     }
 
+    const bool gtao_stage = stage == u32(Shader::SwStage::Fragment) &&
+                            IsGtaoReplacement(program->info.pgm_hash, Shader::HwStage::Fragment);
+    if (gtao_stage) {
+        LOG_WARNING(Render_Vulkan, "SSAO shader {:#x} replaced with GTAO (cached pipeline)",
+                    program->info.pgm_hash);
+    }
     auto it = program_cache.find(program->info.pgm_hash);
     Program* target = it == program_cache.end() ? program.get() : it->second.get();
     vk::ShaderModule module;
@@ -430,7 +437,11 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         module = target->modules[perm_idx].module;
     } else {
         const auto [result, compiled] = instance.GetDevice().createShaderModule(
-            {.codeSize = spv.size() * sizeof(u32), .pCode = spv.data()});
+            gtao_stage
+                ? vk::ShaderModuleCreateInfo{.codeSize = sizeof(GTAO_FRAG),
+                                             .pCode = GTAO_FRAG}
+                : vk::ShaderModuleCreateInfo{.codeSize = spv.size() * sizeof(u32),
+                                             .pCode = spv.data()});
         if (result != vk::Result::eSuccess) {
             throw Serialization::CorruptData{"cached SPIR-V rejected by the driver"};
         }

@@ -23,6 +23,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/cache_storage.h"
+#include "video_core/host_shaders/gtao_frag.h"
 #include "video_core/cache_file.h"
 #include "video_core/renderer_vulkan/pipeline_cache_blob.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -980,6 +981,12 @@ bool PipelineCache::RefreshComputeKey() {
     return true;
 }
 
+bool IsGtaoReplacement(u64 pgm_hash, Shader::HwStage stage) {
+    constexpr u64 kSsaoShaderHash = 0xcbbca5dc;
+    return pgm_hash == kSsaoShaderHash && stage == Shader::HwStage::Fragment &&
+           EmulatorSettings.IsGtaoEnabled();
+}
+
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
                                               Shader::Backend::Bindings& binding) {
@@ -999,7 +1006,11 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
 
     auto patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
     const bool is_patched = patch && EmulatorSettings.IsPatchShaders();
-    if (is_patched) {
+    // The game's ScreenSpaceAO2_WithNormal pixel shader, replaced by ground-truth AO.
+    if (IsGtaoReplacement(info.pgm_hash, info.hw_stage)) {
+        LOG_WARNING(Render_Vulkan, "SSAO shader {:#x} replaced with GTAO", info.pgm_hash);
+        module = CompileSPV(GTAO_FRAG, instance.GetDevice());
+    } else if (is_patched) {
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
         module = CompileSPV(*patch, instance.GetDevice());
     } else {
