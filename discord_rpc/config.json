@@ -1,0 +1,19 @@
+{
+  "client_id": "1561313590642741339",
+  "process_name": "bb-probe.exe",
+  "image_base_candidates": ["0x800000000"],
+  "attach_delay": 5,
+  "update_interval": 15,
+  "large_image": "bloodborne_logo",
+  "small_image": "",
+  "buttons": [],
+  "offline_only": true,
+  "show": {
+    "titles": true,
+    "echoes": true,
+    "insight": true,
+    "level_up": true,
+    "session_levels": true,
+    "attributes_tooltip": true
+  }
+}

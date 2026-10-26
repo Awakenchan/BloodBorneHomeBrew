@@ -131,6 +131,12 @@ namespace BloodborneLauncher.Core
                 process.BeginErrorReadLine();
                 _process = process;
                 StartedAt = DateTime.Now;
+                DiscordRpcCompanion.StartForSession(
+                    process,
+                    Paths.PortDir,
+                    Paths.BinariesDir,
+                    s.Str("discord_status") == "off",
+                    Emit);
                 return null;
             }
             catch (Exception e)

@@ -1,0 +1,16 @@
+diff --git a/launcher/windows/BloodborneLauncher/Core/GameRunner.cs b/launcher/windows/BloodborneLauncher/Core/GameRunner.cs
+--- a/launcher/windows/BloodborneLauncher/Core/GameRunner.cs
++++ b/launcher/windows/BloodborneLauncher/Core/GameRunner.cs
+@@ -120,6 +120,12 @@ namespace BloodborneLauncher.Core
+                 process.BeginOutputReadLine();
+                 process.BeginErrorReadLine();
+                 _process = process;
+                 StartedAt = DateTime.Now;
++                DiscordRpcCompanion.StartForSession(
++                    process,
++                    Paths.PortDir,
++                    Paths.BinariesDir,
++                    s.Str("discord_status") == "off",
++                    Emit);
+                 return null;
+             }
