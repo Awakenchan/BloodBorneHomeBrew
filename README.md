@@ -3,8 +3,6 @@
 
 Lantern Engine runs your own copy of Bloodborne on Windows and Linux: a launcher and my engine, built on bbport and shadPS4 and reworked by me for performance. The game's own code runs natively on your CPU; its graphics are translated to Vulkan.
 
-> **Note:** I'm keeping this going on my own, and updates are slower now because of the hate I've been getting. I'll keep working on it when I can.
-
 **No game files are included.** You need your own legal copy of Bloodborne (CUSA03173) with update 1.09, dumped from your own PS4.
 
 **Help:** [Help & FAQ](https://lantern-engine.netlify.app): setup, a graphics settings guide, fixes for common problems and the beta guide. Bug reports go to the `#issues` forum on the [Discord](https://discord.gg/d3Uv3Cfr5x).

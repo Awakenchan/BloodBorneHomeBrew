@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// bbport: clamp indirect group counts using the bounds from ClampDispatchArgs. Some RADV
-// devices allow UINT32_MAX groups in X: the game's erroneous multi-billion particle counts
-// fit that hardware limit but hang the GPU. The caller also applies a 65535-group safety cap.
+// bbport: an indirect dispatch's group counts, clamped to what the device runs, read from there
+// instead of the game's memory (vk_rasterizer.cpp ClampDispatchArgs). A count the game's GPU work
+// left wrong (3063677180 groups, RX 9070 XT on RADV, 0.9.37 beta 7) is outside the Vulkan spec and
+// hung the GPU (device lost); clamped, the dispatch runs and the game goes on.
 #version 450
 
 layout(local_size_x = 1) in;

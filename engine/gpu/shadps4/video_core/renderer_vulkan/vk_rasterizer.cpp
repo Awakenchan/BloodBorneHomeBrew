@@ -34,7 +34,6 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_compile_queue.h"
 #include "video_core/renderer_vulkan/vk_gpu_savings.h"
-#include "video_core/renderer_vulkan/indirect_dispatch_limits.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_occlusion.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -2465,7 +2464,7 @@ std::pair<vk::Buffer, u64> Rasterizer::ClampDispatchArgs(const VideoCore::Buffer
                 }));
         device.destroyShaderModule(module);
         const auto& counts = instance.GetPhysicalDevice().getProperties().limits.maxComputeWorkGroupCount;
-        p.limit = IndirectDispatchLimits({counts[0], counts[1], counts[2]});
+        p.limit = {counts[0], counts[1], counts[2]};
         std::printf("GPU: indirect dispatches read their group counts clamped to %u x %u x %u "
                     "(BB_INDIRECT_CLAMP=0: as the game wrote them)\n",
                     p.limit[0], p.limit[1], p.limit[2]);
