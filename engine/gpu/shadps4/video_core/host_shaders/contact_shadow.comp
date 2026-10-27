@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// bbport: screen-space contact shadows (vk_contact_shadow.h). The game's shadow resolve draw
+// (a full-screen pass sampling the cascaded shadow map) has written its result into the alpha
+// of an RGBA8 target (1 = lit; the colour holds the packed depth the blur chain needs). This
+// shader marches each pixel toward the sun through the scene depth and darkens that alpha
+// where the depth buffer shows an occluder the shadow map is too coarse to resolve.
+//
+// The resolve draw's constants (decoded from its shader f55643de): words 0..15 are the matrix
+// that maps (ndc x, ndc y, depth, 1) to homogeneous view space; words 80..82 are the cascade
+// split distances; per cascade c, words 16+16c.. hold the four rows (light u, light v, depth,
+// w) of the matrix from the same clip coordinates to the shadow map. Composing the two gives
+// a view-space -> light-space matrix, whose constant-(u, v) line is the sun direction.
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(scalar, set = 0, binding = 0) readonly buffer Cb { uint d[]; } cbuf;
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+layout(set = 0, binding = 2, rgba8) uniform image2D shadow_img;
+
+layout(push_constant) uniform Constants {
+    uint buf_off;
+    uint frame_index;
+    vec2 size;
+    float length_m;
+    float thickness_m;
+    float strength;
+    float flip;
+    uint debug;
+};
+
+const int STEPS = 20;
+
+uint base;
+float cb(int i) { return uintBitsToFloat(cbuf.d[base + uint(i)]); }
+vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
+
+float sceneDepth(vec2 uv) { return textureLod(depth_tex, uv, 0.0).x; }
+
+mat4 invMat;  // ndc (x, y, depth, 1) -> homogeneous view
+mat4 projMat; // view (x, y, z, 1) -> homogeneous ndc
+
+vec3 viewPosAt(vec2 uv, float depth) {
+    vec4 c = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    vec4 v = invMat * c;
+    return v.xyz / v.w;
+}
+
+float hash(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+float contact(vec2 uv0) {
+    float d0 = sceneDepth(uv0);
+    if (!(d0 < 1.0) || !(d0 > 0.0)) {
+        return 1.0;
+    }
+    vec3 P0 = viewPosAt(uv0, d0);
+    if (!(P0.z > 0.0)) {
+        return 1.0;
+    }
+
+    int cascade = 0;
+    cascade += cb(80) < P0.z ? 1 : 0;
+    cascade += P0.z > cb(81) ? 1 : 0;
+    cascade += P0.z > cb(82) ? 1 : 0;
+    int m = 16 + 16 * cascade;
+    // rows: light u, light v, light depth (stored at +8), w (stored at +12)
+    mat4 shadowMat = transpose(mat4(row(m), row(m + 4), row(m + 12), row(m + 8)));
+    mat4 T = shadowMat * projMat;
+    vec4 rA = vec4(T[0][0], T[1][0], T[2][0], T[3][0]);
+    vec4 rB = vec4(T[0][1], T[1][1], T[2][1], T[3][1]);
+    vec4 rW = vec4(T[0][2], T[1][2], T[2][2], T[3][2]);
+    vec4 rZ = vec4(T[0][3], T[1][3], T[2][3], T[3][3]);
+
+    vec4 p4 = vec4(P0, 1.0);
+    float wl = dot(rW, p4);
+    if (abs(wl) < 1e-9) {
+        return 1.0;
+    }
+    float u = dot(rA, p4) / wl;
+    float v = dot(rB, p4) / wl;
+    float zl = dot(rZ, p4) / wl;
+    vec3 dir = cross(rA.xyz - u * rW.xyz, rB.xyz - v * rW.xyz);
+    float dl = length(dir);
+    if (!(dl > 1e-12)) {
+        return 1.0;
+    }
+    dir /= dl;
+    // Toward the light: the light-space depth shrinks.
+    if (dot(rZ.xyz - zl * rW.xyz, dir) > 0.0) {
+        dir = -dir;
+    }
+    dir *= flip;
+
+    float jitter = hash(uv0 * size);
+    for (int i = 0; i < STEPS; ++i) {
+        float t = (float(i) + 0.5 + jitter) / float(STEPS);
+        vec3 P = P0 + dir * (t * length_m);
+        if (!(P.z > 0.0)) {
+            break;
+        }
+        vec4 n4 = projMat * vec4(P, 1.0);
+        if (!(n4.w != 0.0)) {
+            break;
+        }
+        vec3 ndc = n4.xyz / n4.w;
+        vec2 uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+            break;
+        }
+        float sd = sceneDepth(uv);
+        if (!(sd < 1.0) || !(sd > 0.0)) {
+            continue;
+        }
+        float zs = viewPosAt(uv, sd).z;
+        float diff = P.z - zs;
+        float bias = 0.03 + 0.004 * P0.z + 0.04 * t * length_m;
+        if (diff > bias && diff < thickness_m) {
+            return 1.0 - strength * (1.0 - 0.5 * t);
+        }
+    }
+    return 1.0;
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(size)))) {
+        return;
+    }
+    base = (buf_off & 0xffu) >> 2;
+    invMat = transpose(mat4(row(0), row(4), row(8), row(12)));
+    projMat = inverse(invMat);
+    const vec2 uv = (vec2(pixel) + 0.5) / size;
+    vec4 c = imageLoad(shadow_img, pixel);
+    float k = contact(uv);
+    if (debug != 0u) {
+        c.a = k;
+    } else {
+        c.a = min(c.a, k);
+    }
+    imageStore(shadow_img, pixel, c);
+}

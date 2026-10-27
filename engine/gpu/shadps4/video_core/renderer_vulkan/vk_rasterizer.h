@@ -17,6 +17,7 @@
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_ssgi.h"
 #include "video_core/renderer_vulkan/vk_ssr_temporal.h"
+#include "video_core/renderer_vulkan/vk_contact_shadow.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
@@ -564,6 +565,7 @@ private:
     std::unique_ptr<SceneTargets> scene_targets;
     std::unique_ptr<ScreenSpaceGI> ssgi; // bbport: screen-space indirect lighting
     std::unique_ptr<SsrTemporal> ssr_temporal; // bbport: temporal accumulation of the SSR
+    std::unique_ptr<ContactShadow> contact_shadow; // bbport: screen-space contact shadows
     bool scene_started = false;
     /// bbport: the scene depth of the frame before (SkipUncompiledDraw).
     VideoCore::ImageId previous_scene_depth{};

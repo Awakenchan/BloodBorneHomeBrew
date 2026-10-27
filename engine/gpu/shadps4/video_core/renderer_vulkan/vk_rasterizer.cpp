@@ -85,6 +85,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
                                            *scene_targets, *camera_motion);
     ssr_temporal = std::make_unique<SsrTemporal>(instance, scheduler, texture_cache, runtime,
                                                  *scene_targets, *camera_motion);
+    contact_shadow = std::make_unique<ContactShadow>(instance, scheduler, texture_cache, runtime,
+                                                     *camera_motion);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets, *hdr_native);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -601,6 +603,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     if (!ssr_draw) {
         ssr_temporal->Flush(upscaler->Jitter());
     }
+    contact_shadow->Flush();
     if (regs.color_control.degamma_enable) {
         LOG_WARNING(Render_Vulkan, "Color buffers require gamma correction");
     }
@@ -2118,6 +2121,23 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             ssr_temporal->OnSsrDraw(cb_descs[0].first, inputs);
         }
         ++ssr_frame;
+    }
+    if (pipeline->GetGraphicsKey().mrt_mask &&
+        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0xf55643de &&
+        cb_descs[0].first && !buffer_infos.empty() && buffer_infos[0].buffer) {
+        static u32 shadow_frame = 0;
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            std::printf("Contact shadows: shadow resolve draw, buffer_infos %zu, images %zu\n",
+                        buffer_infos.size(), image_infos.size());
+        }
+        contact_shadow->OnShadowDraw(cb_descs[0].first,
+                                     {.constants = buffer_infos[0].buffer,
+                                      .constants_offset = buffer_infos[0].offset,
+                                      .constants_range = buffer_infos[0].range,
+                                      .constants_offset_word = push_data.buf_offsets[0],
+                                      .frame_index = shadow_frame++});
     }
     if (pipeline->GetGraphicsKey().mrt_mask &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {
