@@ -25,6 +25,7 @@
 #include "video_core/cache_storage.h"
 #include "video_core/host_shaders/gtao_frag.h"
 #include "video_core/host_shaders/ssr_frag.h"
+#include "video_core/renderer_vulkan/vk_pom_patch.h"
 #include "video_core/renderer_vulkan/vk_ssr_composite_patch.h"
 #include "video_core/cache_file.h"
 #include "video_core/renderer_vulkan/pipeline_cache_blob.h"
@@ -1081,6 +1082,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
     PatchSsrComposite(info.pgm_hash, info.hw_stage, spv);
     PatchWaterReflection(info.pgm_hash, info.hw_stage, spv);
+    Pom::PatchPom(info.pgm_hash, info.hw_stage == Shader::HwStage::Fragment, spv);
 
     vk::ShaderModule module;
 

@@ -23,6 +23,7 @@
 #include "video_core/host_shaders/ssr_frag.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vk_pom_patch.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Serialization {
@@ -422,6 +423,7 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
 
     if (stage == u32(Shader::SwStage::Fragment)) {
         PatchSsrComposite(program->info.pgm_hash, Shader::HwStage::Fragment, spv);
+        Pom::PatchPom(program->info.pgm_hash, true, spv);
     }
     const bool gtao_stage = stage == u32(Shader::SwStage::Fragment) &&
                             IsGtaoReplacement(program->info.pgm_hash, Shader::HwStage::Fragment);
