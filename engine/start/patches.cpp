@@ -744,6 +744,15 @@ PatchResult CompilePatches(const PatchRequest& request) {
         }
         names = kept;
     }
+    // The Performance Patch zeroes the byte the SSR patch sets (0x26c4fd7); the later write wins, so SSR goes last.
+    {
+        const std::string ssr = "Enable Screen Space Reflections (READ NOTE)";
+        const auto it = std::find(names.begin(), names.end(), ssr);
+        if (it != names.end() && it + 1 != names.end()) {
+            names.erase(it);
+            names.push_back(ssr);
+        }
+    }
     Writes writes = xml.Compile(names, app_version, segments);
     if (scaled_fps.count(request.fps) && has(kScaledBase)) {
         writes = RateScaled(writes, scaled_fps.at(request.fps));
