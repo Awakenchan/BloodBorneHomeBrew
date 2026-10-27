@@ -136,7 +136,8 @@ ScreenSpaceGI::ScreenSpaceGI(const Instance& instance_, Scheduler& scheduler_,
     if (!EmulatorSettings.IsSsgiEnabled()) {
         return;
     }
-    CreatePass(prep, {SampledImage, StorageImage}, SSGI_PREP_COMP, "ssgi.comp (prep)");
+    CreatePass(prep, {SampledImage, StorageImage, SampledImage}, SSGI_PREP_COMP,
+               "ssgi.comp (prep)");
     CreatePass(gather, {SampledImage, SampledImage, SampledImage, StorageImage, SampledImage},
                SSGI_GATHER_COMP, "ssgi.comp (gather)");
     CreatePass(denoise, {SampledImage, SampledImage, StorageImage}, SSGI_DENOISE_COMP,
@@ -265,9 +266,11 @@ vk::ImageView ScreenSpaceGI::CachedView(const VideoCore::Image& image, vk::Forma
     return oldest->view;
 }
 
-void ScreenSpaceGI::OnGBufferDraw(VideoCore::ImageId depth, VideoCore::ImageId albedo) {
+void ScreenSpaceGI::OnGBufferDraw(VideoCore::ImageId depth, VideoCore::ImageId albedo,
+                                  VideoCore::ImageId normal) {
     gbuffer_depth = depth;
     gbuffer_albedo = albedo;
+    gbuffer_normal = normal;
 }
 
 void ScreenSpaceGI::OnAoDraw(VideoCore::ImageId ao) {
@@ -284,6 +287,7 @@ void ScreenSpaceGI::OnFrameEnd() {
     ao_image = {};
     gbuffer_depth = {};
     gbuffer_albedo = {};
+    gbuffer_normal = {};
 }
 
 void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
@@ -389,6 +393,28 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
     }
     const bool has_albedo = albedo_view != vk::ImageView{};
 
+    // The G-buffer's world normals (with normal-map detail) refine the depth-derived ones.
+    vk::ImageView normal_view{};
+    static const float normal_amount = EnvFloat("BB_SSGI_NORMALS", 0.6f);
+    if (normal_amount > 0.0f && gbuffer_normal && gbuffer_depth == depth_id) {
+        auto& normal = texture_cache.GetImage(gbuffer_normal);
+        if (normal.info.pixel_format == vk::Format::eR8G8B8A8Unorm) {
+            if (reduced) {
+                if (scene_targets.EligibleScene(normal)) {
+                    VideoCore::ImageViewInfo normal_info;
+                    normal_info.format = normal.info.pixel_format;
+                    normal_view = scene_targets.Read(gbuffer_normal, normal_info).view;
+                }
+            } else if (normal.info.size.width >= width && normal.info.size.height >= height) {
+                normal_view = CachedView(normal, normal.info.pixel_format,
+                                         vk::ImageAspectFlagBits::eColor);
+                runtime.Transit(&normal, vk::ImageLayout::eGeneral, Compute,
+                                vk::AccessFlagBits2::eShaderRead);
+                runtime.FlushBarriers();
+            }
+        }
+    }
+    const bool has_normal = normal_view != vk::ImageView{};
     const u32 half_width = (width + 1) / 2, half_height = (height + 1) / 2;
     bool created = EnsureImage(geo, width, height, vk::Format::eR32G32B32A32Sfloat, "geometry");
     for (auto& image : light) {
@@ -412,11 +438,12 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
     if (!printed) {
         printed = true;
         std::printf("SSGI: %ux%u (%s), strength %.2f, radius %.1f, bounce %.2f, albedo %s, "
-                    "reprojection %s, denoise %s, AO %s (%.2f)\n",
+                    "reprojection %s, denoise %s, AO %s (%.2f), normals %s (%.2f)\n",
                     width, height, reduced ? "reduced scene" : "native scene", strength, radius,
                     feedback, has_albedo ? "G-buffer" : "approximated",
                     reproject_on ? "on" : "off", denoise_on ? "on" : "off",
-                    has_ao ? "bound" : "not found", ao_amount);
+                    has_ao ? "bound" : "not found", ao_amount,
+                    has_normal ? "G-buffer" : "from depth", normal_amount);
     }
 
     // Last frame's light is read where this frame's surfaces were: previous view * inverse view.
@@ -446,6 +473,9 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
         [params, init_previous = !history_valid, width, height, half_width,
          half_height, color_view, depth_view, albedo_view = has_albedo ? albedo_view : *geo.view,
          ao_view = has_ao ? ao_view : *geo.view,
+         normal_view = has_normal ? normal_view : *geo.view,
+         normal_rows = has_normal && camera.valid ? camera.view : Identity,
+         normal_amount = has_normal && camera.valid ? normal_amount : 0.0f,
          geo_image = vk::Image(geo.image), geo_view = *geo.view,
          cur_image = vk::Image(light[current].image), cur_view = *light[current].view,
          old_image = vk::Image(light[current ^ 1].image), old_view = *light[current ^ 1].view,
@@ -479,10 +509,18 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
             const u32 full_x = (width + 7) / 8, full_y = (height + 7) / 8;
             const u32 half_x = (half_width + 7) / 8, half_y = (half_height + 7) / 8;
             {
-                const std::array infos{Info(depth_view), Info(geo_view)};
+                const std::array infos{Info(depth_view), Info(geo_view), Info(normal_view)};
                 const std::array writes{Write(0, SampledImage, &infos[0]),
-                                        Write(1, StorageImage, &infos[1])};
+                                        Write(1, StorageImage, &infos[1]),
+                                        Write(2, SampledImage, &infos[2])};
+                // PREP has no use for the reprojection rows: they carry the world-to-view
+                // rotation, and step_size the share of the G-buffer normal.
+                const auto reproject = params.reproject;
+                std::memcpy(params.reproject.data(), normal_rows.data(), sizeof(normal_rows));
+                params.step_size = normal_amount;
                 run(prep_pipeline, prep_layout, writes, full_x, full_y);
+                params.reproject = reproject;
+                params.step_size = 1.0f;
             }
             BetweenPasses(cmdbuf);
             {

@@ -39,7 +39,8 @@ public:
     void OnOpaqueScene(VideoCore::ImageId color, VideoCore::ImageId depth,
                        std::array<float, 2> jitter);
     /// A G-buffer draw: `albedo` is its sRGB base-color target (colour 2), drawn with `depth`.
-    void OnGBufferDraw(VideoCore::ImageId depth, VideoCore::ImageId albedo);
+    void OnGBufferDraw(VideoCore::ImageId depth, VideoCore::ImageId albedo,
+                       VideoCore::ImageId normal);
     /// The ambient occlusion pass drew into `ao` (R channel); the GI is attenuated by it.
     void OnAoDraw(VideoCore::ImageId ao);
     /// The display pass: the next frame may run it again.
@@ -91,7 +92,7 @@ private:
     bool done_this_frame = false;
     bool history_valid = false;
     bool failed = false;
-    VideoCore::ImageId gbuffer_depth, gbuffer_albedo; ///< last G-buffer draw this frame
+    VideoCore::ImageId gbuffer_depth, gbuffer_albedo, gbuffer_normal; ///< last G-buffer draw
     VideoCore::ImageId ao_image;                      ///< last AO draw this frame
     std::array<ViewEntry, 4> view_cache{};
     u64 view_uses = 0;

@@ -641,7 +641,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         const auto& vp = regs.viewports[0];
         camera_motion->OnGBufferPass(db_desc.first, vp.xscale < 0.0f ? -1.0f : 1.0f,
                                      vp.yscale < 0.0f ? -1.0f : 1.0f);
-        ssgi->OnGBufferDraw(db_desc.first, cb_descs[2].first);
+        ssgi->OnGBufferDraw(db_desc.first, cb_descs[2].first, cb_descs[0].first);
     }
     if (key.mrt_mask && cb_descs[0].first &&
         IsGtaoReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,

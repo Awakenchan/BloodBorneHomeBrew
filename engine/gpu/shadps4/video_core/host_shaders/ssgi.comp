@@ -51,6 +51,7 @@ vec3 viewPos(vec2 pixel, float z) {
 
 layout(binding = 0) uniform texture2D depth_tex;
 layout(binding = 1, rgba32f) uniform writeonly image2D geo_img;
+layout(binding = 2) uniform texture2D normal_tex;
 
 float depthAt(ivec2 p) {
     return texelFetch(depth_tex, clamp(p, ivec2(0), ivec2(size) - 1), 0).r;
@@ -85,6 +86,24 @@ void main() {
     n = dot(n, n) > 1e-12 ? normalize(n) : -normalize(c);
     if (dot(n, c) > 0.0) {
         n = -n; // facing the camera
+    }
+    // step_size is the share of the G-buffer normal; reproject holds the world-to-view rotation.
+    // A G-buffer normal far from the depth-derived one (another surface, skinned geometry) is
+    // not trusted.
+    if (step_size > 0.0) {
+        const ivec2 normal_size = textureSize(normal_tex, 0);
+        vec3 wn = texelFetch(normal_tex, min(pixel, normal_size - 1), 0).xyz * 2.0 - 1.0;
+        if (dot(wn, wn) > 0.25) {
+            wn = normalize(wn);
+            vec3 vn = normalize(vec3(dot(reproject[0].xyz, wn), dot(reproject[1].xyz, wn),
+                                     dot(reproject[2].xyz, wn)));
+            if (dot(vn, c) > 0.0) {
+                vn = -vn;
+            }
+            if (dot(vn, n) > 0.5) {
+                n = normalize(mix(n, vn, step_size));
+            }
+        }
     }
     imageStore(geo_img, pixel, vec4(n, z));
 }
