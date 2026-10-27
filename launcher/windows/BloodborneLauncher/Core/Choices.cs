@@ -116,6 +116,7 @@
             new("effect_gi", L.T("Indirect lighting (GI)"), true, L.T("Screen-space bounce light, applied live")),
             new("effect_dynamic_shadows", L.T("Shadows from dynamic lights"), true),
             new("effect_ssr", L.T("Screen-space reflections"), false, L.T("Not in the original game")),
+            new("effect_contact_shadows", L.T("Contact shadows"), true, L.T("Screen-space shadows that sharpen shadow detail at object bases, applied live")),
             new("skip_intro", L.T("Skip intro videos"), false),
             new("debug_camera", L.T("Free camera"), false, L.T("Toggle with Cross + L3 / Space + Z")),
             new("debug_menu", L.T("Debug menu"), false,

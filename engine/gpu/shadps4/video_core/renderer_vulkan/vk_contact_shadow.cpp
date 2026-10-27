@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "bbport_settings.h"
 #include "common/assert.h"
 #include "video_core/host_shaders/contact_shadow_comp.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
@@ -102,7 +103,8 @@ ContactShadow::ContactShadow(const Instance& instance_, Scheduler& scheduler_,
 ContactShadow::~ContactShadow() = default;
 
 void ContactShadow::OnShadowDraw(VideoCore::ImageId target, const Inputs& inputs) {
-    if (!Enabled() || !target || !inputs.constants) {
+    if (!Enabled() || !target || !inputs.constants ||
+        !BbSettings::Get().effects[BbSettings::EffectContactShadows].load(std::memory_order_relaxed)) {
         return;
     }
     pending = target;

@@ -48,6 +48,7 @@ inline constexpr Effect Effects[] = {
     {"effect_gi", "Indirect lighting (GI)", "Непрямое освещение (GI)", true},
     {"effect_dynamic_shadows", "Shadows from dynamic lights", "Тени от динамических источников", true},
     {"effect_ssr", "Screen-space reflections (not in original game)", "Отражения SSR (не было в игре)", false},
+    {"effect_contact_shadows", "Contact shadows (screen-space)", "Контактные тени (экранные)", true},
     {"skip_intro", "Skip startup intros", "Пропуск заставок при запуске", false},
     {"debug_camera", "Free camera (Cross + L3)", "Свободная камера (Cross + L3)", false},
     {"debug_menu", "Debug menu (requires font files)", "Debug menu (нужны файлы шрифтов)", false},
@@ -55,6 +56,8 @@ inline constexpr Effect Effects[] = {
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
 /// Indirect lighting: applied live by the renderer, no restart.
 inline constexpr int EffectGi = 5;
+/// Contact shadows: applied live by the renderer, no restart.
+inline constexpr int EffectContactShadows = 8;
 inline constexpr int OutputWidths[] = {1280,1600,1920,2560,3840,2560,3440,3840,3840,5120,5120,7680,0,0};
 inline constexpr int OutputHeights[] = {720,900,1080,1440,2160,1080,1440,1600,1080,1440,2160,2160,0,0};
 inline constexpr int OutputCount = 14;
