@@ -66,6 +66,11 @@ public:
     [[nodiscard]] std::array<u32, 2> RenderSize() const noexcept {
         return render_size;
     }
+    /// The projection of the G-buffer pass in progress (x scale, y scale, z scale, z offset), or
+    /// zeros before this frame's first camera.
+    [[nodiscard]] std::array<float, 4> PassProjection() const noexcept {
+        return pass_has_camera ? pass_camera.proj : std::array<float, 4>{};
+    }
     /// Vertical field of view and near/far planes of the current camera.
     [[nodiscard]] float VerticalFov() const noexcept;
     [[nodiscard]] float Near() const noexcept;

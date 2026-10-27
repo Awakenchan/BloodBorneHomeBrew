@@ -64,6 +64,9 @@ public:
     bool IsDumpShaders() { static const auto value = Flag("BB_DUMP_SHADERS", false); return value; }
     /// Ground-truth AO in place of the game's SSAO pixel shader (BB_GTAO=0 keeps the original).
     bool IsGtaoEnabled() { static const auto value = Flag("BB_GTAO", true); return value; }
+    /// Screen-space indirect lighting (BB_SSGI=0 turns it off); BB_SSGI_DEBUG=1 shows it alone.
+    bool IsSsgiEnabled() { static const auto value = Flag("BB_SSGI", true); return value; }
+    bool IsSsgiDebug() { static const auto value = Flag("BB_SSGI_DEBUG", false); return value; }
     bool IsFsrEnabled() { static const auto value = Flag("BB_FSR1", false); return value; }
     bool IsNullGPU() { static const auto value = Flag("BB_NULL_GPU", false); return value; }
     bool IsPatchShaders() { return false; }

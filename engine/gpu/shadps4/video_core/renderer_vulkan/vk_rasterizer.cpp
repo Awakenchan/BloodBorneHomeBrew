@@ -81,6 +81,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     camera_motion->SetObjectMotion(object_motion.get());
     // bbport: native HDR output's passes run at points of the frame the upscaler finds.
     hdr_native = std::make_unique<HdrNative>(instance, scheduler, texture_cache, runtime);
+    ssgi = std::make_unique<ScreenSpaceGI>(instance, scheduler, texture_cache, runtime,
+                                           *scene_targets, *camera_motion);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets, *hdr_native);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -639,6 +641,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         const auto& vp = regs.viewports[0];
         camera_motion->OnGBufferPass(db_desc.first, vp.xscale < 0.0f ? -1.0f : 1.0f,
                                      vp.yscale < 0.0f ? -1.0f : 1.0f);
+        ssgi->OnGBufferDraw(db_desc.first, cb_descs[2].first);
     }
     if (upscaler->Enabled() && cb_descs[0].first) {
         upscaler->OnColorTarget(cb_descs[0].first);
@@ -658,6 +661,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             if (regs.blend_control[0].enable && !regs.color_buffers[0].info.blend_bypass &&
                 !regs.depth_control.depth_write_enable &&
                 (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
+                ssgi->OnOpaqueScene(cb_descs[0].first, db_desc.first, upscaler->Jitter());
                 upscaler->OnBlendedSceneDraw();
             } else if (regs.num_indices <= 6 && regs.num_instances.NumInstances() <= 1) {
                 // A full-screen pass over the scene (the fog composite): the transparents are in.
@@ -1918,6 +1922,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         upscaler->OnDisplayPass(regs.color_buffers[0].Address(), cb_descs[0].first);
         previous_scene_depth = camera_motion->Depth(); // the last G-buffer pass's (bbport)
         camera_motion->OnDisplayPass(cb_descs[0].first);
+        ssgi->OnFrameEnd();
         if (upscaler->OnFrameStart()) {
             object_motion->InvalidateHistory();
             camera_motion->InvalidateHistory();
