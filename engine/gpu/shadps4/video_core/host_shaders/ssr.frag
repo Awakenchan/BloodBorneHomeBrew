@@ -41,6 +41,7 @@ const int MAX_STEPS = 256;
 const float MIN_STEP_PX = 1.0;
 const int REFINE = 6;
 const float EDGE_FADE = 0.08;
+const float GEO_BLEND = 0.6;
 
 uint base;
 float cb(int i) { return uintBitsToFloat(ubo_0.d[base + uint(i)]); }
@@ -48,7 +49,52 @@ vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
 
 float sceneDepth(vec2 uv) { return textureLod(sampler2D(img0, samp0), uv, 0.0).x; }
 
-vec4 trace(vec2 uv0) {
+vec3 viewPos(vec2 uv) {
+    vec4 cp = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, sceneDepth(uv), 1.0);
+    vec4 vp = vec4(dot(row(0), cp), dot(row(4), cp), dot(row(8), cp), dot(row(12), cp));
+    return vp.xyz / vp.w;
+}
+
+vec3 viewNormal(vec2 uv) {
+    vec3 ne = normalize(textureLod(sampler2D(img1, samp1), uv, 0.0).xyz * 2.0 - 1.0);
+    return vec3(dot(vec3(cb(32), cb(33), cb(34)), ne), dot(vec3(cb(36), cb(37), cb(38)), ne),
+                dot(vec3(cb(40), cb(41), cb(42)), ne));
+}
+
+// The reflection normal. The G-buffer normal carries high-frequency normal-map detail that
+// makes the reflection shimmer as the camera pans, so it is averaged over the neighbourhood and
+// blended toward the geometric normal rebuilt from the depth buffer.
+vec3 stableNormal(vec2 uv) {
+    vec2 t = 1.0 / vec2(textureSize(sampler2D(img0, samp0), 0));
+    vec3 n = viewNormal(uv);
+    for (int i = 0; i < 8; ++i) {
+        const vec2 k[8] = vec2[8](vec2(-1, -1), vec2(0, -1), vec2(1, -1), vec2(-1, 0), vec2(1, 0),
+                                  vec2(-1, 1), vec2(0, 1), vec2(1, 1));
+        n += viewNormal(uv + k[i] * t * 1.5);
+    }
+    n = normalize(n);
+
+    vec3 p = viewPos(uv);
+    vec3 px = viewPos(uv + vec2(t.x, 0.0));
+    vec3 nx = viewPos(uv - vec2(t.x, 0.0));
+    vec3 py = viewPos(uv + vec2(0.0, t.y));
+    vec3 ny = viewPos(uv - vec2(0.0, t.y));
+    vec3 dx = abs(px.z - p.z) < abs(p.z - nx.z) ? px - p : p - nx;
+    vec3 dy = abs(py.z - p.z) < abs(p.z - ny.z) ? py - p : p - ny;
+    vec3 g = cross(dx, dy);
+    if (dot(g, g) > 1e-12) {
+        g = normalize(g);
+        if (dot(g, p) > 0.0) {
+            g = -g;
+        }
+        if (dot(g, n) > 0.8) {
+            n = normalize(mix(n, g, GEO_BLEND));
+        }
+    }
+    return n;
+}
+
+vec4 trace(vec2 uv0, vec3 N) {
     float d0 = sceneDepth(uv0);
     if (!(d0 < 1.0)) {
         return vec4(0.0);
@@ -59,9 +105,6 @@ vec4 trace(vec2 uv0) {
     vec3 P = vp.xyz / vp.w;
     vec3 V = normalize(P);
 
-    vec3 ne = normalize(textureLod(sampler2D(img1, samp1), uv0, 0.0).xyz * 2.0 - 1.0);
-    vec3 N = vec3(dot(vec3(cb(32), cb(33), cb(34)), ne), dot(vec3(cb(36), cb(37), cb(38)), ne),
-                  dot(vec3(cb(40), cb(41), cb(42)), ne));
     vec3 R = normalize(V - 2.0 * dot(N, V) * N);
     float minFacing = cb(64);
     if (R.z < minFacing) {
@@ -163,7 +206,9 @@ void main() {
     base = (buf_off & 0xffu) >> 2;
     // Four rays per output pixel, one per full-resolution depth/normal texel it covers.
     vec2 o = 0.5 / vec2(textureSize(sampler2D(img0, samp0), 0));
-    vec4 sum = trace(attr1.xy + vec2(-o.x, -o.y)) + trace(attr1.xy + vec2(o.x, -o.y)) +
-               trace(attr1.xy + vec2(-o.x, o.y)) + trace(attr1.xy + vec2(o.x, o.y));
+    vec2 c = attr1.xy;
+    vec3 N = stableNormal(c);
+    vec4 sum = trace(c + vec2(-o.x, -o.y), N) + trace(c + vec2(o.x, -o.y), N) +
+               trace(c + vec2(-o.x, o.y), N) + trace(c + vec2(o.x, o.y), N);
     frag_color0 = sum * 0.25;
 }
