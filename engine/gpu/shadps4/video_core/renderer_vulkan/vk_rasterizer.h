@@ -695,7 +695,6 @@ private:
         return CachedImageDescEntry(sharp, res).desc;
     }
     boost::container::static_vector<ImageBindingInfo, Shader::NUM_IMAGES> image_bindings;
-    VideoCore::ImageId ssr_normals, ssr_scene_color; ///< last G-buffer normals / scene color
     struct VertexBinds {
         VertexInputs<vk::VertexInputAttributeDescription2EXT> attributes;
         VertexInputs<vk::VertexInputBindingDescription2EXT> bindings;

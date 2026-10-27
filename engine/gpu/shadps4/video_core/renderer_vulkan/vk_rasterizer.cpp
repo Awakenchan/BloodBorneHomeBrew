@@ -653,7 +653,6 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         camera_motion->OnGBufferPass(db_desc.first, vp.xscale < 0.0f ? -1.0f : 1.0f,
                                      vp.yscale < 0.0f ? -1.0f : 1.0f);
         ssgi->OnGBufferDraw(db_desc.first, cb_descs[2].first, cb_descs[0].first);
-        ssr_normals = cb_descs[0].first;
     }
     if (key.mrt_mask && cb_descs[0].first &&
         IsGtaoReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
@@ -672,7 +671,6 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             color.info.size.width == depth.info.size.width &&
             color.info.size.height == depth.info.size.height) {
             upscaler->OnSceneColor(cb_descs[0].first);
-            ssr_scene_color = cb_descs[0].first;
             // Blended geometry without depth writes (not full-screen passes): transparents and
             // effects start. Blended layers writing depth (decals, wet/blood ground) are
             // surfaces and stay in the history.
@@ -2097,15 +2095,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         push_data.motion_param = ssr_frame;
         if (cb_descs[0].first) {
             SsrTemporal::TraceInputs inputs{.frame_index = ssr_frame};
-            static bool logged = false;
-            if (!logged) {
-                logged = true;
-                std::printf("SSR trace inputs: buffer_infos %zu (first %p), image_bindings %zu, "
-                            "image_infos %zu\n",
-                            buffer_infos.size(),
-                            buffer_infos.empty() ? nullptr : (void*)(VkBuffer)buffer_infos[0].buffer,
-                            image_bindings.size(), image_infos.size());
-            }
             if (!buffer_infos.empty() && buffer_infos[0].buffer && image_infos.size() == 6) {
                 inputs.constants = buffer_infos[0].buffer;
                 inputs.constants_offset = buffer_infos[0].offset;
