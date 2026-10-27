@@ -43,6 +43,7 @@ consts = """
 %f32_0_02 = OpConstant %f32_id 0.02
 %f32_0_0001 = OpConstant %f32_id 0.0001
 %f32_0_05 = OpConstant %f32_id 0.05
+%f32_lodk = OpConstant %f32_id 0.3
 %f32_1e5 = OpConstant %f32_id 100000
 %c_iv00 = OpConstantComposite %i32vec2_id %i32_0 %i32_0
 %c_iv10 = OpConstantComposite %i32vec2_id %i32_1 %i32_0
@@ -59,6 +60,7 @@ a("%150 = OpCompositeConstruct %f32vec2_id %93 %95")
 a("%151 = OpLoad %60 %fs_img6")
 a("%152 = OpLoad %71 %fs_samp3")
 a("%img1l = OpLoad %60 %fs_img1")
+a("%lodk = OpFMul %f32_id %140 %f32_lodk")
 a("%sampled6 = OpSampledImage %63 %151 %152")
 a("%ls_i = OpImageQuerySizeLod %i32vec2_id %151 %i32_0")
 a("%ls = OpConvertSToF %f32vec2_id %ls_i")
@@ -106,7 +108,7 @@ for i, (off, wx, wy) in enumerate(taps):
     a("%s = OpConvertSToF %%f32vec2_id %s" % (n("tcf"), n("tc")))
     a("%s = OpFAdd %%f32vec2_id %s %%c_half2" % (n("tcc"), n("tcf")))
     a("%s = OpFDiv %%f32vec2_id %s %%ls" % (n("uv"), n("tcc")))
-    a("%s = OpImageSampleExplicitLod %%f32vec4_id %%sampled6 %s Lod %%140" % (n("col"), n("uv")))
+    a("%s = OpImageSampleExplicitLod %%f32vec4_id %%sampled6 %s Lod %%lodk" % (n("col"), n("uv")))
     a("%s = OpVectorTimesScalar %%f32vec4_id %s %s" % (n("cw"), n("col"), n("w")))
     if acc is None:
         acc, wsum = n("cw"), n("w")
