@@ -656,9 +656,6 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
                           Shader::HwStage::Fragment)) {
         ssgi->OnAoDraw(cb_descs[0].first);
     }
-    if (ssr_draw && cb_descs[0].first) {
-        ssr_temporal->OnSsrDraw(cb_descs[0].first);
-    }
     if (upscaler->Enabled() && cb_descs[0].first) {
         upscaler->OnColorTarget(cb_descs[0].first);
     }
@@ -2092,7 +2089,30 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         IsSsrReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
                          Shader::HwStage::Fragment)) {
         static u32 ssr_frame = 0;
-        push_data.motion_param = ssr_frame++;
+        push_data.motion_param = ssr_frame;
+        if (cb_descs[0].first) {
+            SsrTemporal::TraceInputs inputs{.frame_index = ssr_frame};
+            if (!buffer_infos.empty() && buffer_infos[0].buffer &&
+                image_bindings.size() >= 3 && image_infos.size() >= image_bindings.size()) {
+                inputs.constants = buffer_infos[0].buffer;
+                inputs.constants_offset = buffer_infos[0].offset;
+                inputs.constants_range = buffer_infos[0].range;
+                inputs.constants_dword_offset = push_data.buf_offsets[0];
+                inputs.normals = image_bindings[1].first;
+                inputs.color = image_bindings[2].first;
+            }
+            ssr_temporal->OnSsrDraw(cb_descs[0].first, inputs);
+        }
+        ++ssr_frame;
+    }
+    if (pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {
+        // The composite reads the scene-size reflection when this frame's trace made one.
+        if (const auto full = ssr_temporal->FullResult();
+            full && image_bindings.size() == 8 && image_infos.size() >= 8) {
+            auto& info = image_infos[image_infos.size() - 8 + 6];
+            info.imageView = full;
+            info.imageLayout = vk::ImageLayout::eGeneral;
+        }
     }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});

@@ -4,6 +4,7 @@
 #include "video_core/renderer_vulkan/vk_ssr_temporal.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include "common/assert.h"
 #include "video_core/host_shaders/ssr_temporal_copy_comp.h"
 #include "video_core/host_shaders/ssr_temporal_resolve_comp.h"
+#include "video_core/host_shaders/ssr_trace_comp.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -107,6 +109,10 @@ SsrTemporal::SsrTemporal(const Instance& instance_, Scheduler& scheduler_,
                SSR_TEMPORAL_RESOLVE_COMP, "ssr_temporal.comp (resolve)");
     CreatePass(copy, {SampledImage, StorageImage}, SSR_TEMPORAL_COPY_COMP,
                "ssr_temporal.comp (copy)");
+    full_enabled = EnvFloat("BB_SSR_FULL", 1.0f) > 0.5f;
+    if (full_enabled) {
+        CreateTracePass();
+    }
 }
 
 SsrTemporal::~SsrTemporal() {
@@ -227,16 +233,67 @@ vk::ImageView SsrTemporal::CachedView(const VideoCore::Image& image, vk::Format 
     return oldest->view;
 }
 
-void SsrTemporal::OnSsrDraw(VideoCore::ImageId target) {
+void SsrTemporal::OnSsrDraw(VideoCore::ImageId target, const TraceInputs& inputs) {
     if (!enabled || failed || done_this_frame) {
         return;
     }
     pending = target;
+    trace_inputs = inputs;
 }
 
 void SsrTemporal::OnFrameEnd() {
     done_this_frame = false;
+    full_ready = false;
     pending = {};
+}
+
+void SsrTemporal::CreateTracePass() {
+    const auto device = instance.GetDevice();
+    const auto make_sampler = [&](vk::Filter filter) {
+        return Check<"create SSR trace sampler">(device.createSamplerUnique({
+            .magFilter = filter,
+            .minFilter = filter,
+            .mipmapMode = vk::SamplerMipmapMode::eNearest,
+            .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+            .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+            .addressModeW = vk::SamplerAddressMode::eClampToEdge,
+            .maxLod = 0.0f,
+        }));
+    };
+    nearest_sampler = make_sampler(vk::Filter::eNearest);
+    linear_sampler = make_sampler(vk::Filter::eLinear);
+    const std::array<vk::DescriptorSetLayoutBinding, 5> bindings{{
+        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eCompute},
+        {1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute},
+        {2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute},
+        {3, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute},
+        {4, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute},
+    }};
+    trace.set_layout = Check<"create SSR trace descriptor set layout">(
+        device.createDescriptorSetLayoutUnique({
+            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+            .bindingCount = u32(bindings.size()),
+            .pBindings = bindings.data(),
+        }));
+    const vk::PushConstantRange push{
+        .stageFlags = vk::ShaderStageFlagBits::eCompute, .offset = 0, .size = 16};
+    trace.layout = Check<"create SSR trace pipeline layout">(device.createPipelineLayoutUnique({
+        .setLayoutCount = 1,
+        .pSetLayouts = &*trace.set_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push,
+    }));
+    const auto module = CompileSPV(SSR_TRACE_COMP, device);
+    ASSERT(module);
+    SetObjectName(device, module, "ssr_trace.comp");
+    trace.pipeline = Check<"create SSR trace pipeline">(device.createComputePipelineUnique(
+        {}, vk::ComputePipelineCreateInfo{
+                .stage = {.stage = vk::ShaderStageFlagBits::eCompute,
+                          .module = module,
+                          .pName = "main"},
+                .layout = *trace.layout,
+            }));
+    device.destroyShaderModule(module);
 }
 
 void SsrTemporal::Flush(std::array<float, 2> jitter) {
@@ -360,6 +417,116 @@ void SsrTemporal::Flush(std::array<float, 2> jitter) {
             MemoryBarrier(cmdbuf, Compute, vk::AccessFlagBits2::eShaderWrite, AllCommands,
                           vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite);
         });
+    if (full_enabled && trace_inputs.constants && trace_inputs.normals &&
+        trace_inputs.color) {
+        auto& normals = texture_cache.GetImage(trace_inputs.normals);
+        auto& color = texture_cache.GetImage(trace_inputs.color);
+        const auto normals_view =
+            CachedView(normals, normals.info.pixel_format, vk::ImageAspectFlagBits::eColor);
+        const auto color_view =
+            CachedView(color, color.info.pixel_format, vk::ImageAspectFlagBits::eColor);
+        runtime.Transit(&normals, vk::ImageLayout::eGeneral, Compute,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.Transit(&color, vk::ImageLayout::eGeneral, Compute,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.FlushBarriers();
+        bool full_created = EnsureImage(trace_image, width, height, "trace");
+        for (auto& image : accum_full) {
+            full_created |= EnsureImage(image, width, height, "full accum");
+        }
+        if (full_created) {
+            full_history_valid = false;
+        }
+        static bool full_printed = false;
+        if (!full_printed) {
+            full_printed = true;
+            std::printf("SSR trace: %ux%u full-size reflections\n", width, height);
+        }
+        const bool full_previous = full_history_valid && prev_camera_valid && camera.valid;
+        Params full_params = params;
+        full_params.reproject = full_previous ? Multiply(prev_view, camera.inv_view) : Identity;
+        full_params.prev_jitter = full_previous ? prev_jitter : jitter;
+        full_params.prev_proj = full_previous ? prev_proj : std::array<float, 2>{proj[0], proj[1]};
+        full_params.history = full_previous ? 1u : 0u;
+        const std::array<u32, 4> trace_push{
+            trace_inputs.constants_dword_offset, trace_inputs.frame_index,
+            std::bit_cast<u32>(float(width)), std::bit_cast<u32>(float(height))};
+        scheduler.RecordCrumb(
+            {.name = "SSR full trace"},
+            [full_params, trace_push, width, height, constants = trace_inputs.constants,
+             constants_offset = trace_inputs.constants_offset,
+             constants_range = trace_inputs.constants_range, depth_view, normals_view, color_view,
+             nearest = *nearest_sampler, linear = *linear_sampler,
+             trace_image_handle = vk::Image(trace_image.image), trace_view = *trace_image.view,
+             cur_image = vk::Image(accum_full[current].image), cur_view = *accum_full[current].view,
+             old_image = vk::Image(accum_full[current ^ 1].image),
+             old_view = *accum_full[current ^ 1].view, init_previous = !full_history_valid,
+             trace_pipeline = *trace.pipeline, trace_layout = *trace.layout,
+             resolve_pipeline = *resolve.pipeline,
+             resolve_layout = *resolve.layout](vk::CommandBuffer cmdbuf) {
+                MemoryBarrier(cmdbuf, AllCommands, vk::AccessFlagBits2::eMemoryWrite, Compute,
+                              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
+                std::array<vk::ImageMemoryBarrier2, 3> barriers{ToGeneral(trace_image_handle),
+                                                                ToGeneral(cur_image)};
+                u32 barrier_count = 2;
+                if (init_previous) {
+                    barriers[barrier_count++] = ToGeneral(old_image);
+                }
+                cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = barrier_count,
+                                         .pImageMemoryBarriers = barriers.data()});
+                const u32 groups_x = (width + 7) / 8, groups_y = (height + 7) / 8;
+                {
+                    const vk::DescriptorBufferInfo constants_info{constants, constants_offset,
+                                                                  constants_range};
+                    const std::array infos{
+                        vk::DescriptorImageInfo{nearest, depth_view, vk::ImageLayout::eGeneral},
+                        vk::DescriptorImageInfo{nearest, normals_view, vk::ImageLayout::eGeneral},
+                        vk::DescriptorImageInfo{linear, color_view, vk::ImageLayout::eGeneral},
+                        Info(trace_view)};
+                    const std::array<vk::WriteDescriptorSet, 5> writes{{
+                        {.dstBinding = 0, .descriptorCount = 1,
+                         .descriptorType = vk::DescriptorType::eUniformBuffer,
+                         .pBufferInfo = &constants_info},
+                        {.dstBinding = 1, .descriptorCount = 1,
+                         .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                         .pImageInfo = &infos[0]},
+                        {.dstBinding = 2, .descriptorCount = 1,
+                         .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                         .pImageInfo = &infos[1]},
+                        {.dstBinding = 3, .descriptorCount = 1,
+                         .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                         .pImageInfo = &infos[2]},
+                        Write(4, StorageImage, &infos[3]),
+                    }};
+                    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, trace_pipeline);
+                    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, trace_layout, 0,
+                                                writes);
+                    cmdbuf.pushConstants(trace_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                                         sizeof(trace_push), trace_push.data());
+                    cmdbuf.dispatch(groups_x, groups_y, 1);
+                }
+                MemoryBarrier(cmdbuf, Compute, vk::AccessFlagBits2::eShaderWrite, Compute,
+                              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
+                {
+                    const std::array infos{Info(trace_view), Info(depth_view), Info(old_view),
+                                           Info(cur_view)};
+                    const std::array writes{Write(0, SampledImage, &infos[0]),
+                                            Write(1, SampledImage, &infos[1]),
+                                            Write(2, SampledImage, &infos[2]),
+                                            Write(3, StorageImage, &infos[3])};
+                    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, resolve_pipeline);
+                    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, resolve_layout, 0,
+                                                writes);
+                    cmdbuf.pushConstants(resolve_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                                         sizeof(Params), &full_params);
+                    cmdbuf.dispatch(groups_x, groups_y, 1);
+                }
+                MemoryBarrier(cmdbuf, Compute, vk::AccessFlagBits2::eShaderWrite, AllCommands,
+                              vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite);
+            });
+        full_history_valid = true;
+        full_ready = true;
+    }
     history_valid = true;
     prev_view = camera.view;
     prev_proj = {proj[0], proj[1]};

@@ -38,7 +38,10 @@ void main() {
     const vec4 cur = texelFetch(cur_tex, h, 0);
     vec4 result = cur;
     const ivec2 isize = ivec2(size);
-    const ivec2 f = min(h * 2, isize - 1);
+    // The texel's place in the scene-size depth; `ratio` is 2 for the game's half-size target
+    // and 1 for the full-size trace.
+    const vec2 ratio = size / vec2(hsize);
+    const ivec2 f = min(ivec2((vec2(h) + 0.5) * ratio), isize - 1);
     const float depth = texelFetch(depth_tex, f, 0).r;
     if (history != 0u && depth < 1.0) {
         vec4 lo = vec4(1e9), hi = vec4(-1e9), sum = vec4(0.0), sum2 = vec4(0.0);
@@ -57,12 +60,12 @@ void main() {
         hi = min(hi, mean + CLIP_SIGMA * sigma);
 
         const float z = proj.w / min(depth - proj.z, -1e-8);
-        const vec2 ndc = ((vec2(f) + 1.0) - jitter) / size * 2.0 - 1.0;
+        const vec2 ndc = ((vec2(h) + 0.5) * ratio - jitter) / size * 2.0 - 1.0;
         const vec4 pos = vec4(ndc.x * z / proj.x, ndc.y * z / proj.y, z, 1.0);
         const vec3 p = vec3(dot(reproject[0], pos), dot(reproject[1], pos), dot(reproject[2], pos));
         if (p.z > 1e-3) {
             const vec2 uv = p.xy * prev_proj / p.z * 0.5 + 0.5;
-            const vec2 hf = (uv * size + prev_jitter) * 0.5 - 0.5;
+            const vec2 hf = (uv * size + prev_jitter) / ratio - 0.5;
             const vec2 hmax = vec2(hsize - 1);
             if (all(greaterThanEqual(hf, vec2(-0.5))) && all(lessThanEqual(hf, hmax + 0.5))) {
                 const ivec2 b = ivec2(floor(hf));
@@ -74,7 +77,7 @@ void main() {
                     hist += texelFetch(prev_tex, clamp(b + o, ivec2(0), hsize - 1), 0) * w;
                 }
                 hist = clamp(hist, lo, hi);
-                const float motion = length(hf - vec2(h));
+                const float motion = length(hf - vec2(h)) * ratio.x * 0.5;
                 const float w = blend * (1.0 - 0.5 * clamp(motion / 24.0, 0.0, 1.0));
                 result = mix(cur, hist, w);
             }
