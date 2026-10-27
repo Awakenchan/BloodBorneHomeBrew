@@ -2105,7 +2105,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         }
         ++ssr_frame;
     }
-    if (pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {
+    if (pipeline->GetGraphicsKey().mrt_mask &&
+        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {
         // The composite reads the scene-size reflection when this frame's trace made one.
         if (const auto full = ssr_temporal->FullResult();
             full && image_bindings.size() == 8 && image_infos.size() >= 8) {
