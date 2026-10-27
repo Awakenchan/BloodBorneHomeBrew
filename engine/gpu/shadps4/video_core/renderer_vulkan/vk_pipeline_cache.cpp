@@ -1017,6 +1017,54 @@ void PatchSsrComposite(u64 pgm_hash, Shader::HwStage stage, std::vector<u32>& sp
     spv.assign(kSsrCompositeSpv.begin(), kSsrCompositeSpv.end());
 }
 
+// The water shader (hash e3021062) offsets the planar reflection lookup horizontally by the
+// ripple normal, which smears and warps the mirrored scene. The patch halves that offset so
+// the reflection reads sharper. Only the exact original module is changed.
+void PatchWaterReflection(u64 pgm_hash, Shader::HwStage stage, std::vector<u32>& spv) {
+    constexpr u64 kWaterHash = 0xe3021062;
+    constexpr size_t kWords = 13751;
+    constexpr u32 kChecksum = 0xf7a3a6ee;
+    constexpr u32 kOffsetResultId = 1307;
+    constexpr u32 kOpConstant = 43, kOpFMul = 133;
+    if (pgm_hash != kWaterHash || stage != Shader::HwStage::Fragment || spv.size() != kWords ||
+        std::getenv("BB_WATER_ORIGINAL")) {
+        return;
+    }
+    u32 checksum = 2166136261u;
+    for (const u32 word : spv) {
+        checksum = (checksum ^ word) * 16777619u;
+    }
+    if (checksum != kChecksum) {
+        return;
+    }
+    size_t fmul = 0;
+    for (size_t i = 5; i < spv.size(); i += spv[i] >> 16) {
+        if ((spv[i] & 0xffff) == kOpFMul && spv[i + 2] == kOffsetResultId) {
+            fmul = i;
+            break;
+        }
+    }
+    if (!fmul) {
+        return;
+    }
+    const u32 type_id = spv[fmul + 1];
+    u32 half_id = 0;
+    for (size_t i = 5; i < spv.size() && !half_id; i += spv[i] >> 16) {
+        if ((spv[i] & 0xffff) == kOpConstant && spv[i + 1] == type_id &&
+            spv[i + 3] == std::bit_cast<u32>(0.5f)) {
+            half_id = spv[i + 2];
+        }
+    }
+    if (!half_id) {
+        return;
+    }
+    const u32 scaled_id = spv[3]++;
+    spv[fmul + 2] = scaled_id;
+    const std::array<u32, 5> scale{(5u << 16) | kOpFMul, type_id, kOffsetResultId, scaled_id,
+                                   half_id};
+    spv.insert(spv.begin() + fmul + 5, scale.begin(), scale.end());
+}
+
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
                                               Shader::Backend::Bindings& binding) {
@@ -1032,6 +1080,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
     PatchSsrComposite(info.pgm_hash, info.hw_stage, spv);
+    PatchWaterReflection(info.pgm_hash, info.hw_stage, spv);
 
     vk::ShaderModule module;
 

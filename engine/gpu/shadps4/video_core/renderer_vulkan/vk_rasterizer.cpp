@@ -2198,6 +2198,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
+        {
+            char dn[96];
+            std::snprintf(dn, sizeof(dn), "\n  drawend ps %08x idx %u z%u%u", u32(ps ? ps->pgm_hash : 0),
+                          num_indices, u32(regs.depth_control.depth_enable),
+                          u32(regs.depth_control.depth_write_enable));
+            FrameCapture::Note(dn);
+        }
         if (const auto& bc = regs.blend_control[0]; bc.enable && regs.color_buffers[0]) {
             char note[128];
             std::snprintf(note, sizeof(note), "\n  blend ps %08x idx %u: src %u dst %u func %u z %u%u",
@@ -4188,6 +4195,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             image.usage.texture |= !is_storage;
             if (FrameCapture::Active()) {
                 FrameCapture::Sampled(image.info, is_storage);
+                char tn[96];
+                std::snprintf(tn, sizeof(tn), "\n  drawtex %llx %ux%u",
+                              static_cast<unsigned long long>(image.info.guest_address),
+                              image.info.size.width, image.info.size.height);
+                FrameCapture::Note(tn);
             }
 
             vk::ImageView view = *image_view.image_view;
