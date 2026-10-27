@@ -293,10 +293,19 @@ void ScreenSpaceGI::OnFrameEnd() {
 
 void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
                                   std::array<float, 2> jitter) {
-    if (done_this_frame || failed || !prep.pipeline || !color_id || !depth_id ||
-        !BbSettings::Get().effects[BbSettings::EffectGi].load(std::memory_order_relaxed)) {
+    const bool gi_on = BbSettings::Get().effects[BbSettings::EffectGi].load(std::memory_order_relaxed);
+    static int last_gi_on = -1;
+    static int gi_frames = 0;
+    if (last_gi_on != int(gi_on)) {
+        std::printf("SSGI: indirect lighting %s (%d GI frames in the previous state)\n",
+                    gi_on ? "on" : "off", gi_frames);
+        last_gi_on = int(gi_on);
+        gi_frames = 0;
+    }
+    if (done_this_frame || failed || !prep.pipeline || !color_id || !depth_id || !gi_on) {
         return;
     }
+    ++gi_frames;
     const auto proj = camera_motion.PassProjection();
     if (proj[0] == 0.0f || proj[1] == 0.0f) {
         return;
@@ -462,7 +471,9 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
         .frame = frame,
         .history = (history_valid && (use_previous || !reproject_on) ? 1u : 0u) |
                    (debug ? 2u : 0u),
-        .strength = strength,
+        .strength = strength * std::clamp(BbSettings::Get().graphics_gi_strength.load(
+                                              std::memory_order_relaxed),
+                                          0.0f, 12.0f),
         .radius = radius,
         .feedback = feedback,
         .ao_amount = has_ao ? ao_amount : 0.0f,

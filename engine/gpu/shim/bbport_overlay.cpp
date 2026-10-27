@@ -569,6 +569,7 @@ void PictureSection() {
         moved |= vignette != s.graphics_vignette;
     }
     slider("Ambient occlusion strength", "Сила затенения (AO)", s.graphics_ao_strength, 0.0f, 3.0f);
+    slider("Indirect lighting strength", "Сила непрямого освещения (GI)", s.graphics_gi_strength, 0.0f, 12.0f);
     slider("Shadow distance", "Дальность теней", s.graphics_shadow_scale, 0.5f, 4.0f);
     if (moved && !s.graphics_controls) {
         Store(s.graphics_controls, true, true);
@@ -583,6 +584,7 @@ void PictureSection() {
             Store(s.graphics_bloom, 1.0f, true);
             Store(s.graphics_vignette, true, true);
             Store(s.graphics_ao_strength, 1.0f, true);
+            Store(s.graphics_gi_strength, 1.0f, true);
             Store(s.graphics_shadow_scale, 1.0f, true);
         }
     }
