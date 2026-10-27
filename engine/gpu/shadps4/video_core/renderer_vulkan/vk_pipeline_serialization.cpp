@@ -20,6 +20,7 @@
 #include "shader_recompiler/info.h"
 #include "video_core/cache_storage.h"
 #include "video_core/host_shaders/gtao_frag.h"
+#include "video_core/host_shaders/ssr_frag.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -419,12 +420,17 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         word += count;
     }
 
+    if (stage == u32(Shader::SwStage::Fragment)) {
+        PatchSsrComposite(program->info.pgm_hash, Shader::HwStage::Fragment, spv);
+    }
     const bool gtao_stage = stage == u32(Shader::SwStage::Fragment) &&
                             IsGtaoReplacement(program->info.pgm_hash, Shader::HwStage::Fragment);
     if (gtao_stage) {
         LOG_WARNING(Render_Vulkan, "SSAO shader {:#x} replaced with GTAO (cached pipeline)",
                     program->info.pgm_hash);
     }
+    const bool ssr_stage = stage == u32(Shader::SwStage::Fragment) &&
+                           IsSsrReplacement(program->info.pgm_hash, Shader::HwStage::Fragment);
     auto it = program_cache.find(program->info.pgm_hash);
     Program* target = it == program_cache.end() ? program.get() : it->second.get();
     vk::ShaderModule module;
@@ -440,6 +446,8 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
             gtao_stage
                 ? vk::ShaderModuleCreateInfo{.codeSize = sizeof(GTAO_FRAG),
                                              .pCode = GTAO_FRAG}
+            : ssr_stage
+                ? vk::ShaderModuleCreateInfo{.codeSize = sizeof(SSR_FRAG), .pCode = SSR_FRAG}
                 : vk::ShaderModuleCreateInfo{.codeSize = spv.size() * sizeof(u32),
                                              .pCode = spv.data()});
         if (result != vk::Result::eSuccess) {

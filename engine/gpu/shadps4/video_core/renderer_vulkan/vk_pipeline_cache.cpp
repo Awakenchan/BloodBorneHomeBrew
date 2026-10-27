@@ -24,6 +24,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/cache_storage.h"
 #include "video_core/host_shaders/gtao_frag.h"
+#include "video_core/host_shaders/ssr_frag.h"
 #include "video_core/cache_file.h"
 #include "video_core/renderer_vulkan/pipeline_cache_blob.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -987,6 +988,37 @@ bool IsGtaoReplacement(u64 pgm_hash, Shader::HwStage stage) {
            EmulatorSettings.IsGtaoEnabled();
 }
 
+bool IsSsrReplacement(u64 pgm_hash, Shader::HwStage stage) {
+    constexpr u64 kSsrShaderHash = 0x6c2323c2;
+    static const bool disabled = std::getenv("BB_SSR_ORIGINAL") != nullptr;
+    return pgm_hash == kSsrShaderHash && stage == Shader::HwStage::Fragment && !disabled;
+}
+
+// The composite pass (hash 3fe9e964) reads the SSR result from a blurred mip pyramid, picking
+// lod = min(6, 6.5 - 13 * smoothness / 2). That leaves even fairly smooth surfaces, such as wet
+// stone, reading a blurred mip. Steepening the slope (13 -> 20) keeps the blur for rough
+// surfaces but lets anything above about 0.65 smoothness read the sharp base level.
+void PatchSsrComposite(u64 pgm_hash, Shader::HwStage stage, std::vector<u32>& spv) {
+    constexpr u64 kCompositeHash = 0x3fe9e964;
+    if (pgm_hash != kCompositeHash || stage != Shader::HwStage::Fragment || spv.size() < 5 ||
+        std::getenv("BB_SSR_ORIGINAL")) {
+        return;
+    }
+    const u32 old_slope = std::bit_cast<u32>(13.0f);
+    const u32 new_slope = std::bit_cast<u32>(20.0f);
+    for (size_t word = 5; word < spv.size();) {
+        const u32 count = spv[word] >> 16;
+        if (!count || count > spv.size() - word) {
+            return;
+        }
+        // OpConstant (43): length 4 for a 32-bit float: type, result id, value.
+        if ((spv[word] & 0xffff) == 43 && count == 4 && spv[word + 3] == old_slope) {
+            spv[word + 3] = new_slope;
+        }
+        word += count;
+    }
+}
+
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
                                               Shader::Backend::Bindings& binding) {
@@ -1001,6 +1033,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     Shader::Native::StoreState(info, runtime_before, code, perm_idx);
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
+    PatchSsrComposite(info.pgm_hash, info.hw_stage, spv);
 
     vk::ShaderModule module;
 
@@ -1010,6 +1043,9 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     if (IsGtaoReplacement(info.pgm_hash, info.hw_stage)) {
         LOG_WARNING(Render_Vulkan, "SSAO shader {:#x} replaced with GTAO", info.pgm_hash);
         module = CompileSPV(GTAO_FRAG, instance.GetDevice());
+    } else if (IsSsrReplacement(info.pgm_hash, info.hw_stage)) {
+        LOG_WARNING(Render_Vulkan, "SSR shader {:#x} replaced", info.pgm_hash);
+        module = CompileSPV(SSR_FRAG, instance.GetDevice());
     } else if (is_patched) {
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
         module = CompileSPV(*patch, instance.GetDevice());
