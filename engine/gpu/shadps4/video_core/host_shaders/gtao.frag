@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-// Ground-truth ambient occlusion (Jimenez et al., "Practical Realtime Strategies for Accurate
-// Indirect Occlusion", Activision TR-16-01) in place of Bloodborne's ScreenSpaceAO2_WithNormal
-// pixel shader (hash cbbca5dc). It keeps that shader's resource interface (decoded from its IR
-// dump), so the engine's descriptors, targets and the later bilateral upscale stay as they are.
+// Ambient occlusion from a visibility bitmask (Therrien, Levesque, Gilet, "Screen Space Indirect
+// Lighting with Visibility Bitmask") on top of the GTAO slice setup (Jimenez et al., Activision
+// TR-16-01), in place of Bloodborne's ScreenSpaceAO2_WithNormal pixel shader (hash cbbca5dc). It
+// keeps that shader's resource interface (decoded from its IR dump), so the engine's
+// descriptors, targets and the later bilateral upscale stay as they are.
 //
 //   ubo_0 (binding 0)  constants: [0..15] inverse projection rows (depth -> view position),
 //                      [16,17] target size, [18,19] screen-space radius scale, [20..30] world ->
@@ -35,16 +36,18 @@ const float HALF_PI = 1.57079632679490;
 const int SLICES = 1;
 const int STEPS = 5;
 const float MIN_RADIUS_PX = 28.0;
-// How fast the horizon relaxes once samples drop below it. Higher = thin occluders (rails,
-// wires, foliage) cast less AO; 0 = classic max horizon.
-const float THIN_DECAY = 0.8;
+const int SECTORS = 32; // bits in the visibility mask
+// Assumed thickness of every depth sample (view units): light passes behind anything thinner,
+// which is what keeps rails, wires and foliage from darkening their surroundings. It grows with
+// distance so far-away geometry is not over-attenuated.
+const float THICKNESS_NEAR = 0.10;
+const float THICKNESS_FAR = 2.0;
 // World-space reach of the occlusion (view units, about metres). Occluders farther than this
 // from the surface are ignored, which keeps thin objects from darkening things well behind them.
 const float MAX_WORLD_RADIUS = 0.5;
 // Extra visibility exponent at the far plane; 0 = no distance boost.
 const float DISTANCE_BOOST = 2.0;
-const float FALLOFF_START = 0.6; // fraction of the radius before samples fade out
-const float THICKNESS_BIAS = 0.02; // fraction of the radius, keeps flat surfaces from self-occluding
+const float THICKNESS_BIAS = 0.02; // fraction of the reach, keeps flat surfaces from self-occluding
 
 float cb0(int i) { return uintBitsToFloat(ubo_0.d[i]); }
 
@@ -63,6 +66,24 @@ float fastAcos(float x) {
     float a = abs(x);
     float r = sqrt(1.0 - a) * (1.5707963267948966 + a * (-0.2146018 + a * (0.0889789 + a * -0.0501743)));
     return x >= 0.0 ? r : PI - r;
+}
+
+// Sector bits covered by one depth sample treated as a slab of thickness `thick` along the view
+// ray (visibility bitmask, Therrien et al. 2023). A sector is taken when at least half covered.
+uint sectorMask(vec2 uvS, vec3 pos, vec3 v, float side, float lo, float thick, float reach, float bias) {
+    vec3 d = viewPos(uvS, readDepth(uvS)) - pos;
+    float l = length(d);
+    if (l > reach || l < bias) return 0u;
+    vec3 db = d - v * thick;
+    float af = side * fastAcos(clamp(dot(d, v) / l, -1.0, 1.0));
+    float ab = side * fastAcos(clamp(dot(db, v) / max(length(db), 1e-4), -1.0, 1.0));
+    float s0 = clamp((min(af, ab) - lo) * (1.0 / PI), 0.0, 1.0) * float(SECTORS);
+    float s1 = clamp((max(af, ab) - lo) * (1.0 / PI), 0.0, 1.0) * float(SECTORS);
+    uint a = uint(s0 + 0.5);
+    uint n = uint(s1 + 0.5) - a;
+    if (n == 0u || a >= uint(SECTORS)) return 0u;
+    uint m = n >= 32u ? 0xFFFFFFFFu : ((1u << n) - 1u);
+    return m << a;
 }
 
 void main() {
@@ -94,6 +115,7 @@ void main() {
         vec2 noise = textureLod(sampler2D(img2, samp2), gl_FragCoord.xy / 64.0, 0.0).xy * 2.0 - 1.0;
         noise = normalize(noise + vec2(1e-5));
         float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        float thick = THICKNESS_NEAR + THICKNESS_FAR * clamp(pos.z / uintBitsToFloat(ubo_2.d[2]), 0.0, 1.0);
 
         float accum = 0.0;
         for (int s = 0; s < SLICES; ++s) {
@@ -118,47 +140,30 @@ void main() {
             float sgn = dot(ortho, projN) < 0.0 ? -1.0 : 1.0;
             float nAng = sgn * fastAcos(cosN);
 
-            float low0 = cos(nAng + HALF_PI);
-            float low1 = cos(nAng - HALF_PI);
-            float h0c = low0, h1c = low1;
-
-            float falloffR = min(radius, MAX_WORLD_RADIUS);
-            float falloffRange = max((1.0 - FALLOFF_START) * falloffR, 1e-4);
-            float falloffMul = -1.0 / falloffRange;
-            float falloffAdd = FALLOFF_START * falloffR / falloffRange + 1.0;
-            float bias = THICKNESS_BIAS * falloffR;
+            // the 32 sectors cover the hemisphere around the projected normal, one bit each
+            float lo = nAng - HALF_PI;
+            float reach = min(radius, MAX_WORLD_RADIUS);
+            float bias = THICKNESS_BIAS * reach;
+            uint mask = 0u;
 
             for (int i = 0; i < STEPS; ++i) {
                 float t = (float(i) + jitter) / float(STEPS);
                 t = t * t;
                 vec2 off = stepUv * t;
                 off = sign(off) * max(abs(off), texel);
-
-                vec2 uvA = uv + off;
-                vec3 pA = viewPos(uvA, readDepth(uvA));
-                vec3 dA = pA - pos;
-                float lA = length(dA);
-                float cA = dot(dA, v) / max(lA, 1e-5);
-                cA = mix(low0, cA, clamp(lA * falloffMul + falloffAdd, 0.0, 1.0));
-                if (lA > bias) h0c = cA > h0c ? cA : mix(h0c, cA, THIN_DECAY);
-
-                vec2 uvB = uv - off;
-                vec3 pB = viewPos(uvB, readDepth(uvB));
-                vec3 dB = pB - pos;
-                float lB = length(dB);
-                float cB = dot(dB, v) / max(lB, 1e-5);
-                cB = mix(low1, cB, clamp(lB * falloffMul + falloffAdd, 0.0, 1.0));
-                if (lB > bias) h1c = cB > h1c ? cB : mix(h1c, cB, THIN_DECAY);
+                mask |= sectorMask(uv + off, pos, v, 1.0, lo, thick, reach, bias);
+                mask |= sectorMask(uv - off, pos, v, -1.0, lo, thick, reach, bias);
             }
 
-            float h0 = -fastAcos(clamp(h1c, -1.0, 1.0));
-            float h1 = fastAcos(clamp(h0c, -1.0, 1.0));
-            h0 = nAng + clamp(h0 - nAng, -HALF_PI, HALF_PI);
-            h1 = nAng + clamp(h1 - nAng, -HALF_PI, HALF_PI);
-            float sinN = sin(nAng);
-            float arc0 = (cosN + 2.0 * h0 * sinN - cos(2.0 * h0 - nAng)) * 0.25;
-            float arc1 = (cosN + 2.0 * h1 * sinN - cos(2.0 * h1 - nAng)) * 0.25;
-            accum += clamp(projLen * (arc0 + arc1), 0.0, 1.0);
+            // open sectors, weighted by the cosine around the normal
+            float open = 0.0;
+            float cPrev = 1.0; // cos(0)
+            for (int j = 0; j < SECTORS; ++j) {
+                float cNext = cos(PI * float(j + 1) / float(SECTORS));
+                if (((mask >> uint(j)) & 1u) == 0u) open += 0.5 * (cPrev - cNext);
+                cPrev = cNext;
+            }
+            accum += clamp(projLen * open, 0.0, 1.0);
         }
         visibility = accum / float(SLICES);
         // darken more with distance, where the pixel footprint hides detail
