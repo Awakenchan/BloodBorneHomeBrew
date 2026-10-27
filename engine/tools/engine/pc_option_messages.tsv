@@ -62,6 +62,7 @@
 117007	AO Strength	How dark corners and contact get. 5 is the game's own.	环境光遮蔽强度	角落和接触区域的暗部强度。5 为游戏原始值。
 117008	Fog	How thick the haze over distant streets is. 10 is the game's own.	雾效	远处街道薄雾的浓度。10 为游戏原始值。
 117009	Contact Shadows	Screen-space shadows that add fine shadow detail at the base of objects.	接触阴影	在物体底部增加细腻阴影的屏幕空间阴影。
+117050	Soft Shadows (PCSS)	NVIDIA percentage-closer soft shadows. Shadows soften the farther they fall from what casts them.	柔和阴影 (PCSS)	NVIDIA 百分比渐近软阴影。阴影离投射物越远越柔和。
 120020	PC Effects		PC 特效
 120000	Bloom	The glow around bright light. 10 is the game's own.	泛光	明亮光源周围的光晕。10 为游戏原始值。
 120001	Vignette	The darkened frame edges some areas use.	暗角	部分区域使用的画面边缘变暗效果。

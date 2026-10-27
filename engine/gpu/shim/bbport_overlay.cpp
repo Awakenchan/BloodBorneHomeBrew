@@ -1692,6 +1692,7 @@ void Menu() {
         BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         restart |= e != BbSettings::EffectGi && e != BbSettings::EffectContactShadows &&
+                   e != BbSettings::EffectPcss &&
                    s.effects[e] != s.startup_effects[e];
     }
     restart |= Vulkan::OptiScaler::Detect().loaded &&

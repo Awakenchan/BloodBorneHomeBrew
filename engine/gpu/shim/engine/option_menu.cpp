@@ -93,7 +93,7 @@ Setting g_enhancements[] = {Toggle(124001, 0), Toggle(124002, 0), Toggle(124004,
 Setting g_graphics[] = {Toggle(117001, 0, true),           Toggle(117000, 1, true),
                         Slider(117007, 5, 0, 0.2f, true),  Slider(117006, 0, 1, 0.2f, true),
                         Pick(117004, BbSettings::OutputDefault, kOutputs), Slider(117008, 10, 0, 0.1f, true),
-                        Toggle(117009, 1, true)};
+                        Toggle(117009, 1, true), Toggle(117050, 0, true)};
 Setting g_effects[] = {Toggle(117005, 0, true), Toggle(117002, 0, true), Toggle(117003, 0, true),
                        Toggle(120001, 1, true), Slider(120000, 10, 0, 0.1f, true)};
 Setting g_colour[] = {Toggle(125004, 0),
@@ -316,6 +316,7 @@ bool BindSettings() {
     g_graphics[4].number = &s.output_res;
     g_graphics[5].amount = &s.graphics_fog;
     g_graphics[6].flag = &s.effects[BbSettings::EffectContactShadows];
+    g_graphics[7].flag = &s.effects[BbSettings::EffectPcss];
     effect(g_effects[0], blur);
     effect(g_effects[1], dof);
     effect(g_effects[2], ca);

@@ -31,8 +31,14 @@ struct Push {
     float strength;
     float flip;
     u32 debug;
+    u32 contact_on;
+    u32 pcss_on;
+    float light_tan;
+    float max_penumbra_m;
+    float min_penumbra_m;
+    float bias_m;
 };
-static_assert(sizeof(Push) == 36);
+static_assert(sizeof(Push) == 60);
 
 constexpr auto Compute = vk::PipelineStageFlagBits2::eComputeShader;
 
@@ -48,8 +54,9 @@ ContactShadow::ContactShadow(const Instance& instance_, Scheduler& scheduler_,
                              CameraMotion& camera_motion_)
     : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
       runtime{runtime_}, camera_motion{camera_motion_} {
-    enabled = EnvFloat("BB_CONTACT_SHADOWS", 1.0f) > 0.5f;
-    if (!enabled) {
+    contact_enabled = EnvFloat("BB_CONTACT_SHADOWS", 1.0f) > 0.5f;
+    pcss_enabled = EnvFloat("BB_PCSS", 1.0f) > 0.5f;
+    if (!contact_enabled && !pcss_enabled) {
         return;
     }
     length_m = EnvFloat("BB_CONTACT_LENGTH", length_m);
@@ -57,6 +64,10 @@ ContactShadow::ContactShadow(const Instance& instance_, Scheduler& scheduler_,
     strength = EnvFloat("BB_CONTACT_STRENGTH", strength);
     flip = EnvFloat("BB_CONTACT_FLIP", 1.0f) < 0.0f ? -1.0f : 1.0f;
     debug = EnvFloat("BB_CONTACT_DEBUG", 0.0f) > 0.5f ? 1u : 0u;
+    light_tan = EnvFloat("BB_PCSS_LIGHT", light_tan);
+    max_penumbra_m = EnvFloat("BB_PCSS_MAX", max_penumbra_m);
+    min_penumbra_m = EnvFloat("BB_PCSS_MIN", min_penumbra_m);
+    bias_m = EnvFloat("BB_PCSS_BIAS", bias_m);
 
     const auto device = instance.GetDevice();
     sampler = Check<"create contact shadow sampler">(device.createSamplerUnique({
@@ -68,10 +79,12 @@ ContactShadow::ContactShadow(const Instance& instance_, Scheduler& scheduler_,
         .addressModeW = vk::SamplerAddressMode::eClampToEdge,
         .maxLod = 0.0f,
     }));
-    const std::array<vk::DescriptorSetLayoutBinding, 3> bindings{{
+    const std::array<vk::DescriptorSetLayoutBinding, 5> bindings{{
         {0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
         {1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute},
         {2, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute},
+        {3, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute},
+        {4, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
     }};
     set_layout = Check<"create contact shadow descriptor set layout">(
         device.createDescriptorSetLayoutUnique({
@@ -103,8 +116,15 @@ ContactShadow::ContactShadow(const Instance& instance_, Scheduler& scheduler_,
 ContactShadow::~ContactShadow() = default;
 
 void ContactShadow::OnShadowDraw(VideoCore::ImageId target, const Inputs& inputs) {
-    if (!Enabled() || !target || !inputs.constants ||
-        !BbSettings::Get().effects[BbSettings::EffectContactShadows].load(std::memory_order_relaxed)) {
+    if (!Enabled() || !target || !inputs.constants) {
+        return;
+    }
+    const auto& settings = BbSettings::Get();
+    use_contact = contact_enabled &&
+                  settings.effects[BbSettings::EffectContactShadows].load(std::memory_order_relaxed);
+    use_pcss = pcss_enabled && inputs.uniforms && inputs.shadow_map &&
+               settings.effects[BbSettings::EffectPcss].load(std::memory_order_relaxed);
+    if (!use_contact && !use_pcss) {
         return;
     }
     pending = target;
@@ -170,10 +190,18 @@ void ContactShadow::Flush() {
         .strength = strength,
         .flip = flip,
         .debug = debug,
+        .contact_on = use_contact ? 1u : 0u,
+        .pcss_on = use_pcss ? 1u : 0u,
+        .light_tan = light_tan,
+        .max_penumbra_m = max_penumbra_m,
+        .min_penumbra_m = min_penumbra_m,
+        .bias_m = bias_m,
     };
+    const auto in = pending_inputs;
+    const bool pcss_on = use_pcss;
     scheduler.RecordCrumb(
         {.name = "Contact shadows"},
-        [push, width, height, target_view, depth_view, sampler = *sampler,
+        [push, width, height, target_view, depth_view, sampler = *sampler, in, pcss_on,
          constants = pending_inputs.constants, constants_offset = pending_inputs.constants_offset,
          constants_range = pending_inputs.constants_range, pipeline = *pipeline,
          layout = *layout](vk::CommandBuffer cmdbuf) {
@@ -189,7 +217,14 @@ void ContactShadow::Flush() {
             const vk::DescriptorImageInfo depth_info{sampler, depth_view,
                                                      vk::ImageLayout::eGeneral};
             const vk::DescriptorImageInfo target_info{{}, target_view, vk::ImageLayout::eGeneral};
-            const std::array<vk::WriteDescriptorSet, 3> writes{{
+            const vk::DescriptorBufferInfo ubo_info =
+                pcss_on ? vk::DescriptorBufferInfo{in.uniforms, in.uniforms_offset,
+                                                   in.uniforms_range}
+                        : buffer_info;
+            const vk::DescriptorImageInfo map_info =
+                pcss_on ? vk::DescriptorImageInfo{sampler, in.shadow_map, in.shadow_layout}
+                        : depth_info;
+            const std::array<vk::WriteDescriptorSet, 5> writes{{
                 {.dstBinding = 0, .descriptorCount = 1,
                  .descriptorType = vk::DescriptorType::eStorageBuffer,
                  .pBufferInfo = &buffer_info},
@@ -199,6 +234,12 @@ void ContactShadow::Flush() {
                 {.dstBinding = 2, .descriptorCount = 1,
                  .descriptorType = vk::DescriptorType::eStorageImage,
                  .pImageInfo = &target_info},
+                {.dstBinding = 3, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                 .pImageInfo = &map_info},
+                {.dstBinding = 4, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageBuffer,
+                 .pBufferInfo = &ubo_info},
             }};
             cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
             cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, layout, 0, writes);

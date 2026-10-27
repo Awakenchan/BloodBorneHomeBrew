@@ -2132,12 +2132,20 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             std::printf("Contact shadows: shadow resolve draw, buffer_infos %zu, images %zu\n",
                         buffer_infos.size(), image_infos.size());
         }
-        contact_shadow->OnShadowDraw(cb_descs[0].first,
-                                     {.constants = buffer_infos[0].buffer,
-                                      .constants_offset = buffer_infos[0].offset,
-                                      .constants_range = buffer_infos[0].range,
-                                      .constants_offset_word = push_data.buf_offsets[0],
-                                      .frame_index = shadow_frame++});
+        const bool has_ubo = buffer_infos.size() > 1 && buffer_infos[1].buffer;
+        const bool has_map = image_infos.size() > 1 && image_infos[1].imageView;
+        contact_shadow->OnShadowDraw(
+            cb_descs[0].first,
+            {.constants = buffer_infos[0].buffer,
+             .constants_offset = buffer_infos[0].offset,
+             .constants_range = buffer_infos[0].range,
+             .uniforms = has_ubo ? buffer_infos[1].buffer : vk::Buffer{},
+             .uniforms_offset = has_ubo ? buffer_infos[1].offset : 0,
+             .uniforms_range = has_ubo ? buffer_infos[1].range : 0,
+             .shadow_map = has_map ? image_infos[1].imageView : vk::ImageView{},
+             .shadow_layout = has_map ? image_infos[1].imageLayout : vk::ImageLayout::eUndefined,
+             .constants_offset_word = push_data.buf_offsets[0],
+             .frame_index = shadow_frame++});
     }
     if (pipeline->GetGraphicsKey().mrt_mask &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {

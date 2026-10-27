@@ -299,7 +299,7 @@ struct Section {
     bool defaults;
 };
 constexpr Section kSections[] = {
-    {"PCGraphics", 117020, 7, true}, {"PCControls", 118020, 8, false}, {"PCKeys", 119020, 8, false},
+    {"PCGraphics", 117020, 8, true}, {"PCControls", 118020, 8, false}, {"PCKeys", 119020, 8, false},
     {"PCEffects", 120020, 5, true},  {"PCCamera", 121020, 3, true},    {"PCEnhance", 124020, 3, true},
     {"PCColour", 125020, 5, true},
 };
