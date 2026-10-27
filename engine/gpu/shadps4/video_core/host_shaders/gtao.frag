@@ -31,6 +31,10 @@ layout(set = 0, binding = 8) uniform sampler samp2;
 
 layout(location = 0) out vec4 frag_color0;
 
+// The strength slider: the host stores a float in PushData::motion_param (offset 120), which
+// this pass never uses for object motion.
+layout(push_constant) uniform BbPush { layout(offset = 120) float ao_k; };
+
 const float PI = 3.14159265358979;
 const float HALF_PI = 1.57079632679490;
 const int SLICES = 1;
@@ -174,7 +178,7 @@ void main() {
         visibility = pow(clamp(visibility, 0.0, 1.0), 1.0 + DISTANCE_BOOST * sqrt(farFrac));
     }
 
-    float ao = cb0(36) * visibility + cb0(37);
+    float ao = cb0(36) * ao_k * visibility + (cb0(37) * ao_k + (1.0 - ao_k));
 
     // linear depth over far, in three 8-bit steps for the bilateral upscale
     float lin = pos.z / uintBitsToFloat(ubo_2.d[2]);
