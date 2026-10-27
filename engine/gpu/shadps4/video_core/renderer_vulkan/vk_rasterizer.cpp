@@ -650,6 +650,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         camera_motion->OnGBufferPass(db_desc.first, vp.xscale < 0.0f ? -1.0f : 1.0f,
                                      vp.yscale < 0.0f ? -1.0f : 1.0f);
         ssgi->OnGBufferDraw(db_desc.first, cb_descs[2].first, cb_descs[0].first);
+        ssr_normals = cb_descs[0].first;
     }
     if (key.mrt_mask && cb_descs[0].first &&
         IsGtaoReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
@@ -668,6 +669,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             color.info.size.width == depth.info.size.width &&
             color.info.size.height == depth.info.size.height) {
             upscaler->OnSceneColor(cb_descs[0].first);
+            ssr_scene_color = cb_descs[0].first;
             // Blended geometry without depth writes (not full-screen passes): transparents and
             // effects start. Blended layers writing depth (decals, wet/blood ground) are
             // surfaces and stay in the history.
@@ -2092,14 +2094,23 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         push_data.motion_param = ssr_frame;
         if (cb_descs[0].first) {
             SsrTemporal::TraceInputs inputs{.frame_index = ssr_frame};
-            if (!buffer_infos.empty() && buffer_infos[0].buffer &&
-                image_bindings.size() >= 3 && image_infos.size() >= image_bindings.size()) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                std::printf("SSR trace inputs: buffer_infos %zu (first %p), image_bindings %zu, "
+                            "image_infos %zu\n",
+                            buffer_infos.size(),
+                            buffer_infos.empty() ? nullptr : (void*)(VkBuffer)buffer_infos[0].buffer,
+                            image_bindings.size(), image_infos.size());
+            }
+            if (!buffer_infos.empty() && buffer_infos[0].buffer && ssr_normals &&
+                ssr_scene_color) {
                 inputs.constants = buffer_infos[0].buffer;
                 inputs.constants_offset = buffer_infos[0].offset;
                 inputs.constants_range = buffer_infos[0].range;
                 inputs.constants_dword_offset = push_data.buf_offsets[0];
-                inputs.normals = image_bindings[1].first;
-                inputs.color = image_bindings[2].first;
+                inputs.normals = ssr_normals;
+                inputs.color = ssr_scene_color;
             }
             ssr_temporal->OnSsrDraw(cb_descs[0].first, inputs);
         }
@@ -2108,9 +2119,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (pipeline->GetGraphicsKey().mrt_mask &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {
         // The composite reads the scene-size reflection when this frame's trace made one.
+        // image_infos holds the 8 images, then the 4 samplers.
         if (const auto full = ssr_temporal->FullResult();
-            full && image_bindings.size() == 8 && image_infos.size() >= 8) {
-            auto& info = image_infos[image_infos.size() - 8 + 6];
+            full && image_infos.size() == 12) {
+            auto& info = image_infos[6];
             info.imageView = full;
             info.imageLayout = vk::ImageLayout::eGeneral;
         }
