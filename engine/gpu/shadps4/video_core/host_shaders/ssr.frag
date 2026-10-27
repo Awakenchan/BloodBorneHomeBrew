@@ -35,7 +35,24 @@ layout(set = 0, binding = 6) uniform sampler samp2;
 layout(location = 1) in vec4 attr1;
 layout(location = 0) out vec4 frag_color0;
 
-layout(push_constant) uniform BbPush { layout(offset = 80) uint buf_off; };
+layout(push_constant) uniform BbPush {
+    layout(offset = 80) uint buf_off;
+    layout(offset = 120) uint frame_index;
+};
+
+float radical(uint i, uint b) {
+    float f = 1.0, r = 0.0;
+    for (i += 1u; i > 0u; i /= b) {
+        f /= float(b);
+        r += f * float(i % b);
+    }
+    return r;
+}
+
+vec2 halton(uint i) {
+    i &= 15u;
+    return vec2(radical(i, 2u), radical(i, 3u));
+}
 
 const int MAX_STEPS = 256;
 const float MIN_STEP_PX = 1.0;
@@ -204,11 +221,14 @@ vec4 trace(vec2 uv0, vec3 N) {
 
 void main() {
     base = (buf_off & 0xffu) >> 2;
-    // Four rays per output pixel, one per full-resolution depth/normal texel it covers.
-    vec2 o = 0.5 / vec2(textureSize(sampler2D(img0, samp0), 0));
+    // Two rays per pixel at Halton positions that change every frame: the temporal accumulation
+    // (vk_ssr_temporal) integrates them into a sharper, supersampled reflection.
+    vec2 texel = 1.0 / vec2(textureSize(sampler2D(img0, samp0), 0));
     vec2 c = attr1.xy;
     vec3 N = stableNormal(c);
-    vec4 sum = trace(c + vec2(-o.x, -o.y), N) + trace(c + vec2(o.x, -o.y), N) +
-               trace(c + vec2(-o.x, o.y), N) + trace(c + vec2(o.x, o.y), N);
-    frag_color0 = sum * 0.25;
+    vec4 sum = vec4(0.0);
+    for (uint i = 0u; i < 2u; ++i) {
+        sum += trace(c + (halton(frame_index * 2u + i) - 0.5) * texel, N);
+    }
+    frag_color0 = sum * 0.5;
 }

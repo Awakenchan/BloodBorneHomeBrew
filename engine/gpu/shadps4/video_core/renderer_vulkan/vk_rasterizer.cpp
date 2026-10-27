@@ -2087,6 +2087,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             BbSettings::Get().graphics_ao_strength.load(std::memory_order_relaxed), 0.0f, 1.0f);
         push_data.motion_param = std::bit_cast<u32>(k);
     }
+    if (const auto& key = pipeline->GetGraphicsKey();
+        key.mrt_mask &&
+        IsSsrReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
+                         Shader::HwStage::Fragment)) {
+        static u32 ssr_frame = 0;
+        push_data.motion_param = ssr_frame++;
+    }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
     if (pipeline->GetGraphicsKey().motion_vectors) {
