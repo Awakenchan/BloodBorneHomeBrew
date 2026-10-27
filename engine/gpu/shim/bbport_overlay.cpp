@@ -584,7 +584,7 @@ void PictureSection() {
             Store(s.graphics_bloom, 1.0f, true);
             Store(s.graphics_vignette, true, true);
             Store(s.graphics_ao_strength, 1.0f, true);
-            Store(s.graphics_gi_strength, 1.0f, true);
+            Store(s.graphics_gi_strength, 6.0f, true);
             Store(s.graphics_shadow_scale, 1.0f, true);
         }
     }

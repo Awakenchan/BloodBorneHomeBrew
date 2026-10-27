@@ -271,7 +271,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "graphics_ao_strength") {
         v.graphics_ao_strength=Clamp(std::isfinite(f)?f:1.0f,0.0f,5.0f);
     } else if (key == "graphics_gi_strength") {
-        v.graphics_gi_strength=Clamp(std::isfinite(f)?f:1.0f,0.0f,12.0f);
+        v.graphics_gi_strength=Clamp(std::isfinite(f)?f:6.0f,0.0f,12.0f);
     } else if (key == "graphics_shadow_scale") {
         v.graphics_shadow_scale=Clamp(std::isfinite(f)?f:1.0f,0.25f,8.0f);
     } else if (key == "graphics_bloom") {
