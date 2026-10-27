@@ -2115,12 +2115,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0xf55643de &&
         cb_descs[0].first && !buffer_infos.empty() && buffer_infos[0].buffer) {
         static u32 shadow_frame = 0;
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            std::printf("Contact shadows: shadow resolve draw, buffer_infos %zu, images %zu\n",
-                        buffer_infos.size(), image_infos.size());
-        }
         const bool has_ubo = buffer_infos.size() > 1 && buffer_infos[1].buffer;
         const bool has_map = image_infos.size() > 1 && image_infos[1].imageView;
         contact_shadow->OnShadowDraw(

@@ -275,11 +275,6 @@ void ScreenSpaceGI::OnGBufferDraw(VideoCore::ImageId depth, VideoCore::ImageId a
 }
 
 void ScreenSpaceGI::OnAoDraw(VideoCore::ImageId ao) {
-    static bool seen = false;
-    if (!seen) {
-        seen = true;
-        std::printf("SSGI: AO pass seen\n");
-    }
     ao_image = ao;
 }
 
@@ -395,13 +390,6 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
         }
     }
     const bool has_ao = ao_view != vk::ImageView{};
-    static bool ao_printed = false;
-    if (has_ao && !ao_printed) {
-        ao_printed = true;
-        std::printf("SSGI: AO texture bound (%ux%u)\n",
-                    texture_cache.GetImage(ao_image).info.size.width,
-                    texture_cache.GetImage(ao_image).info.size.height);
-    }
     const bool has_albedo = albedo_view != vk::ImageView{};
 
     // The G-buffer's world normals (with normal-map detail) refine the depth-derived ones.
