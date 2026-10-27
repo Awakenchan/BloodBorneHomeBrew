@@ -49,14 +49,17 @@ struct Cavity {
     uint32_t depth;          // refined hit depth
     uint32_t pred_hit;       // block that carries the depth into the merge block
     uint32_t pred_skip;      // block that bypasses the POM
-    uint32_t merge_a;        // block with the phis fed by pred_hit/pred_skip
-    uint32_t merge_b;        // block after merge_a, with a second pair of phis
-    uint32_t skip_b;         // predecessor of merge_b other than merge_a
+    uint32_t merge_a;        // block with the phis fed by pred_hit/pred_skip, or 0 if none
+    uint32_t merge_b;        // block whose phis join the POM result with the bypass
+    uint32_t hit_b;          // predecessor of merge_b that carries the POM result (no merge_a)
+    uint32_t skip_b;         // predecessor of merge_b that bypasses the POM
     std::array<uint32_t, 6> values; // stored colour channels to scale
 };
 
-inline constexpr std::array<Cavity, 1> kCavities{{
-    {0x053bbf3b, 800, 131, 117, 132, 134, 133, {1348, 1350, 1352, 1359, 1360, 1361}},
+inline constexpr std::array<Cavity, 3> kCavities{{
+    {0x053bbf3b, 800, 131, 117, 132, 134, 0, 133, {1348, 1350, 1352, 1359, 1360, 1361}},
+    {0x505acc58, 775, 0, 0, 0, 134, 133, 119, {1389, 1391, 1393, 1400, 1403, 1406}},
+    {0x08ccd4c7, 1067, 0, 0, 0, 140, 139, 125, {1795, 1797, 1799, 1806, 1807, 1808}},
 }};
 
 inline void PatchCavity(const PomShader& shader, std::vector<uint32_t>& spv) {
@@ -72,7 +75,7 @@ inline void PatchCavity(const PomShader& shader, std::vector<uint32_t>& spv) {
         return;
     }
     uint32_t f32 = 0, glsl = 0, zero = 0;
-    size_t first_function = 0, first_store = 0, phi_a_end = 0, phi_b_end = 0;
+    size_t first_function = 0, first_store = SIZE_MAX, phi_a_end = 0, phi_b_end = 0;
     bool in_a = false, in_b = false;
     for (size_t i = 5; i < spv.size(); i += spv[i] >> 16) {
         const uint32_t op = spv[i] & 0xffff;
@@ -93,12 +96,16 @@ inline void PatchCavity(const PomShader& shader, std::vector<uint32_t>& spv) {
             } else if (in_b) {
                 phi_b_end = i + (spv[i] >> 16);
             }
-        } else if (op == 62 && !first_store && first_function) { // OpStore
-            first_store = i;
+        } else if (op == 62) { // OpStore
+            for (const uint32_t value : cavity->values) {
+                if (spv[i + 2] == value && i < first_store) {
+                    first_store = i;
+                }
+            }
         }
     }
-    if (!f32 || !glsl || !zero || !first_function || !first_store || !phi_a_end || !phi_b_end ||
-        !(phi_a_end < phi_b_end && phi_b_end < first_store)) {
+    if (!f32 || !glsl || !zero || !first_function || first_store == SIZE_MAX || !phi_b_end ||
+        (cavity->merge_a && !(phi_a_end && phi_a_end < phi_b_end)) || phi_b_end > first_store) {
         return;
     }
     // Rewrite the colour stores first; they sit after every insertion point.
@@ -128,13 +135,16 @@ inline void PatchCavity(const PomShader& shader, std::vector<uint32_t>& spv) {
         ins.insert(ins.end(), {Word(kOpFMul, 5), f32, id, spv[stores[k] + 2], factor});
         spv[stores[k] + 2] = id;
     }
-    const std::array<uint32_t, 7> phi_b_ins{Word(kOpPhi, 7), f32, phi_b, zero, cavity->skip_b,
-                                            phi_a, cavity->merge_a};
+    const std::array<uint32_t, 7> phi_b_ins{Word(kOpPhi, 7), f32, phi_b, cavity->merge_a ? phi_a : cavity->depth,
+                                            cavity->merge_a ? cavity->merge_a : cavity->hit_b,
+                                            zero, cavity->skip_b};
     const std::array<uint32_t, 7> phi_a_ins{Word(kOpPhi, 7), f32, phi_a, cavity->depth,
                                             cavity->pred_hit, zero, cavity->pred_skip};
     spv.insert(spv.begin() + first_store, ins.begin(), ins.end());
     spv.insert(spv.begin() + phi_b_end, phi_b_ins.begin(), phi_b_ins.end());
-    spv.insert(spv.begin() + phi_a_end, phi_a_ins.begin(), phi_a_ins.end());
+    if (cavity->merge_a) {
+        spv.insert(spv.begin() + phi_a_end, phi_a_ins.begin(), phi_a_ins.end());
+    }
     std::vector<uint32_t> globals{Word(kOpConstant, 4), f32, c_k, std::bit_cast<uint32_t>(strength),
                                   Word(kOpConstant, 4), f32, c_one, std::bit_cast<uint32_t>(1.0f)};
     spv.insert(spv.begin() + first_function, globals.begin(), globals.end());
