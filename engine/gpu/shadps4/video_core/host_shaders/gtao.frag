@@ -51,6 +51,8 @@ const float THICKNESS_FAR = 2.0;
 const float MAX_WORLD_RADIUS = 0.3;
 // Extra visibility exponent at the far plane; 0 = no distance boost.
 const float DISTANCE_BOOST = 2.0;
+// Strength of the visibility S-curve; 0 = off, 1 = full smoothstep.
+const float CONTRAST = 0.5;
 const float THICKNESS_BIAS = 0.02; // fraction of the reach, keeps flat surfaces from self-occluding
 
 float cb0(int i) { return uintBitsToFloat(ubo_0.d[i]); }
@@ -176,6 +178,8 @@ void main() {
         // darken more with distance, where the pixel footprint hides detail
         float farFrac = clamp(pos.z / uintBitsToFloat(ubo_2.d[2]), 0.0, 1.0);
         visibility = pow(clamp(visibility, 0.0, 1.0), 1.0 + DISTANCE_BOOST * sqrt(farFrac));
+        // S-curve: deepens partial occlusion, leaves fully open and fully closed unchanged
+        visibility = mix(visibility, visibility * visibility * (3.0 - 2.0 * visibility), CONTRAST);
     }
 
     float ao = cb0(36) * ao_k * visibility + (cb0(37) * ao_k + (1.0 - ao_k));
