@@ -417,19 +417,12 @@ void SsrTemporal::Flush(std::array<float, 2> jitter) {
             MemoryBarrier(cmdbuf, Compute, vk::AccessFlagBits2::eShaderWrite, AllCommands,
                           vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite);
         });
-    if (full_enabled && trace_inputs.constants && trace_inputs.normals &&
-        trace_inputs.color) {
-        auto& normals = texture_cache.GetImage(trace_inputs.normals);
-        auto& color = texture_cache.GetImage(trace_inputs.color);
-        const auto normals_view =
-            CachedView(normals, normals.info.pixel_format, vk::ImageAspectFlagBits::eColor);
-        const auto color_view =
-            CachedView(color, color.info.pixel_format, vk::ImageAspectFlagBits::eColor);
-        runtime.Transit(&normals, vk::ImageLayout::eGeneral, Compute,
-                        vk::AccessFlagBits2::eShaderRead);
-        runtime.Transit(&color, vk::ImageLayout::eGeneral, Compute,
-                        vk::AccessFlagBits2::eShaderRead);
-        runtime.FlushBarriers();
+    if (full_enabled && trace_inputs.constants && trace_inputs.normals_view &&
+        trace_inputs.color_view) {
+        const auto normals_view = trace_inputs.normals_view;
+        const auto color_view = trace_inputs.color_view;
+        const auto normals_layout = trace_inputs.normals_layout;
+        const auto color_layout = trace_inputs.color_layout;
         bool full_created = EnsureImage(trace_image, width, height, "trace");
         for (auto& image : accum_full) {
             full_created |= EnsureImage(image, width, height, "full accum");
@@ -456,6 +449,7 @@ void SsrTemporal::Flush(std::array<float, 2> jitter) {
             [full_params, trace_push, width, height, constants = trace_inputs.constants,
              constants_offset = trace_inputs.constants_offset,
              constants_range = trace_inputs.constants_range, depth_view, normals_view, color_view,
+             normals_layout, color_layout,
              nearest = *nearest_sampler, linear = *linear_sampler,
              trace_image_handle = vk::Image(trace_image.image), trace_view = *trace_image.view,
              cur_image = vk::Image(accum_full[current].image), cur_view = *accum_full[current].view,
@@ -480,8 +474,8 @@ void SsrTemporal::Flush(std::array<float, 2> jitter) {
                                                                   constants_range};
                     const std::array infos{
                         vk::DescriptorImageInfo{nearest, depth_view, vk::ImageLayout::eGeneral},
-                        vk::DescriptorImageInfo{nearest, normals_view, vk::ImageLayout::eGeneral},
-                        vk::DescriptorImageInfo{linear, color_view, vk::ImageLayout::eGeneral},
+                        vk::DescriptorImageInfo{nearest, normals_view, normals_layout},
+                        vk::DescriptorImageInfo{linear, color_view, color_layout},
                         Info(trace_view)};
                     const std::array<vk::WriteDescriptorSet, 5> writes{{
                         {.dstBinding = 0, .descriptorCount = 1,

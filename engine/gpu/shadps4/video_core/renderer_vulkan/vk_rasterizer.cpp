@@ -2103,14 +2103,17 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                             buffer_infos.empty() ? nullptr : (void*)(VkBuffer)buffer_infos[0].buffer,
                             image_bindings.size(), image_infos.size());
             }
-            if (!buffer_infos.empty() && buffer_infos[0].buffer && ssr_normals &&
-                ssr_scene_color) {
+            if (!buffer_infos.empty() && buffer_infos[0].buffer && image_infos.size() == 6) {
                 inputs.constants = buffer_infos[0].buffer;
                 inputs.constants_offset = buffer_infos[0].offset;
                 inputs.constants_range = buffer_infos[0].range;
                 inputs.constants_dword_offset = push_data.buf_offsets[0];
-                inputs.normals = ssr_normals;
-                inputs.color = ssr_scene_color;
+                // image_infos holds the draw's images (depth, normals, scene color), then its
+                // samplers.
+                inputs.normals_view = image_infos[1].imageView;
+                inputs.normals_layout = image_infos[1].imageLayout;
+                inputs.color_view = image_infos[2].imageView;
+                inputs.color_layout = image_infos[2].imageLayout;
             }
             ssr_temporal->OnSsrDraw(cb_descs[0].first, inputs);
         }

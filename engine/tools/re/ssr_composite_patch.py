@@ -44,6 +44,7 @@ consts = """
 %f32_0_0001 = OpConstant %f32_id 0.0001
 %f32_0_05 = OpConstant %f32_id 0.05
 %f32_lodk = OpConstant %f32_id 0.0
+%f32_fade_k = OpConstant %f32_id 0.1666667
 %f32_1e5 = OpConstant %f32_id 100000
 %c_iv00 = OpConstantComposite %i32vec2_id %i32_0 %i32_0
 %c_iv10 = OpConstantComposite %i32vec2_id %i32_1 %i32_0
@@ -119,7 +120,14 @@ for i, (off, wx, wy) in enumerate(taps):
         a("%s = OpFAdd %%f32_id %s %s" % (n("ws"), wsum, n("w")))
         acc, wsum = n("acc"), n("ws")
 a("%%inv = OpFDiv %%f32_id %%f32_id_1 %s" % wsum)
-a("%%154 = OpVectorTimesScalar %%f32vec4_id %s %%inv" % acc)
+a("%%pre = OpVectorTimesScalar %%f32vec4_id %s %%inv" % acc)
+# Rough surfaces (a high lod, from the smoothness) reflect less: the blur that used to soften
+# them is gone, so their strength falls off instead.
+a("%lod_n = OpFMul %f32_id %140 %f32_fade_k")
+a("%lod_c = OpExtInst %f32_id %139 FClamp %lod_n %f32_id_0 %f32_id_1")
+a("%fade0 = OpFSub %f32_id %f32_id_1 %lod_c")
+a("%fade = OpFMul %f32_id %fade0 %fade0")
+a("%154 = OpVectorTimesScalar %f32vec4_id %pre %fade")
 
 # Replace the original lines for %150..%154.
 start = next(i for i, l in enumerate(asm) if l.strip().startswith("%150 = OpCompositeConstruct"))

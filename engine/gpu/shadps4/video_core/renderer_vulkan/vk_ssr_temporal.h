@@ -37,8 +37,10 @@ public:
         vk::DeviceSize constants_offset = 0;
         vk::DeviceSize constants_range = 0;
         u32 constants_dword_offset = 0;
-        VideoCore::ImageId normals;
-        VideoCore::ImageId color;
+        vk::ImageView normals_view;
+        vk::ImageView color_view;
+        vk::ImageLayout normals_layout = vk::ImageLayout::eGeneral;
+        vk::ImageLayout color_layout = vk::ImageLayout::eGeneral;
         u32 frame_index = 0;
     };
 
