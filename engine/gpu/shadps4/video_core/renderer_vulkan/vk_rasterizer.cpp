@@ -5686,9 +5686,18 @@ void Rasterizer::UpdatePrimitiveState(const bool is_indexed) const {
                    regs.primitive_restart_index == 0xFFFFFFFF,
                "Primitive restart index other than -1 is not supported yet");
 
-    const auto cull_mode = LiverpoolToVK::IsPrimitiveCulled(regs.primitive_type)
-                               ? LiverpoolToVK::CullMode(regs.polygon_control.CullingMode())
-                               : vk::CullModeFlagBits::eNone;
+    auto cull_mode = LiverpoolToVK::IsPrimitiveCulled(regs.primitive_type)
+                         ? LiverpoolToVK::CullMode(regs.polygon_control.CullingMode())
+                         : vk::CullModeFlagBits::eNone;
+    // bbport: BB_SHADOW_NOCULL=1 draws both faces into the shadow map (the 4096x4096 depth pass).
+    static const bool shadow_no_cull = [] {
+        const char* env = std::getenv("BB_SHADOW_NOCULL");
+        return env && env[0] == '1';
+    }();
+    if (shadow_no_cull && regs.depth_buffer.DepthValid() && regs.depth_buffer.Pitch() == 4096 &&
+        regs.depth_buffer.Height() == 4096) {
+        cull_mode = vk::CullModeFlagBits::eNone;
+    }
     const auto front_face = LiverpoolToVK::FrontFace(regs.polygon_control.front_face);
 
     dynamic_state.SetPrimitiveRestartEnabled(prim_restart);
