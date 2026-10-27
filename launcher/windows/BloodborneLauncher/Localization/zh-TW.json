@@ -104,7 +104,7 @@
   "Chromatic aberration": "色差",
   "Depth of field": "景深",
   "Motion blur": "動態模糊",
-  "Ambient occlusion (SSAO)": "環境光遮蔽（SSAO）",
+  "Ambient occlusion (GTAO)": "環境光遮蔽（GTAO）",
   "Game's own anti-aliasing": "遊戲內建的反鋸齒",
   "Shadows from dynamic lights": "動態光源陰影",
   "Screen-space reflections": "螢幕空間反射",

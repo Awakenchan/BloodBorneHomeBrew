@@ -104,7 +104,7 @@
   "Chromatic aberration": "Хроматическая аберрация",
   "Depth of field": "Глубина резкости",
   "Motion blur": "Размытие в движении",
-  "Ambient occlusion (SSAO)": "Фоновое затенение (SSAO)",
+  "Ambient occlusion (GTAO)": "Фоновое затенение (GTAO)",
   "Game's own anti-aliasing": "Собственное сглаживание игры",
   "Shadows from dynamic lights": "Тени от динамических источников света",
   "Screen-space reflections": "Отражения в экранном пространстве",

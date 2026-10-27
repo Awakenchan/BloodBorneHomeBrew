@@ -104,7 +104,7 @@
   "Chromatic aberration": "Renk sapması",
   "Depth of field": "Alan derinliği",
   "Motion blur": "Hareket bulanıklığı",
-  "Ambient occlusion (SSAO)": "Ortam perdelemesi (SSAO)",
+  "Ambient occlusion (GTAO)": "Ortam perdelemesi (GTAO)",
   "Game's own anti-aliasing": "Oyunun kendi kenar yumuşatması",
   "Shadows from dynamic lights": "Dinamik ışıklardan gölgeler",
   "Screen-space reflections": "Ekran alanı yansımaları",

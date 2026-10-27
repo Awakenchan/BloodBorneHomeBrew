@@ -9,6 +9,7 @@
 
 #include "common/assert.h"
 #include "core/emulator_settings.h"
+#include "bbport_settings.h"
 #include "video_core/host_shaders/ssgi_composite_comp.h"
 #include "video_core/host_shaders/ssgi_denoise_comp.h"
 #include "video_core/host_shaders/ssgi_gather_comp.h"
@@ -292,7 +293,8 @@ void ScreenSpaceGI::OnFrameEnd() {
 
 void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
                                   std::array<float, 2> jitter) {
-    if (done_this_frame || failed || !prep.pipeline || !color_id || !depth_id) {
+    if (done_this_frame || failed || !prep.pipeline || !color_id || !depth_id ||
+        !BbSettings::Get().effects[BbSettings::EffectGi].load(std::memory_order_relaxed)) {
         return;
     }
     const auto proj = camera_motion.PassProjection();

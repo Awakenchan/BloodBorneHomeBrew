@@ -94,8 +94,9 @@ class SetupForm : Form {
         new[] { "effect_chromatic_aberration", "Chromatic aberration", "1" },
         new[] { "effect_dof", "Depth of field (DoF)", "1" },
         new[] { "effect_motion_blur", "Motion blur", "1" },
-        new[] { "effect_ssao", "SSAO ambient occlusion", "1" },
+        new[] { "effect_ssao", "GTAO ambient occlusion", "1" },
         new[] { "effect_game_aa", "The game's own anti-aliasing", "1" },
+        new[] { "effect_gi", "Indirect lighting (GI)", "1" },
         new[] { "effect_dynamic_shadows", "Shadows from dynamic lights", "1" },
         new[] { "effect_ssr", "SSR reflections (not in the original game)", "0" },
         new[] { "skip_intro", "Skip intro videos at startup", "0" } };

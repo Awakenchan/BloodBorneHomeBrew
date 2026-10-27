@@ -104,7 +104,7 @@
   "Chromatic aberration": "Aberrazione cromatica",
   "Depth of field": "Profondità di campo",
   "Motion blur": "Sfocatura di movimento",
-  "Ambient occlusion (SSAO)": "Occlusione ambientale (SSAO)",
+  "Ambient occlusion (GTAO)": "Occlusione ambientale (GTAO)",
   "Game's own anti-aliasing": "Anti-aliasing del gioco",
   "Shadows from dynamic lights": "Ombre delle luci dinamiche",
   "Screen-space reflections": "Riflessi screen-space",

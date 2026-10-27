@@ -43,8 +43,9 @@ inline constexpr Effect Effects[] = {
     {"effect_chromatic_aberration", "Chromatic aberration", "Хроматическая аберрация", false},
     {"effect_dof", "Depth of field (DoF)", "Глубина резкости (DoF)", false},
     {"effect_motion_blur", "Motion blur", "Размытие в движении", false},
-    {"effect_ssao", "Ambient occlusion (SSAO)", "Затенение SSAO", true},
+    {"effect_ssao", "Ambient occlusion (GTAO)", "Затенение GTAO", true},
     {"effect_game_aa", "Game's own anti-aliasing", "Собственное сглаживание игры", false},
+    {"effect_gi", "Indirect lighting (GI)", "Непрямое освещение (GI)", true},
     {"effect_dynamic_shadows", "Shadows from dynamic lights", "Тени от динамических источников", true},
     {"effect_ssr", "Screen-space reflections (not in original game)", "Отражения SSR (не было в игре)", false},
     {"skip_intro", "Skip startup intros", "Пропуск заставок при запуске", false},
@@ -52,6 +53,8 @@ inline constexpr Effect Effects[] = {
     {"debug_menu", "Debug menu (requires font files)", "Debug menu (нужны файлы шрифтов)", false},
 };
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
+/// Indirect lighting: applied live by the renderer, no restart.
+inline constexpr int EffectGi = 5;
 inline constexpr int OutputWidths[] = {1280,1600,1920,2560,3840,2560,3440,3840,3840,5120,5120,7680,0,0};
 inline constexpr int OutputHeights[] = {720,900,1080,1440,2160,1080,1440,1600,1080,1440,2160,2160,0,0};
 inline constexpr int OutputCount = 14;

@@ -1689,7 +1689,7 @@ void Menu() {
         s.live_resolution != s.startup_live_resolution || s.hdr != s.startup_hdr ||
         BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        restart |= s.effects[e] != s.startup_effects[e];
+        restart |= e != BbSettings::EffectGi && s.effects[e] != s.startup_effects[e];
     }
     restart |= Vulkan::OptiScaler::Detect().loaded &&
                (s.optiscaler_compat != s.startup_optiscaler.compat ||

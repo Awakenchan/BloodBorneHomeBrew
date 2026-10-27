@@ -104,7 +104,7 @@
   "Chromatic aberration": "색수차",
   "Depth of field": "피사계 심도",
   "Motion blur": "모션 블러",
-  "Ambient occlusion (SSAO)": "앰비언트 오클루전(SSAO)",
+  "Ambient occlusion (GTAO)": "앰비언트 오클루전(GTAO)",
   "Game's own anti-aliasing": "게임 자체 안티에일리어싱",
   "Shadows from dynamic lights": "동적 광원 그림자",
   "Screen-space reflections": "스크린 스페이스 반사",
