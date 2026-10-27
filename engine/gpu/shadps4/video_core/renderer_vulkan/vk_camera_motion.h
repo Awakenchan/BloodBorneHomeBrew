@@ -88,6 +88,12 @@ public:
         return {current.view, current.inv_view, previous.view, current.proj, previous.proj,
                 current.valid && previous.valid};
     }
+    /// bbport: the camera of the G-buffer pass in progress (SSGI runs before the frame's camera is
+    /// committed): view, inverse view and projection; `valid` once its constants were seen.
+    [[nodiscard]] Matrices PassMatrices() const noexcept {
+        return {pass_camera.view, pass_camera.inv_view, {}, pass_camera.proj, {},
+                pass_has_camera && pass_camera.valid};
+    }
     /// bbport: the matrices and jitter of the motion of this frame, printed with an upscaler dump
     /// (BB_DUMP_TRIGGER) for offline checks of the vectors.
     void PrintState(int frame) const;

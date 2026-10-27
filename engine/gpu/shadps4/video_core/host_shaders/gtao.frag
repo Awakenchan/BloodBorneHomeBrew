@@ -44,7 +44,7 @@ const float THICKNESS_NEAR = 0.10;
 const float THICKNESS_FAR = 2.0;
 // World-space reach of the occlusion (view units, about metres). Occluders farther than this
 // from the surface are ignored, which keeps thin objects from darkening things well behind them.
-const float MAX_WORLD_RADIUS = 0.5;
+const float MAX_WORLD_RADIUS = 0.3;
 // Extra visibility exponent at the far plane; 0 = no distance boost.
 const float DISTANCE_BOOST = 2.0;
 const float THICKNESS_BIAS = 0.02; // fraction of the reach, keeps flat surfaces from self-occluding
@@ -74,6 +74,9 @@ uint sectorMask(vec2 uvS, vec3 pos, vec3 v, float side, float lo, float thick, f
     vec3 d = viewPos(uvS, readDepth(uvS)) - pos;
     float l = length(d);
     if (l > reach || l < bias) return 0u;
+    // occluders near the edge of the reach cover less, so contact shadows taper off instead of
+    // ending in a halo
+    thick *= 1.0 - smoothstep(0.3, 1.0, l / reach);
     vec3 db = d - v * thick;
     float af = side * fastAcos(clamp(dot(d, v) / l, -1.0, 1.0));
     float ab = side * fastAcos(clamp(dot(db, v) / max(length(db), 1e-4), -1.0, 1.0));

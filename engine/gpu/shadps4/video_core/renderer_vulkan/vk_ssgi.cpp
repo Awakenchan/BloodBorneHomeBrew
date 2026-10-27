@@ -10,6 +10,7 @@
 #include "common/assert.h"
 #include "core/emulator_settings.h"
 #include "video_core/host_shaders/ssgi_composite_comp.h"
+#include "video_core/host_shaders/ssgi_denoise_comp.h"
 #include "video_core/host_shaders/ssgi_gather_comp.h"
 #include "video_core/host_shaders/ssgi_prep_comp.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
@@ -28,18 +29,33 @@ namespace {
 /// Push constants of ssgi.comp.
 struct Params {
     std::array<float, 4> proj;
+    std::array<float, 12> reproject;
     std::array<float, 2> size;
     std::array<float, 2> jitter;
-    std::array<float, 2> gi_size;
+    std::array<float, 2> prev_jitter;
+    std::array<float, 2> prev_proj;
     u32 frame;
     u32 history;
     float strength;
     float radius;
     float feedback;
-    float debug;
+    float ao_amount;
     float albedo_on;
+    float step_size;
 };
-static_assert(sizeof(Params) == 68);
+static_assert(sizeof(Params) == 128);
+
+/// a * b for 3x4 affine matrices (rows).
+std::array<float, 12> Multiply(const std::array<float, 12>& a, const std::array<float, 12>& b) {
+    std::array<float, 12> r{};
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            r[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j];
+        }
+        r[i * 4 + 3] = a[i * 4] * b[3] + a[i * 4 + 1] * b[7] + a[i * 4 + 2] * b[11] + a[i * 4 + 3];
+    }
+    return r;
+}
 
 constexpr vk::ImageSubresourceRange ColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 constexpr auto AllCommands = vk::PipelineStageFlagBits2::eAllCommands;
@@ -123,7 +139,9 @@ ScreenSpaceGI::ScreenSpaceGI(const Instance& instance_, Scheduler& scheduler_,
     CreatePass(prep, {SampledImage, StorageImage}, SSGI_PREP_COMP, "ssgi.comp (prep)");
     CreatePass(gather, {SampledImage, SampledImage, SampledImage, StorageImage, SampledImage},
                SSGI_GATHER_COMP, "ssgi.comp (gather)");
-    CreatePass(composite, {SampledImage, SampledImage, StorageImage, SampledImage},
+    CreatePass(denoise, {SampledImage, SampledImage, StorageImage}, SSGI_DENOISE_COMP,
+               "ssgi.comp (denoise)");
+    CreatePass(composite, {SampledImage, SampledImage, StorageImage, SampledImage, SampledImage},
                SSGI_COMPOSITE_COMP, "ssgi.comp (composite)");
 }
 
@@ -252,8 +270,18 @@ void ScreenSpaceGI::OnGBufferDraw(VideoCore::ImageId depth, VideoCore::ImageId a
     gbuffer_albedo = albedo;
 }
 
+void ScreenSpaceGI::OnAoDraw(VideoCore::ImageId ao) {
+    static bool seen = false;
+    if (!seen) {
+        seen = true;
+        std::printf("SSGI: AO pass seen\n");
+    }
+    ao_image = ao;
+}
+
 void ScreenSpaceGI::OnFrameEnd() {
     done_this_frame = false;
+    ao_image = {};
     gbuffer_depth = {};
     gbuffer_albedo = {};
 }
@@ -336,6 +364,29 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
         runtime.FlushBarriers();
     }
     scheduler.EndRendering();
+    vk::ImageView ao_view{};
+    static const float ao_amount = EnvFloat("BB_SSGI_AO", 1.0f);
+    if (ao_amount > 0.0f && ao_image) {
+        auto& ao = texture_cache.GetImage(ao_image);
+        if (reduced && scene_targets.EligibleScene(ao)) {
+            VideoCore::ImageViewInfo ao_info;
+            ao_info.format = ao.info.pixel_format;
+            ao_view = scene_targets.Read(ao_image, ao_info).view;
+        } else {
+            ao_view = CachedView(ao, ao.info.pixel_format, vk::ImageAspectFlagBits::eColor);
+            runtime.Transit(&ao, vk::ImageLayout::eGeneral, Compute,
+                            vk::AccessFlagBits2::eShaderRead);
+            runtime.FlushBarriers();
+        }
+    }
+    const bool has_ao = ao_view != vk::ImageView{};
+    static bool ao_printed = false;
+    if (has_ao && !ao_printed) {
+        ao_printed = true;
+        std::printf("SSGI: AO texture bound (%ux%u)\n",
+                    texture_cache.GetImage(ao_image).info.size.width,
+                    texture_cache.GetImage(ao_image).info.size.height);
+    }
     const bool has_albedo = albedo_view != vk::ImageView{};
 
     const u32 half_width = (width + 1) / 2, half_height = (height + 1) / 2;
@@ -344,6 +395,9 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
         created |= EnsureImage(image, half_width, half_height, vk::Format::eR16G16B16A16Sfloat,
                                "light");
     }
+    for (auto& image : filtered) {
+        EnsureImage(image, half_width, half_height, vk::Format::eR16G16B16A16Sfloat, "filtered");
+    }
     if (created) {
         history_valid = false;
     }
@@ -351,46 +405,64 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
     static const float strength = EnvFloat("BB_SSGI_STRENGTH", want_albedo ? 8.0f : 4.0f);
     static const float radius = EnvFloat("BB_SSGI_RADIUS", 3.0f);
     static const float feedback = EnvFloat("BB_SSGI_BOUNCE", 0.8f);
+    static const bool reproject_on = EnvFloat("BB_SSGI_REPROJECT", 1.0f) > 0.5f;
+    static const bool denoise_on = EnvFloat("BB_SSGI_DENOISE", 1.0f) > 0.5f;
     const bool debug = EmulatorSettings.IsSsgiDebug();
     static bool printed = false;
     if (!printed) {
         printed = true;
-        std::printf("SSGI: %ux%u (%s), strength %.2f, radius %.1f, bounce %.2f, albedo %s\n", width,
-                    height, reduced ? "reduced scene" : "native scene", strength, radius, feedback,
-                    has_albedo ? "G-buffer" : "approximated");
+        std::printf("SSGI: %ux%u (%s), strength %.2f, radius %.1f, bounce %.2f, albedo %s, "
+                    "reprojection %s, denoise %s, AO %s (%.2f)\n",
+                    width, height, reduced ? "reduced scene" : "native scene", strength, radius,
+                    feedback, has_albedo ? "G-buffer" : "approximated",
+                    reproject_on ? "on" : "off", denoise_on ? "on" : "off",
+                    has_ao ? "bound" : "not found", ao_amount);
     }
 
-    const Params params{
+    // Last frame's light is read where this frame's surfaces were: previous view * inverse view.
+    const auto camera = camera_motion.PassMatrices();
+    const bool use_previous = reproject_on && prev_camera_valid && camera.valid;
+    constexpr std::array<float, 12> Identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    Params params{
         .proj = proj,
+        .reproject = use_previous ? Multiply(prev_view, camera.inv_view) : Identity,
         .size = {float(width), float(height)},
         .jitter = jitter,
-        .gi_size = {float(half_width), float(half_height)},
+        .prev_jitter = use_previous ? prev_jitter : jitter,
+        .prev_proj = use_previous ? prev_proj : std::array<float, 2>{proj[0], proj[1]},
         .frame = frame,
-        .history = history_valid ? 1u : 0u,
+        .history = (history_valid && (use_previous || !reproject_on) ? 1u : 0u) |
+                   (debug ? 2u : 0u),
         .strength = strength,
         .radius = radius,
         .feedback = feedback,
-        .debug = debug ? 1.0f : 0.0f,
+        .ao_amount = has_ao ? ao_amount : 0.0f,
         .albedo_on = has_albedo ? 1.0f : 0.0f,
+        .step_size = 1.0f,
     };
     const u32 current = frame & 1;
     scheduler.RecordCrumb(
         {.name = "SSGI"},
-        [params, init_previous = !history_valid, width, height, half_width, half_height,
-         color_view, depth_view, albedo_view = has_albedo ? albedo_view : *geo.view,
+        [params, init_previous = !history_valid, width, height, half_width,
+         half_height, color_view, depth_view, albedo_view = has_albedo ? albedo_view : *geo.view,
+         ao_view = has_ao ? ao_view : *geo.view,
          geo_image = vk::Image(geo.image), geo_view = *geo.view,
          cur_image = vk::Image(light[current].image), cur_view = *light[current].view,
-         prev_image = vk::Image(light[current ^ 1].image), prev_view = *light[current ^ 1].view,
+         old_image = vk::Image(light[current ^ 1].image), old_view = *light[current ^ 1].view,
+         filtered_image = std::array{vk::Image(filtered[0].image), vk::Image(filtered[1].image)},
+         filtered_view = std::array{*filtered[0].view, *filtered[1].view},
          prep_pipeline = *prep.pipeline, prep_layout = *prep.layout,
          gather_pipeline = *gather.pipeline, gather_layout = *gather.layout,
+         denoise_pipeline = *denoise.pipeline, denoise_layout = *denoise.layout,
          composite_pipeline = *composite.pipeline,
-         composite_layout = *composite.layout](vk::CommandBuffer cmdbuf) {
+         composite_layout = *composite.layout](vk::CommandBuffer cmdbuf) mutable {
             BeforeCompute(cmdbuf);
-            std::array<vk::ImageMemoryBarrier2, 3> barriers{ToGeneral(geo_image),
-                                                            ToGeneral(cur_image)};
-            u32 barrier_count = 2;
+            std::array<vk::ImageMemoryBarrier2, 5> barriers{
+                ToGeneral(geo_image), ToGeneral(cur_image), ToGeneral(filtered_image[0]),
+                ToGeneral(filtered_image[1])};
+            u32 barrier_count = 4;
             if (init_previous) {
-                barriers[barrier_count++] = ToGeneral(prev_image);
+                barriers[barrier_count++] = ToGeneral(old_image);
             }
             cmdbuf.pipelineBarrier2(
                 {.imageMemoryBarrierCount = barrier_count, .pImageMemoryBarriers = barriers.data()});
@@ -414,7 +486,7 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
             }
             BetweenPasses(cmdbuf);
             {
-                const std::array infos{Info(geo_view), Info(color_view), Info(prev_view),
+                const std::array infos{Info(geo_view), Info(color_view), Info(old_view),
                                        Info(cur_view), Info(albedo_view)};
                 const std::array writes{Write(0, SampledImage, &infos[0]),
                                         Write(1, SampledImage, &infos[1]),
@@ -424,18 +496,39 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
                 run(gather_pipeline, gather_layout, writes, half_x, half_y);
             }
             BetweenPasses(cmdbuf);
+            vk::ImageView result_view = cur_view;
+            if (denoise_on) {
+                // The accumulated light stays unfiltered as history; two wavelet iterations
+                // (taps 1 and 2 texels apart) make the copy that is composited.
+                for (u32 i = 0; i < 2; ++i) {
+                    params.step_size = float(1u << i);
+                    const std::array infos{Info(geo_view), Info(i == 0 ? cur_view : filtered_view[0]),
+                                           Info(filtered_view[i])};
+                    const std::array writes{Write(0, SampledImage, &infos[0]),
+                                            Write(1, SampledImage, &infos[1]),
+                                            Write(2, StorageImage, &infos[2])};
+                    run(denoise_pipeline, denoise_layout, writes, half_x, half_y);
+                    BetweenPasses(cmdbuf);
+                }
+                result_view = filtered_view[1];
+            }
             {
-                const std::array infos{Info(geo_view), Info(cur_view), Info(color_view),
-                                       Info(albedo_view)};
+                const std::array infos{Info(geo_view), Info(result_view), Info(color_view),
+                                       Info(albedo_view), Info(ao_view)};
                 const std::array writes{Write(0, SampledImage, &infos[0]),
                                         Write(1, SampledImage, &infos[1]),
                                         Write(2, StorageImage, &infos[2]),
-                                        Write(3, SampledImage, &infos[3])};
+                                        Write(3, SampledImage, &infos[3]),
+                                        Write(4, SampledImage, &infos[4])};
                 run(composite_pipeline, composite_layout, writes, full_x, full_y);
             }
             AfterCompute(cmdbuf);
         });
     history_valid = true;
+    prev_view = camera.view;
+    prev_proj = {proj[0], proj[1]};
+    prev_jitter = jitter;
+    prev_camera_valid = camera.valid;
     ++frame;
 }
 

@@ -643,6 +643,11 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
                                      vp.yscale < 0.0f ? -1.0f : 1.0f);
         ssgi->OnGBufferDraw(db_desc.first, cb_descs[2].first);
     }
+    if (key.mrt_mask && cb_descs[0].first &&
+        IsGtaoReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
+                          Shader::HwStage::Fragment)) {
+        ssgi->OnAoDraw(cb_descs[0].first);
+    }
     if (upscaler->Enabled() && cb_descs[0].first) {
         upscaler->OnColorTarget(cb_descs[0].first);
     }

@@ -40,6 +40,8 @@ public:
                        std::array<float, 2> jitter);
     /// A G-buffer draw: `albedo` is its sRGB base-color target (colour 2), drawn with `depth`.
     void OnGBufferDraw(VideoCore::ImageId depth, VideoCore::ImageId albedo);
+    /// The ambient occlusion pass drew into `ao` (R channel); the GI is attenuated by it.
+    void OnAoDraw(VideoCore::ImageId ao);
     /// The display pass: the next frame may run it again.
     void OnFrameEnd();
 
@@ -77,14 +79,20 @@ private:
     SceneTargets& scene_targets;
     CameraMotion& camera_motion;
 
-    Pass prep, gather, composite;
+    Pass prep, gather, denoise, composite;
     OwnImage geo;                  ///< RGBA32F, scene size: view normal, view depth (<= 0: sky)
     std::array<OwnImage, 2> light; ///< RGBA16F, half size: indirect light, view depth; ping-pong
+    std::array<OwnImage, 2> filtered; ///< RGBA16F, half size: the denoiser's iterations
+    std::array<float, 12> prev_view{};  ///< last frame's camera and viewport shift
+    std::array<float, 2> prev_proj{};
+    std::array<float, 2> prev_jitter{};
+    bool prev_camera_valid = false;
     u32 frame = 0;
     bool done_this_frame = false;
     bool history_valid = false;
     bool failed = false;
     VideoCore::ImageId gbuffer_depth, gbuffer_albedo; ///< last G-buffer draw this frame
+    VideoCore::ImageId ao_image;                      ///< last AO draw this frame
     std::array<ViewEntry, 4> view_cache{};
     u64 view_uses = 0;
 };
