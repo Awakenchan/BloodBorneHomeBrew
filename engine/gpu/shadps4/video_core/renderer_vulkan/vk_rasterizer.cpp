@@ -2199,10 +2199,14 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
         {
-            char dn[96];
-            std::snprintf(dn, sizeof(dn), "\n  drawend ps %08x idx %u z%u%u", u32(ps ? ps->pgm_hash : 0),
-                          num_indices, u32(regs.depth_control.depth_enable),
-                          u32(regs.depth_control.depth_write_enable));
+            char dn[160];
+            const auto* hs = pipeline->GetStages()[u32(Shader::SwStage::TessellationControl)];
+            const auto* ds = pipeline->GetStages()[u32(Shader::SwStage::TessellationEval)];
+            std::snprintf(dn, sizeof(dn), "\n  drawend ps %08x idx %u z%u%u tess hs %08x ds %08x cp %u",
+                          u32(ps ? ps->pgm_hash : 0), num_indices,
+                          u32(regs.depth_control.depth_enable),
+                          u32(regs.depth_control.depth_write_enable), u32(hs ? hs->pgm_hash : 0),
+                          u32(ds ? ds->pgm_hash : 0), pipeline->GetGraphicsKey().patch_control_points);
             FrameCapture::Note(dn);
         }
         if (const auto& bc = regs.blend_control[0]; bc.enable && regs.color_buffers[0]) {
