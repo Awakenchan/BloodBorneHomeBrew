@@ -996,8 +996,8 @@ bool IsSsrReplacement(u64 pgm_hash, Shader::HwStage stage) {
 
 // The composite pass (hash 3fe9e964) reads the SSR result from a blurred mip pyramid, picking
 // lod = min(6, 6.5 - 13 * smoothness / 2). That leaves even fairly smooth surfaces, such as wet
-// stone, reading a blurred mip. Steepening the slope (13 -> 20) keeps the blur for rough
-// surfaces but lets anything above about 0.65 smoothness read the sharp base level.
+// stone, reading a blurred mip. Steepening the slope (13 -> 16) keeps the blur for rough
+// surfaces but lets anything above about 0.8 smoothness read the sharp base level.
 void PatchSsrComposite(u64 pgm_hash, Shader::HwStage stage, std::vector<u32>& spv) {
     constexpr u64 kCompositeHash = 0x3fe9e964;
     if (pgm_hash != kCompositeHash || stage != Shader::HwStage::Fragment || spv.size() < 5 ||
@@ -1005,7 +1005,7 @@ void PatchSsrComposite(u64 pgm_hash, Shader::HwStage stage, std::vector<u32>& sp
         return;
     }
     const u32 old_slope = std::bit_cast<u32>(13.0f);
-    const u32 new_slope = std::bit_cast<u32>(20.0f);
+    const u32 new_slope = std::bit_cast<u32>(16.0f);
     for (size_t word = 5; word < spv.size();) {
         const u32 count = spv[word] >> 16;
         if (!count || count > spv.size() - word) {

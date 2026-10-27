@@ -48,14 +48,10 @@ vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
 
 float sceneDepth(vec2 uv) { return textureLod(sampler2D(img0, samp0), uv, 0.0).x; }
 
-void main() {
-    base = (buf_off & 0xffu) >> 2;
-    frag_color0 = vec4(0.0);
-
-    vec2 uv0 = attr1.xy;
+vec4 trace(vec2 uv0) {
     float d0 = sceneDepth(uv0);
     if (!(d0 < 1.0)) {
-        return;
+        return vec4(0.0);
     }
     vec2 ndc = vec2(uv0.x * 2.0 - 1.0, 1.0 - uv0.y * 2.0);
     vec4 cp = vec4(ndc, d0, 1.0);
@@ -69,7 +65,7 @@ void main() {
     vec3 R = normalize(V - 2.0 * dot(N, V) * N);
     float minFacing = cb(64);
     if (R.z < minFacing) {
-        return;
+        return vec4(0.0);
     }
 
     vec3 Q = P + R;
@@ -80,14 +76,14 @@ void main() {
     vec3 D = e - vec3(ndc, d0);
     float dl = length(D);
     if (dl < 1e-9) {
-        return;
+        return vec4(0.0);
     }
     D /= dl;
     vec3 w = vec3(0.5 * D.x, -0.5 * D.y, D.z);
     w /= length(w);
     float uvLen = length(w.xy);
     if (uvLen < 1e-6) {
-        return;
+        return vec4(0.0);
     }
 
     float stepScale = cb(72);
@@ -126,7 +122,7 @@ void main() {
         prevT = float(i);
     }
     if (hitT < 0.0) {
-        return;
+        return vec4(0.0);
     }
 
     float lo = prevT;
@@ -149,16 +145,25 @@ void main() {
     float hw = dot(row(60), hc);
     vec2 puv = vec2(0.5 + 0.5 * hx / hw, 0.5 - 0.5 * hy / hw);
     if (!(hw > 0.0) || puv.x < 0.0 || puv.x > 1.0 || puv.y < 0.0 || puv.y > 1.0) {
-        return;
+        return vec4(0.0);
     }
     vec3 col = textureLod(sampler2D(img2, samp2), puv, 0.0).rgb;
     if (any(isnan(col)) || any(isinf(col))) {
-        return;
+        return vec4(0.0);
     }
 
     float facing = clamp(R.z - minFacing, 0.0, 1.0);
     vec2 edge = min(puv, 1.0 - puv) / EDGE_FADE;
     float edgeFade = clamp(min(edge.x, edge.y), 0.0, 1.0);
     float conf = min(1.0, facing * facing) * edgeFade;
-    frag_color0 = vec4(col * conf, conf);
+    return vec4(col * conf, conf);
+}
+
+void main() {
+    base = (buf_off & 0xffu) >> 2;
+    // Four rays per output pixel, one per full-resolution depth/normal texel it covers.
+    vec2 o = 0.5 / vec2(textureSize(sampler2D(img0, samp0), 0));
+    vec4 sum = trace(attr1.xy + vec2(-o.x, -o.y)) + trace(attr1.xy + vec2(o.x, -o.y)) +
+               trace(attr1.xy + vec2(-o.x, o.y)) + trace(attr1.xy + vec2(o.x, o.y));
+    frag_color0 = sum * 0.25;
 }
