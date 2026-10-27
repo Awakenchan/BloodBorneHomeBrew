@@ -83,6 +83,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     hdr_native = std::make_unique<HdrNative>(instance, scheduler, texture_cache, runtime);
     ssgi = std::make_unique<ScreenSpaceGI>(instance, scheduler, texture_cache, runtime,
                                            *scene_targets, *camera_motion);
+    ssr_temporal = std::make_unique<SsrTemporal>(instance, scheduler, texture_cache, runtime,
+                                                 *scene_targets, *camera_motion);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets, *hdr_native);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -593,6 +595,12 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // Prefetch render targets to handle overlaps with bound textures (e.g. mipgen)
     const auto& key = pipeline->GetGraphicsKey();
     const auto& regs = Regs();
+    const bool ssr_draw = key.mrt_mask &&
+                          IsSsrReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
+                                           Shader::HwStage::Fragment);
+    if (!ssr_draw) {
+        ssr_temporal->Flush(upscaler->Jitter());
+    }
     if (regs.color_control.degamma_enable) {
         LOG_WARNING(Render_Vulkan, "Color buffers require gamma correction");
     }
@@ -647,6 +655,9 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         IsGtaoReplacement(pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash,
                           Shader::HwStage::Fragment)) {
         ssgi->OnAoDraw(cb_descs[0].first);
+    }
+    if (ssr_draw && cb_descs[0].first) {
+        ssr_temporal->OnSsrDraw(cb_descs[0].first);
     }
     if (upscaler->Enabled() && cb_descs[0].first) {
         upscaler->OnColorTarget(cb_descs[0].first);
@@ -1928,6 +1939,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         previous_scene_depth = camera_motion->Depth(); // the last G-buffer pass's (bbport)
         camera_motion->OnDisplayPass(cb_descs[0].first);
         ssgi->OnFrameEnd();
+        ssr_temporal->OnFrameEnd();
         if (upscaler->OnFrameStart()) {
             object_motion->InvalidateHistory();
             camera_motion->InvalidateHistory();
