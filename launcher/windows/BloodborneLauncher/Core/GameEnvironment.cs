@@ -236,6 +236,7 @@ namespace BloodborneLauncher.Core
                 env["BB_THD_ONLINE_ID"] = name;
             }
             env["BB_ROOM_PASSWORD"] = s.SeamlessPassword;
+            env["BB_ROOM_HOST_PASSWORD"] = s.SeamlessHostPassword;
             // The client version the online backend reports to the server.
             env["BB_CLIENT_VERSION"] = "shadPS4 Awakenchan/v0.20.0";
 

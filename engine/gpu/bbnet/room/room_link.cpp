@@ -6,6 +6,7 @@
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+#include <openssl/rand.h>
 
 namespace BbRoom {
 
@@ -30,7 +31,15 @@ bool Link::Start(const std::string& server, const std::string& name, const std::
     Stop();
     if (server.empty() || name.empty()) return false;
     secret_ = Derive(name, password);
-    url_ = RoomUrl(server, secret_.room_id);
+    std::uint8_t token[16];
+    RAND_bytes(token, sizeof token);
+    static const char digits[] = "0123456789abcdef";
+    std::string member;
+    for (const std::uint8_t byte : token) {
+        member.push_back(digits[byte >> 4]);
+        member.push_back(digits[byte & 15]);
+    }
+    url_ = RoomUrl(server, secret_.room_id) + "/" + member;
     stop_ = false;
     thread_ = std::thread([this] { Run(); });
     return true;

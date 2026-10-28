@@ -148,9 +148,11 @@ bool ConfigureSeamless(const std::map<std::string, std::string>& settings, const
     const auto get = [&](const char* key) { return Trim(Setting(settings, key).value_or("")); };
     std::string server = get("seamless_server");
     if (server.empty()) server = kSeamlessServer;
-    const std::string room = get("seamless_room");
+    const bool host = get("seamless_role") == "host";
+    const std::string room = get(host ? "seamless_host_room" : "seamless_room");
     const std::string player = get("seamless_player");
-    if (room.empty()) throw Error("Enter a room name on the launcher's Seamless page");
+    if (room.empty())
+        throw Error(host ? "Open the launcher's Online page once to make your room" : "Paste the host's invite code on the launcher's Online page");
     if (player.empty() || player.size() > 16 ||
         std::any_of(player.begin(), player.end(), [](char c) { return std::isspace(std::uint8_t(c)) || std::uint8_t(c) < 32; }))
         throw Error("Enter your name on the launcher's Seamless page (up to 16 characters, no spaces)");
@@ -169,7 +171,8 @@ bool ConfigureSeamless(const std::map<std::string, std::string>& settings, const
     SetEnv("BB_ROOM_SERVER", server);
     SetEnv("BB_ROOM_NAME", room);
     SetEnv("BB_ROOM_PLAYER", player);
-    SetEnv("BB_ROOM_HOST", get("seamless_role") == "host" ? "1" : "0");
+    SetEnv("BB_ROOM_HOST", host ? "1" : "0");
+    if (host) SetEnv("BB_ROOM_PASSWORD", Env("BB_ROOM_HOST_PASSWORD", ""));
     SetEnv("BB_ROOM_HTTP_PORT", std::to_string(http));
     SetEnv("BB_P2P_PORT", std::to_string(p2p));
     SetEnv("SHADPS4_HTTP_HOST_OVERRIDES_JSON", Utf8(destination));

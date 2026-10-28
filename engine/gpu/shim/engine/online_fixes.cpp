@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 
 namespace BbEngine::OnlineFixes {
 namespace {
@@ -85,6 +86,57 @@ bool FixCharacterId(std::uint8_t* image, std::size_t size) {
     return true;
 }
 
+struct Site {
+    std::size_t at;
+    std::initializer_list<std::uint8_t> original;
+    std::initializer_list<std::uint8_t> patched;
+};
+
+struct Rule {
+    const char* name;
+    std::initializer_list<Site> sites;
+};
+
+const Rule kBellRules[] = {
+    {"bells anywhere",
+     {{0x157f8c8, {0x0f, 0x87, 0x90, 0x00, 0x00, 0x00}, {0x0f, 0x8f, 0x90, 0x00, 0x00, 0x00}},
+      {0x157f960, {0x34, 0x01}, {0x31, 0xc0}},
+      {0x157f6d1, {0x88, 0xc3}, {0xb1, 0x01}},
+      {0x157f6d3, {0x4c, 0x89, 0xf7, 0xe8, 0xf5, 0x9f, 0x34, 0x00}, {0xe9, 0xe9, 0x09, 0x00, 0x00, 0x90, 0x90, 0x90}},
+      {0x15068bb, {0x77, 0x4a}, {0x7f, 0x4a}},
+      {0x15068fc, {0x88, 0xc3, 0x80, 0xf3, 0x01}, {0xb3, 0x01, 0x90, 0x90, 0x90}},
+      {0x191a8c3, {0x18, 0xc9, 0x20, 0xc1, 0xeb, 0x02}, {0x7d, 0x04, 0x88, 0xc1, 0xeb, 0x02}},
+      {0x18700d3,
+       {0x84, 0xc0, 0x41, 0xbd, 0xff, 0xff, 0xff, 0xff, 0x44, 0x0f, 0x44, 0xeb, 0x41, 0xc1, 0xed, 0x1f},
+       {0x45, 0x31, 0xed, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90}}}},
+    {"bells after the area boss is dead",
+     {{0x18749e8, {0x0f, 0x85, 0x48, 0x01, 0x00, 0x00}, {0x90, 0x90, 0x90, 0x90, 0x90, 0x90}},
+      {0x18749f0, {0x0f, 0x88, 0x40, 0x01, 0x00, 0x00}, {0x90, 0x90, 0x90, 0x90, 0x90, 0x90}},
+      {0x14b714a, {0x0f, 0x85, 0xc0, 0x03, 0x00, 0x00}, {0x90, 0x90, 0x90, 0x90, 0x90, 0x90}},
+      {0x1874b79, {0x74, 0x0d}, {0xeb, 0x0d}}}},
+    {"bells without Insight",
+     {{0x157fa5c, {0x0f, 0x9f, 0xc0}, {0x30, 0xc0, 0x90}},
+      {0x18c92bb, {0x41, 0x0f, 0xb6, 0x47, 0x38, 0xf7, 0xd8}, {0x31, 0xc0, 0x0f, 0x1f, 0x44, 0x00, 0x00}}}},
+};
+
+bool BellRules(std::uint8_t* image, std::size_t size) {
+    bool any = false;
+    for (const Rule& rule : kBellRules) {
+        const bool all = std::all_of(rule.sites.begin(), rule.sites.end(), [&](const Site& site) {
+            return Matches(image, size, site.at, site.original.begin(), site.original.size());
+        });
+        if (!all) {
+            Say("seamless: %s left alone: the game's code there is not 1.09's", rule.name);
+            continue;
+        }
+        bool written = true;
+        for (const Site& site : rule.sites) written = WriteCode(image + site.at, site.patched.begin(), site.patched.size()) && written;
+        Say("seamless: %s%s", rule.name, written ? "" : " (not every site could be written)");
+        any = any || written;
+    }
+    return any;
+}
+
 bool SetSignTimeout(std::uint8_t* image, std::size_t size, long seconds) {
     const std::size_t end = kAgeCheck + sizeof kAgeCheckHead + 4;
     if (!Matches(image, size, kAgeCheck, kAgeCheckHead, sizeof kAgeCheckHead)) {
@@ -110,6 +162,8 @@ bool Install(std::uint8_t* image, std::size_t size) {
     const char* online = std::getenv("BB_ONLINE");
     if (!online || std::strcmp(online, "1") != 0) return false;
     bool any = FixCharacterId(image, size);
+    if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "room") == 0)
+        any = BellRules(image, size) || any;
     const char* timeout = std::getenv("BB_SIGN_TIMEOUT");
     const long seconds = timeout ? std::strtol(timeout, nullptr, 10) : 0;
     if (seconds > 0 && seconds != 180) any = SetSignTimeout(image, size, seconds) || any;

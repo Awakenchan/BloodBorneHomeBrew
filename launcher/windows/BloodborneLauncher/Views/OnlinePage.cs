@@ -34,19 +34,19 @@ namespace BloodborneLauncher.Views
                 L.T("Play the campaign together in your own encrypted room: no Hunter's Dream, no ports to open"),
                 () => Ini.Get("seamless_enabled") == "1", v => Ini.Set("seamless_enabled", v ? "1" : "0"));
             _role = ComboRow(SymbolRegular.Crown24, L.T("Role"), L.T("One player hosts, the others join the host's world"),
-                Choices.SeamlessRoles, () => Ini.Get("seamless_role", "guest"), v => Ini.Set("seamless_role", v));
+                Choices.SeamlessRoles, () => Ini.Get("seamless_role", "guest"), v => { Ini.Set("seamless_role", v); ShowRoom(); });
             IniText(SymbolRegular.Person24, L.T("Your name"), L.T("Shown to the others (up to 16 characters, no spaces)"), "Hunter", "seamless_player", 220);
-            _room = TextRow(SymbolRegular.Door24, L.T("Room name"), L.T("Everyone types the same room name"), "",
-                () => Ini.Get("seamless_room"), v => Ini.Set("seamless_room", v.Trim()), width: 220);
-            _password = TextRow(SymbolRegular.LockClosed24, L.T("Room password"), L.T("Everyone types the same password; the room's traffic is encrypted with it"),
-                "", () => S.SeamlessPassword, v => { S.SeamlessPassword = v; Ws.SaveNow(); }, width: 220);
             var invite = new StackPanel { Orientation = Orientation.Horizontal };
             invite.Children.Add(SmallButton(L.T("Copy invite code"), SymbolRegular.Copy24, (_, _) => CopyInvite()));
             var paste = SmallButton(L.T("Paste invite code"), SymbolRegular.ClipboardPaste24, (_, _) => PasteInvite());
             paste.Margin = new Thickness(8, 0, 0, 0);
             invite.Children.Add(paste);
-            Add(Card(SymbolRegular.Link24, L.T("Invite code"),
-                L.T("The host copies it and sends it to friends; they paste it here. It holds the room name and password"), invite, out _));
+            Add(Card(SymbolRegular.Link24, L.T("Invite code"), null, invite, out _roomHint));
+            Add(Card(SymbolRegular.ArrowSync24, L.T("New room"),
+                L.T("Makes a new room with a new invite code; the old code stops working"),
+                SmallButton(L.T("New room"), SymbolRegular.ArrowSync24, (_, _) => NewRoom()), out _));
+            EnsureHostRoom();
+            ShowRoom();
 
             Group(L.T("Server"));
             ComboRow(SymbolRegular.Server24, L.T("Server"), L.T("Messages, bloodstains, ghosts, co-op and invasions"),
@@ -70,7 +70,7 @@ namespace BloodborneLauncher.Views
             Body.Children.Add(_results);
         }
 
-        private readonly System.Windows.Controls.TextBox _room, _password;
+        private readonly System.Windows.Controls.TextBlock _roomHint;
         private readonly FrameworkElement _role;
         private const string InvitePrefix = "LANTERN-ROOM:";
 
@@ -81,17 +81,44 @@ namespace BloodborneLauncher.Views
             return new string(bytes.Select(b => letters[b % letters.Length]).ToArray());
         }
 
+        private void EnsureHostRoom()
+        {
+            if (Ini.Get("seamless_host_room").Length > 0 && S.SeamlessHostPassword.Length > 0) return;
+            NewRoom(quiet: true);
+        }
+
+        private void NewRoom(bool quiet = false)
+        {
+            Ini.Set("seamless_host_room", RandomText(20));
+            S.SeamlessHostPassword = RandomText(24);
+            Ws.SaveNow();
+            ShowRoom();
+            if (!quiet) Ws.Log(L.T("New room made: copy the new invite code for your friends"), LogLevel.Good);
+        }
+
+        private void ShowRoom()
+        {
+            if (_roomHint is null) return;
+            var host = Ini.Get("seamless_role", "guest") == "host";
+            SetHint(_roomHint, host
+                ? L.T("You host your own room: copy the code and send it to friends")
+                : Ini.Get("seamless_room").Length > 0
+                    ? L.T("Joining the room of the invite code you pasted")
+                    : L.T("Paste the invite code the host sent you"));
+        }
+
         private void CopyInvite()
         {
-            if (Ini.Get("seamless_room").Length == 0) _room.Text = "room-" + RandomText(8);
-            if (S.SeamlessPassword.Length == 0) _password.Text = RandomText(16);
-            Ini.Set("seamless_room", _room.Text.Trim());
-            S.SeamlessPassword = _password.Text;
-            Ws.SaveNow();
-            var parts = new List<string> { Ini.Get("seamless_room"), S.SeamlessPassword };
+            EnsureHostRoom();
+            var parts = new List<string> { Ini.Get("seamless_host_room"), S.SeamlessHostPassword };
             if (Ini.Get("seamless_server").Length > 0) parts.Add(Ini.Get("seamless_server"));
             var code = InvitePrefix + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(string.Join('\n', parts)))
                 .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            Ini.Set("seamless_role", "host");
+            if (_role is Segmented segmented) segmented.Select(1, notify: false);
+            else if (_role is System.Windows.Controls.ComboBox box) box.SelectedIndex = 1;
+            Ws.SaveNow();
+            ShowRoom();
             if (ClipboardText.Set(code)) Ws.Log(L.T("Invite code copied: send it to your friends"), LogLevel.Good);
         }
 
@@ -113,8 +140,11 @@ namespace BloodborneLauncher.Views
                 Prompt.Tell(L.T("Invite code"), L.T("The clipboard holds no invite code. Copy the whole code the host sent you, then paste again."));
                 return;
             }
-            _room.Text = parts[0];
-            _password.Text = parts[1];
+            if (parts[0] == Ini.Get("seamless_host_room"))
+            {
+                Prompt.Tell(L.T("Invite code"), L.T("That is your own room's code. Friends paste it on their PC to join you."));
+                return;
+            }
             Ini.Set("seamless_room", parts[0]);
             S.SeamlessPassword = parts[1];
             Ini.Set("seamless_server", parts.Length > 2 ? parts[2] : "");
@@ -122,7 +152,8 @@ namespace BloodborneLauncher.Views
             if (_role is Segmented segmented) segmented.Select(0, notify: false);
             else if (_role is System.Windows.Controls.ComboBox box) box.SelectedIndex = 0;
             Ws.SaveNow();
-            Ws.Log(L.F($"Invite code pasted: room {parts[0]}"), LogLevel.Good);
+            ShowRoom();
+            Ws.Log(L.T("Invite code pasted: you join that room"), LogLevel.Good);
         }
 
         private readonly Button _hdButton;
