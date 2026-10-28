@@ -3536,6 +3536,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         if (ring) {
             // Copied by the GPU command thread into the constant ring (read-only).
             if (!desc.IsSpecial()) {
+                if (FrameCapture::Active() && memory->IsValidGpuMapping(ring->address, 0)) {
+                    FrameCapture::Buffer(stage.pgm_hash, binding.buffer, ring->address,
+                                         reinterpret_cast<const void*>(ring->address), ring->size);
+                }
                 if (ring->size == 864 && gbuffer_draw &&
                     memory->IsValidGpuMapping(ring->address, 0)) {
                     camera_motion->OnConstants(reinterpret_cast<const float*>(ring->address));
