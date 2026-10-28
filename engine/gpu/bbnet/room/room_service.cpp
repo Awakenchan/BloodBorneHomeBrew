@@ -34,6 +34,7 @@ inline void CloseSocket(SocketHandle s) { close(s); }
 #endif
 
 #include <httplib.h>
+#include <openssl/evp.h>
 
 #include "room_link.h"
 
@@ -687,9 +688,29 @@ std::string SsInfo() {
         "SummonDataSummon", "ChairMessGetList", "ChairMessRespawnPointNotice", "TombMessCreate", "TombMessGetList",
         "DeathVisionGet", "TombMessRemove", "WanderingGhostCreate", "WanderingGhostGet"};
     static const std::pair<const char*, const char*> numbers[] = {
+        {"ReloadServerStatusInfoInterval", "600"},
         {"SummonDataCreateInterval", "2"},
         {"SummonDataGetListInterval", "1"},
-        {"SummonDataGetListGuardTimer", "1"},
+        {"SummonDataGetListGuardTimer", "0"},
+        {"SummonDataGetListNomalCoopWaitCount", "0"},
+        {"SummonDataGetListCombinationInvasionWaitCount", "0"},
+        {"SummonDataGetListNaturalEnemyWaitCountFixed", "0"},
+        {"SummonDataGetListAllAreaMethodWaitCount", "0"},
+        {"SummonDataGetListGetCountPerSummonType", "8"},
+        {"SummonDataGetListGetMaxCount", "8"},
+        {"SummonDataGetListCoopGuardTimerClampTime", "0"},
+        {"SummonDataGetListInvationGuardTimerClampTime", "0"},
+        {"SummonDataGetListCoopGuardTimerLimitationTimeRate", "0"},
+        {"SummonDataGetListCoopGuardTimerObserveTimeRate", "0"},
+        {"SummonDataGetListInvationGuardTimerLimitationTimeRate", "0"},
+        {"SummonDataGetListInvationGuardTimerObserveTimeRate", "0"},
+        {"TombMessGetListInterval", "600"},
+        {"BloodMessGetListInterval", "600"},
+        {"WanderingGhostCreateInterval", "600"},
+        {"WanderingGhostGetInterval", "600"},
+        {"ChairMessGetListInterval", "60"},
+        {"NoticeEmergencyGetInterval", "3600"},
+        {"PlayLog", "0"},
         {"SummonDataCoopMatchingLevelLowerAbs", "-1000"},
         {"SummonDataCoopMatchingLevelLowerRel", "0"},
         {"SummonDataCoopMatchingLevelUpperAbs", "1000"},
@@ -706,14 +727,23 @@ std::string SsInfo() {
         text += "</gameurl" + k + ">";
         for (const auto& [tag, value] : numbers) text += std::string("<") + tag + k + ">" + value + "</" + tag + k + ">";
     }
-    return text + "</ssinfo>";
+    text += "</ssinfo>";
+    std::string encoded(4 * ((text.size() + 2) / 3) + 1, '\0');
+    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),
+                                  reinterpret_cast<const unsigned char*>(text.data()), static_cast<int>(text.size()));
+    encoded.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
+    return encoded;
 }
 
 void HttpLoop() {
     httplib::Server server;
+    server.set_logger([](const httplib::Request& req, const httplib::Response& res) {
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1) < 60) Log("game server: %s %s -> %d", req.method.c_str(), req.path.c_str(), res.status);
+    });
     server.Get(".*", [](const httplib::Request& req, httplib::Response& res) {
         if (req.path.size() >= 8 && req.path.compare(req.path.size() - 8, 8, "/ss.info") == 0) {
-            res.set_content(SsInfo(), "text/xml");
+            res.set_content(SsInfo(), "text/plain");
             return;
         }
         res.set_content(GameApiAnswer(req.path, Json::object()), "application/json");
