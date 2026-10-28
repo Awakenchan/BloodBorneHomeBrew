@@ -8803,6 +8803,20 @@ private:
   time_t write_timeout_usec_;
   time_t max_timeout_msec_;
   const std::chrono::time_point<std::chrono::steady_clock> start_time_;
+  std::mutex tls_mutex_;
+
+  ssize_t tls_read(char *ptr, size_t size, tls::TlsError &err) {
+    std::lock_guard<std::mutex> lock(tls_mutex_);
+    return tls::read(session_, ptr, size, err);
+  }
+  ssize_t tls_write(const char *ptr, size_t size, tls::TlsError &err) {
+    std::lock_guard<std::mutex> lock(tls_mutex_);
+    return tls::write(session_, ptr, size, err);
+  }
+  int tls_pending() {
+    std::lock_guard<std::mutex> lock(tls_mutex_);
+    return tls::pending(session_);
+  }
 };
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
@@ -10581,16 +10595,16 @@ inline bool SSLSocketStream::is_peer_alive() const {
 }
 
 inline ssize_t SSLSocketStream::read(char *ptr, size_t size) {
-  if (tls::pending(session_) > 0) {
+  if (tls_pending() > 0) {
     tls::TlsError err;
-    auto ret = tls::read(session_, ptr, size, err);
+    auto ret = tls_read(ptr, size, err);
     if (ret == 0 || err.code == tls::ErrorCode::PeerClosed) {
       error_ = Error::ConnectionClosed;
     }
     return ret;
   } else if (wait_readable()) {
     tls::TlsError err;
-    auto ret = tls::read(session_, ptr, size, err);
+    auto ret = tls_read(ptr, size, err);
     if (ret < 0) {
       auto n = 1000;
 #ifdef _WIN32
@@ -10600,11 +10614,11 @@ inline ssize_t SSLSocketStream::read(char *ptr, size_t size) {
 #else
       while (--n >= 0 && err.code == tls::ErrorCode::WantRead) {
 #endif
-        if (tls::pending(session_) > 0) {
-          return tls::read(session_, ptr, size, err);
+        if (tls_pending() > 0) {
+          return tls_read(ptr, size, err);
         } else if (wait_readable()) {
           std::this_thread::sleep_for(std::chrono::microseconds{10});
-          ret = tls::read(session_, ptr, size, err);
+          ret = tls_read(ptr, size, err);
           if (ret >= 0) { return ret; }
         } else {
           break;
@@ -10627,7 +10641,7 @@ inline ssize_t SSLSocketStream::write(const char *ptr, size_t size) {
         std::min<size_t>(size, (std::numeric_limits<int>::max)());
 
     tls::TlsError err;
-    auto ret = tls::write(session_, ptr, handle_size, err);
+    auto ret = tls_write(ptr, handle_size, err);
     if (ret < 0) {
       auto n = 1000;
 #ifdef _WIN32
@@ -10639,7 +10653,7 @@ inline ssize_t SSLSocketStream::write(const char *ptr, size_t size) {
 #endif
         if (wait_writable()) {
           std::this_thread::sleep_for(std::chrono::microseconds{10});
-          ret = tls::write(session_, ptr, handle_size, err);
+          ret = tls_write(ptr, handle_size, err);
           if (ret >= 0) { return ret; }
         } else {
           break;

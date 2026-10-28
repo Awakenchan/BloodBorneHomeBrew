@@ -150,12 +150,15 @@ bool ConfigureSeamless(const std::map<std::string, std::string>& settings, const
     if (server.empty()) server = kSeamlessServer;
     const bool host = get("seamless_role") == "host";
     const std::string room = get(host ? "seamless_host_room" : "seamless_room");
-    const std::string player = get("seamless_player");
+    std::string player;
+    for (const char c : get("seamless_player")) {
+        if (std::isalnum(std::uint8_t(c)) || c == '-' || c == '_') player.push_back(c);
+        if (player.size() == 16) break;
+    }
+    if (player.empty()) player = "Hunter";
     if (room.empty())
         throw Error(host ? "Open the launcher's Online page once to make your room" : "Paste the host's invite code on the launcher's Online page");
-    if (player.empty() || player.size() > 16 ||
-        std::any_of(player.begin(), player.end(), [](char c) { return std::isspace(std::uint8_t(c)) || std::uint8_t(c) < 32; }))
-        throw Error("Enter your name on the launcher's Seamless page (up to 16 characters, no spaces)");
+
     const int p2p = std::stoi(P2pPort(settings));
     const int http = p2p < 65535 ? p2p + 1 : p2p - 1;
     const std::string local = "http://127.0.0.1:" + std::to_string(http);

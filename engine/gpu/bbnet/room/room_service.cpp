@@ -104,6 +104,7 @@ struct State {
     std::atomic<int> game_port{0};
     int http_port = 0;
     bool host = false;
+    std::atomic<int> own_slot{0};
     std::string player;
     std::atomic<bool> started{false};
 
@@ -158,7 +159,7 @@ void Localize(Json& value) {
         return;
     }
     if (!value.is_object()) return;
-    const int own = S().link.Slot();
+    const int own = S().own_slot.load();
     if (value.contains("Slot")) {
         const int slot = static_cast<int>(IntOf(value, "Slot"));
         const int port = slot == own ? S().game_port.load() : BridgePort(slot);
@@ -183,7 +184,7 @@ void Localize(Json& value) {
 }
 
 void Deliver(int slot, Json event) {
-    if (slot == S().link.Slot()) {
+    if (slot == S().own_slot.load()) {
         Localize(event);
         {
             std::lock_guard lock(S().mu);
@@ -256,7 +257,7 @@ Json HandleSession(int slot, const std::string& path, const Json& body) {
         const std::uint64_t id = S().next_room++;
         MatchRoom room;
         room.session_id = "room-" + std::to_string(id);
-        room.max_members = static_cast<int>(std::clamp<long long>(IntOf(body, "MaxMembers", 4), 2, 4));
+        room.max_members = static_cast<int>(std::clamp<long long>(IntOf(body, "MaxMembers", 5), 2, 5));
         room.members.push_back({1, slot});
         S().rooms[id] = room;
         return {{"ResKind", 0}, {"RoomId", static_cast<long long>(id)}, {"SessionId", room.session_id},
@@ -378,7 +379,7 @@ Json HandleSummon(int slot, const std::string& api, const Json& body) {
     }
     if (api == "request") {
         const int target = static_cast<int>(IntOf(body, "TargetUserId") - 1000);
-        if (target >= 1 && target <= 4 && target != slot) {
+        if (target >= 1 && target <= 5 && target != slot) {
             Json ev = {{"Name", "guest_invite"}, {"HostSlot", slot}};
             const auto name = S().names.find(slot);
             ev["HostOnlineId"] = name == S().names.end() ? "" : name->second;
@@ -417,7 +418,7 @@ int HostSlotWait(int timeout_ms) {
 
 bool Rpc(const Json& request, Json& reply, std::string& error, int timeout_ms) {
     if (S().host) {
-        const int own = S().link.Slot() ? S().link.Slot() : 1;
+        const int own = S().own_slot.load() ? S().own_slot.load() : 1;
         reply = HandleHost(own, request);
         Localize(reply);
         return true;
@@ -585,6 +586,9 @@ void LinkLoop() {
         for (auto& e : S().link.Drain()) {
             switch (e.kind) {
             case Event::Kind::Connected:
+                if (S().own_slot.load() && S().own_slot.load() != e.slot)
+                    Log("came back as slot %d (was %d)", e.slot, S().own_slot.load());
+                S().own_slot = e.slot;
                 Log("in the room as slot %d%s", e.slot, S().host ? " (host)" : "");
                 break;
             case Event::Kind::Joined:
@@ -638,7 +642,7 @@ std::string ApiList(const std::string& path) {
 }
 
 std::string GameApiAnswer(const std::string& path, const Json& body) {
-    const int slot = S().link.Slot();
+    const int slot = S().own_slot.load();
     if (path == "/basic_utils/login") {
         return Json{{"ResKind", 0}, {"SessionId", "s" + std::to_string(slot)}, {"UserId", 1000 + slot},
                     {"UserStatus", 0}, {"LanguageId", 1}, {"ServerVersion", 109}}
