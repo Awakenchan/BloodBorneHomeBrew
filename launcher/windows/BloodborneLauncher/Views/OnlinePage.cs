@@ -29,6 +29,25 @@ namespace BloodborneLauncher.Views
             _online = ToggleRow(SymbolRegular.Globe24, L.T("Play online"), L.T("Off: the game stays offline"),
                 () => Ini.Get("online_enabled") == "1", v => Ini.Set("online_enabled", v ? "1" : "0"));
 
+            Group(L.T("Seamless co-op"));
+            ToggleRow(SymbolRegular.PeopleTeam24, L.T("Seamless co-op"),
+                L.T("Play the campaign together in your own encrypted room: no Hunter's Dream, no ports to open"),
+                () => Ini.Get("seamless_enabled") == "1", v => Ini.Set("seamless_enabled", v ? "1" : "0"));
+            _role = ComboRow(SymbolRegular.Crown24, L.T("Role"), L.T("One player hosts, the others join the host's world"),
+                Choices.SeamlessRoles, () => Ini.Get("seamless_role", "guest"), v => Ini.Set("seamless_role", v));
+            IniText(SymbolRegular.Person24, L.T("Your name"), L.T("Shown to the others (up to 16 characters, no spaces)"), "Hunter", "seamless_player", 220);
+            _room = TextRow(SymbolRegular.Door24, L.T("Room name"), L.T("Everyone types the same room name"), "",
+                () => Ini.Get("seamless_room"), v => Ini.Set("seamless_room", v.Trim()), width: 220);
+            _password = TextRow(SymbolRegular.LockClosed24, L.T("Room password"), L.T("Everyone types the same password; the room's traffic is encrypted with it"),
+                "", () => S.SeamlessPassword, v => { S.SeamlessPassword = v; Ws.SaveNow(); }, width: 220);
+            var invite = new StackPanel { Orientation = Orientation.Horizontal };
+            invite.Children.Add(SmallButton(L.T("Copy invite code"), SymbolRegular.Copy24, (_, _) => CopyInvite()));
+            var paste = SmallButton(L.T("Paste invite code"), SymbolRegular.ClipboardPaste24, (_, _) => PasteInvite());
+            paste.Margin = new Thickness(8, 0, 0, 0);
+            invite.Children.Add(paste);
+            Add(Card(SymbolRegular.Link24, L.T("Invite code"),
+                L.T("The host copies it and sends it to friends; they paste it here. It holds the room name and password"), invite, out _));
+
             Group(L.T("Server"));
             ComboRow(SymbolRegular.Server24, L.T("Server"), L.T("Messages, bloodstains, ghosts, co-op and invasions"),
                 Choices.OnlineServers, () => "huntersdream", _ => { });
@@ -49,6 +68,61 @@ namespace BloodborneLauncher.Views
             _test = SmallButton(L.T("Test"), SymbolRegular.PlayCircle24, async (_, _) => await TestAsync());
             Add(Card(SymbolRegular.Pulse24, L.T("Test the connection"), L.T("Checks The Hunter's Dream: game server, co-op sessions and the relay summons use"), _test, out _));
             Body.Children.Add(_results);
+        }
+
+        private readonly System.Windows.Controls.TextBox _room, _password;
+        private readonly FrameworkElement _role;
+        private const string InvitePrefix = "LANTERN-ROOM:";
+
+        private static string RandomText(int length)
+        {
+            const string letters = "abcdefghjkmnpqrstuvwxyz23456789";
+            var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(length);
+            return new string(bytes.Select(b => letters[b % letters.Length]).ToArray());
+        }
+
+        private void CopyInvite()
+        {
+            if (Ini.Get("seamless_room").Length == 0) _room.Text = "room-" + RandomText(8);
+            if (S.SeamlessPassword.Length == 0) _password.Text = RandomText(16);
+            Ini.Set("seamless_room", _room.Text.Trim());
+            S.SeamlessPassword = _password.Text;
+            Ws.SaveNow();
+            var parts = new List<string> { Ini.Get("seamless_room"), S.SeamlessPassword };
+            if (Ini.Get("seamless_server").Length > 0) parts.Add(Ini.Get("seamless_server"));
+            var code = InvitePrefix + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(string.Join('\n', parts)))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            if (ClipboardText.Set(code)) Ws.Log(L.T("Invite code copied: send it to your friends"), LogLevel.Good);
+        }
+
+        private void PasteInvite()
+        {
+            var text = System.Windows.Clipboard.ContainsText() ? System.Windows.Clipboard.GetText().Trim() : "";
+            var start = text.IndexOf(InvitePrefix, StringComparison.OrdinalIgnoreCase);
+            string[] parts = Array.Empty<string>();
+            if (start >= 0)
+            {
+                var body = new string(text[(start + InvitePrefix.Length)..].TakeWhile(c => char.IsLetterOrDigit(c) || c == '-' || c == '_').ToArray())
+                    .Replace('-', '+').Replace('_', '/');
+                body = body.PadRight(body.Length + (4 - body.Length % 4) % 4, '=');
+                try { parts = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(body)).Split('\n'); }
+                catch (FormatException) { }
+            }
+            if (parts.Length < 2 || parts[0].Length == 0)
+            {
+                Prompt.Tell(L.T("Invite code"), L.T("The clipboard holds no invite code. Copy the whole code the host sent you, then paste again."));
+                return;
+            }
+            _room.Text = parts[0];
+            _password.Text = parts[1];
+            Ini.Set("seamless_room", parts[0]);
+            S.SeamlessPassword = parts[1];
+            Ini.Set("seamless_server", parts.Length > 2 ? parts[2] : "");
+            Ini.Set("seamless_role", "guest");
+            if (_role is Segmented segmented) segmented.Select(0, notify: false);
+            else if (_role is System.Windows.Controls.ComboBox box) box.SelectedIndex = 0;
+            Ws.SaveNow();
+            Ws.Log(L.F($"Invite code pasted: room {parts[0]}"), LogLevel.Good);
         }
 
         private readonly Button _hdButton;

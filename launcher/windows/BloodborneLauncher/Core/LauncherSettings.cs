@@ -202,6 +202,12 @@ namespace BloodborneLauncher.Core
             set => Set("online_password", Secret.Protect(value) is { Length: > 0 } encrypted ? encrypted : value);
         }
 
+        public string SeamlessPassword
+        {
+            get => Secret.Unprotect(Str("seamless_password"));
+            set => Set("seamless_password", value.Length == 0 ? "" : Secret.Protect(value) is { Length: > 0 } encrypted ? encrypted : value);
+        }
+
         /// <summary>The Hunter's Dream account token (its device link), encrypted like the password.</summary>
         public string HuntersDreamToken
         {

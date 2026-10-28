@@ -260,6 +260,11 @@
             new(L.T("The Hunter's Dream"), "huntersdream"),
         };
 
+        public static readonly Choice[] SeamlessRoles =
+        {
+            new(L.T("Join"), "guest"), new(L.T("Host"), "host"),
+        };
+
         public static readonly Choice[] SignTimeout =
         {
             new(L.T("30 seconds (default)"), "30"), new(L.T("60 seconds"), "60"), new(L.T("The game's own (180 seconds)"), "0"),

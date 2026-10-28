@@ -7,6 +7,7 @@
 #include "thd.h"
 #include "thd_internal.h"
 #include "windows_trust.h"
+#include "../room/room_service.h"
 
 #include <algorithm>
 #include <atomic>
@@ -84,6 +85,11 @@ const Config& Cfg() {
         const std::string port = Env("BB_P2P_PORT");
         c.p2p_port = port.empty() ? 3658 : std::atoi(port.c_str());
         if (c.p2p_port <= 0 || c.p2p_port > 65535) c.p2p_port = 3658;
+        if (BbRoom::Active()) {
+            c.np_base = "room://127.0.0.1";
+            c.stun = "off";
+            c.p2p_addr = "127.0.0.1";
+        }
         c.verify_tls = Env("BB_THD_VERIFY_TLS") != "0";
         return c;
     }();
@@ -91,7 +97,7 @@ const Config& Cfg() {
 }
 
 bool Enabled() {
-    static const bool on = Env("BB_ONLINE") == "1" && Env("BB_NET_BACKEND") == "thd";
+    static const bool on = Env("BB_ONLINE") == "1" && (Env("BB_NET_BACKEND") == "thd" || BbRoom::Active());
     return on;
 }
 
@@ -108,6 +114,10 @@ void LoadAccountLocked() {
     loaded = true;
     g_name = Env("BB_THD_ONLINE_ID").substr(0, 16);
     g_token = Env("BB_THD_TOKEN");
+    if (BbRoom::Active()) {
+        g_name = BbRoom::PlayerName();
+        g_token = g_name.empty() ? "" : "room";
+    }
 }
 } // namespace
 
@@ -149,6 +159,11 @@ std::string OnlineId() {
 
 void Initialize() {
     const Config& c = Cfg();
+    if (BbRoom::Active()) {
+        if (SignedIn()) BbRoom::Start(c.p2p_port);
+        else Log("seamless co-op needs a player name (the launcher's Seamless page): the game stays offline");
+        return;
+    }
     if (SignedIn()) {
         Log("The Hunter's Dream as %s: session service %s, P2P port %d", AccountName().c_str(),
             c.np_base.c_str(), c.p2p_port);
@@ -264,15 +279,18 @@ std::string NpBase() {
 
 bool NpPost(const std::string& path, const Json& body, Json& out, std::string& error,
             int timeout_ms) {
+    if (BbRoom::Active()) return BbRoom::Call(path, body, out, error, timeout_ms);
     const std::string text = body.dump();
     return ParseReply("POST " + path, Perform(Cfg().np_base, path, &text, timeout_ms), out, error);
 }
 
 bool NpGet(const std::string& path, Json& out, std::string& error, int timeout_ms) {
+    if (BbRoom::Active()) return BbRoom::Call(path, Json::object(), out, error, timeout_ms);
     return ParseReply("GET " + path, Perform(Cfg().np_base, path, nullptr, timeout_ms), out, error);
 }
 
 void AddGameHeaders(std::vector<std::pair<std::string, std::string>>& headers) {
+    if (BbRoom::Active()) return;
     // The game's own traffic carries the token too, so the server's game sessions map to the
     // account, and the ruleset, so its messages and bloodstains stay among the same rules.
     if (const std::string token = AccountToken(); !token.empty()) {
@@ -385,6 +403,7 @@ int P2pPort() {
 }
 void SetP2pPortBound(int port) {
     g_p2p_bound.store(port, std::memory_order_relaxed);
+    if (BbRoom::Active()) BbRoom::SetGamePort(port);
 }
 int StunRttUs() {
     return g_stun_rtt_us.load();
