@@ -1106,6 +1106,11 @@
             <Line Type="bytes" Address="0x019729b6" Value="e9cd9a14020f1f4000"/>
         </PatchList>
     </Metadata>
+    <Metadata Title="Bloodborne" Name="Enable Extra Messenger Skins" Note="The game treats its hidden pre-order messenger skins as installed and offers them in the Hunter's Dream: they are in the game's own files, only the licence flags kept them out." Author="distpade (NexusMods)" PatchVer="1.0" AppVer="01.09" AppElf="eboot.bin" isEnabled="false">
+        <PatchList>
+            <Line Type="bytes" Address="0x023b67b3" Value="49c7460801010101"/>
+        </PatchList>
+    </Metadata>
     <Metadata Title="Bloodborne" Name="1280x800 Light Grid For SteamDeck (READ NOTES)" Note="The light grid's tiles at 1280x800, a single tile for a window of that size: far fewer light draw calls. Use the one that matches your window size, not the render size." Author="Lantern Engine" PatchVer="1.0" AppVer="01.09" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
             <Line Type="bytes" Address="0x02695cbc" Value="00050000"/>

@@ -108,8 +108,9 @@ class Eboot:
 
 
 class Patch:
-    def __init__(self, name, note):
+    def __init__(self, name, note, author=None):
         self.name, self.note, self.writes = name, note, []
+        self.author = author
 
     def write(self, at, was, now):
         if len(was) != len(now):
@@ -928,6 +929,15 @@ def enemy_control(b):
     return p
 
 
+def messenger_skins(b):
+    p = Patch('Enable Extra Messenger Skins', "The game treats its hidden pre-order messenger skins as installed and "
+                                              "offers them in the Hunter's Dream: they are in the game's own files, "
+                                              'only the licence flags kept them out.',
+              author='distpade (NexusMods)')
+    b.site(p, 0x1fb67b3, h('49c7460800000000'), h('49c7460801010101'))
+    return p
+
+
 RESOLUTIONS = ((640, 360, '16:9'), (960, 540, '16:9'), (1440, 810, '16:9'), (1600, 900, '16:9'),
                (2560, 1440, '16:9'), (3840, 2160, '16:9'), (1280, 800, '16:10'), (1920, 1200, '16:10'),
                (2560, 1600, '16:10'), (2560, 1080, '21:9'), (3440, 1440, '21:9'), (5120, 2160, '21:9'),
@@ -1076,7 +1086,7 @@ def build(eboot):
         graphics_heaps(b), intel_tonemap(b), sfx_ribbon(b), no_http(b)] + physics(b) + [
         thirty(b), no_delta_time(b), frame_rate(b, 60), frame_rate(b, 90), uncapped(b), debug_menu(b),
         camera_auto_turn(b), camera_distance(b), no_rally_decay(b), no_rally(b)] + debug_flags(b) + [
-        analog_run(b), region(b), capture_folder(b), enemy_control(b)] + light_grids(b) + [
+        analog_run(b), region(b), capture_folder(b), enemy_control(b), messenger_skins(b)] + light_grids(b) + [
         optimal_1080p(b), resolution(b)] + resolutions(b) + [free_camera(b), sprint(b), reflections(b)]
     seen = {}
     for patch in patches:
@@ -1096,7 +1106,7 @@ def render(patches):
     lines.append('    </TitleID>')
     for patch in patches:
         lines.append(f'    <Metadata Title="Bloodborne" Name="{escape(patch.name, {chr(34): "&quot;"})}" '
-                     f'Note="{escape(patch.note, {chr(34): "&quot;"})}" Author="{AUTHOR}" PatchVer="1.0" '
+                     f'Note="{escape(patch.note, {chr(34): "&quot;"})}" Author="{patch.author or AUTHOR}" PatchVer="1.0" '
                      'AppVer="01.09" AppElf="eboot.bin" isEnabled="false">')
         lines.append('        <PatchList>')
         for at, _, now in patch.writes:
