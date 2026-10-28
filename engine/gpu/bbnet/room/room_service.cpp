@@ -25,6 +25,7 @@ inline void CloseSocket(SocketHandle s) { closesocket(s); }
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -44,7 +45,8 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5 };
+constexpr std::size_t kBatchBytes = 16000;
 
 std::string Env(const char* name) {
     const char* v = std::getenv(name);
@@ -477,6 +479,12 @@ SocketHandle OpenLoopbackUdp(int* port) {
         return kNoSocket;
     }
     *port = ntohs(addr.sin_port);
+#ifdef _WIN32
+    u_long nonblocking = 1;
+    ioctlsocket(s, FIONBIO, &nonblocking);
+#else
+    fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
+#endif
     return s;
 }
 
@@ -529,13 +537,25 @@ void BridgeLoop() {
         if (::select(static_cast<int>(top + 1), &set, nullptr, nullptr, &tv) <= 0) continue;
         for (const auto& [slot, s] : bridges) {
             if (!FD_ISSET(s, &set)) continue;
-            sockaddr_in from{};
-            socklen_t len = sizeof(from);
-            const int n = ::recvfrom(s, reinterpret_cast<char*>(buffer.data()) + 1, static_cast<int>(buffer.size() - 1), 0,
-                                     reinterpret_cast<sockaddr*>(&from), &len);
-            if (n <= 0) continue;
-            buffer[0] = kDatagram;
-            S().link.Send(slot, buffer.data(), static_cast<std::size_t>(n) + 1);
+            std::vector<std::uint8_t> batch{kBatch};
+            int count = 0;
+            for (;;) {
+                sockaddr_in from{};
+                socklen_t len = sizeof(from);
+                const int n = ::recvfrom(s, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0,
+                                         reinterpret_cast<sockaddr*>(&from), &len);
+                if (n <= 0) break;
+                if (batch.size() + 2 + static_cast<std::size_t>(n) > kBatchBytes && count) {
+                    S().link.Send(slot, batch.data(), batch.size());
+                    batch.assign(1, kBatch);
+                    count = 0;
+                }
+                batch.push_back(static_cast<std::uint8_t>(n));
+                batch.push_back(static_cast<std::uint8_t>(n >> 8));
+                batch.insert(batch.end(), buffer.begin(), buffer.begin() + n);
+                ++count;
+            }
+            if (count) S().link.Send(slot, batch.data(), batch.size());
         }
     }
 }
@@ -545,6 +565,17 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
     const std::uint8_t kind = data[0];
     if (kind == kDatagram) {
         BridgeToGame(sender, data.data() + 1, data.size() - 1);
+        return;
+    }
+    if (kind == kBatch) {
+        std::size_t at = 1;
+        while (data.size() - at >= 2) {
+            const std::size_t n = data[at] | (std::size_t(data[at + 1]) << 8);
+            at += 2;
+            if (n > data.size() - at) break;
+            BridgeToGame(sender, data.data() + at, n);
+            at += n;
+        }
         return;
     }
     if (kind == kRequest || kind == kReply) {
@@ -619,8 +650,9 @@ void LinkLoop() {
                 Log("lost the room connection; reconnecting");
                 break;
             case Event::Kind::Refused:
-                Log("the room server refused this room: it is full (4 players), or your connection already has "
-                    "another room open (one room per player); retrying");
+                Log("could not join the room (%s): it may be full (5 players), or your connection already has another "
+                    "room open (one room per player); retrying",
+                    S().link.LastError().empty() ? "refused" : S().link.LastError().c_str());
                 break;
             }
         }

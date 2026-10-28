@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "gpu/bbnet/room/room_crypto.h"
@@ -113,6 +114,35 @@ int TestLive(const char* server) {
     return 0;
 }
 
+int Soak(const char* server, int seconds) {
+    const std::string name = "lantern-soak-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    Link a, b;
+    a.Start(server, name, "secret");
+    Event e;
+    if (!Await(a, Event::Kind::Connected, &e)) return 1;
+    b.Start(server, name, "secret");
+    if (!Await(b, Event::Kind::Connected, &e)) return 1;
+    int drops = 0;
+    long long got = 0, sent = 0;
+    const std::vector<std::uint8_t> frame(300, 5);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    while (std::chrono::steady_clock::now() < end) {
+        for (int i = 0; i < 5; ++i) {
+            sent += a.Send(b.Slot(), frame.data(), frame.size());
+            sent += b.Send(a.Slot(), frame.data(), frame.size());
+        }
+        for (Link* l : {&a, &b}) {
+            for (auto& ev : l->Drain()) {
+                if (ev.kind == Event::Kind::Data) ++got;
+                if (ev.kind == Event::Kind::Disconnected) ++drops;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    std::printf("soak: %d s, sent %lld, got %lld, drops %d\n", seconds, sent, got, drops);
+    return drops ? 1 : 0;
+}
+
 } // namespace
 
 int main() {
@@ -120,6 +150,9 @@ int main() {
     TestSeal();
     TestUrl();
     std::printf("room crypto: ok\n");
+    if (const char* soak = std::getenv("BB_ROOM_SOAK"); soak && *soak) {
+        return Soak(std::getenv("BB_ROOM_TEST_SERVER"), std::atoi(soak));
+    }
     if (const char* server = std::getenv("BB_ROOM_TEST_SERVER"); server && *server) {
         const int live = TestLive(server);
         std::printf("room live: %s\n", live ? "FAILED" : "ok");

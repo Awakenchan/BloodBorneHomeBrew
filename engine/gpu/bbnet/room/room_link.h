@@ -12,10 +12,7 @@
 #include <vector>
 
 #include "room_crypto.h"
-
-namespace httplib::ws {
-class WebSocketClient;
-}
+#include "room_ws.h"
 
 namespace BbRoom {
 
@@ -45,6 +42,7 @@ public:
     int HostSlot() const { return host_.load(); }
     std::vector<int> Members() const;
     const std::string& RoomId() const { return secret_.room_id; }
+    const std::string& LastError() const { return last_error_; }
 
 private:
     void Run();
@@ -65,7 +63,8 @@ private:
     std::deque<Event> events_;
     std::vector<int> members_;
     std::mutex socket_mutex_;
-    std::shared_ptr<httplib::ws::WebSocketClient> socket_;
+    std::shared_ptr<WebSocket> socket_;
+    std::string last_error_;
 };
 
 std::string RoomUrl(const std::string& server, const std::string& room_id);

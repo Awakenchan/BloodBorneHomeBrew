@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <chrono>
 
-#include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <openssl/rand.h>
 
@@ -49,7 +48,11 @@ void Link::Stop() {
     stop_ = true;
     {
         std::lock_guard lock(socket_mutex_);
-        if (socket_) socket_->close();
+        if (socket_) {
+            const std::string text = R"({"t":"leave"})";
+            socket_->Send(text.data(), text.size(), false);
+            socket_->Close();
+        }
     }
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
@@ -66,22 +69,23 @@ bool Link::Send(int target, const std::uint8_t* data, std::size_t size) {
     auto sealed = Seal(secret_.key, static_cast<std::uint8_t>(slot), data, size);
     if (sealed.empty()) return false;
     sealed.insert(sealed.begin(), static_cast<std::uint8_t>(target));
-    std::shared_ptr<httplib::ws::WebSocketClient> socket;
+    std::shared_ptr<WebSocket> socket;
     {
         std::lock_guard lock(socket_mutex_);
         socket = socket_;
     }
-    return socket && socket->send(reinterpret_cast<const char*>(sealed.data()), sealed.size());
+    return socket && socket->Send(sealed.data(), sealed.size(), true);
 }
 
 void Link::SetHost(bool host) {
     want_host_ = host;
-    std::shared_ptr<httplib::ws::WebSocketClient> socket;
+    std::shared_ptr<WebSocket> socket;
     {
         std::lock_guard lock(socket_mutex_);
         socket = socket_;
     }
-    if (socket && connected_) socket->send(std::string(host ? R"({"t":"host"})" : R"({"t":"unhost"})"));
+    const std::string text = host ? R"({"t":"host"})" : R"({"t":"unhost"})";
+    if (socket && connected_) socket->Send(text.data(), text.size(), false);
 }
 
 std::vector<Event> Link::Drain() {
@@ -122,45 +126,42 @@ void Link::Run() {
 }
 
 bool Link::Session() {
-    auto socket = std::make_shared<httplib::ws::WebSocketClient>(url_);
-    if (!socket->is_valid()) return false;
-    socket->set_connection_timeout(10);
-    socket->set_tcp_nodelay(true);
-    socket->set_websocket_ping_interval(15);
+    auto socket = std::make_shared<WebSocket>();
+    std::string error;
+    const bool opened = socket->Connect(url_, 10, error);
+    if (!opened) {
+        last_error_ = error;
+        return false;
+    }
     {
         std::lock_guard lock(socket_mutex_);
         if (stop_) return false;
         socket_ = socket;
     }
     bool welcomed = false;
-    const bool opened = socket->connect();
-    if (opened) {
-        std::string message;
-        while (!stop_) {
-            const auto result = socket->read(message);
-            if (result == httplib::ws::ReadResult::Fail) break;
-            if (result == httplib::ws::ReadResult::Text) {
-                const bool was = connected_.load();
-                Handle(message);
-                if (!was && connected_) {
-                    welcomed = true;
-                    if (want_host_) socket->send(std::string(R"({"t":"host"})"));
+    socket->Run([&](std::string&& message, bool binary) {
+        if (!binary) {
+            const bool was = connected_.load();
+            Handle(message);
+            if (!was && connected_) {
+                welcomed = true;
+                if (want_host_) {
+                    const std::string text = R"({"t":"host"})";
+                    socket->Send(text.data(), text.size(), false);
                 }
-                continue;
             }
-            if (message.size() < 1 + kSealOverhead) continue;
-            const auto sender = static_cast<std::uint8_t>(message[0]);
-            auto plain = Open(secret_.key, sender, reinterpret_cast<const std::uint8_t*>(message.data()) + 1,
-                              message.size() - 1);
-            if (!plain) continue;
-            Push({Event::Kind::Data, sender, std::move(*plain)});
+            return;
         }
-    }
+        if (message.size() < 1 + kSealOverhead) return;
+        const auto sender = static_cast<std::uint8_t>(message[0]);
+        auto plain = Open(secret_.key, sender, reinterpret_cast<const std::uint8_t*>(message.data()) + 1, message.size() - 1);
+        if (!plain) return;
+        Push({Event::Kind::Data, sender, std::move(*plain)});
+    });
     {
         std::lock_guard lock(socket_mutex_);
         socket_.reset();
     }
-    socket->close();
     if (connected_.exchange(false)) {
         {
             std::lock_guard lock(mutex_);
@@ -169,7 +170,7 @@ bool Link::Session() {
         slot_ = 0;
         host_ = 0;
         Push({Event::Kind::Disconnected, 0, {}});
-    } else if (opened && !welcomed && !stop_) {
+    } else if (!welcomed && !stop_) {
         Push({Event::Kind::Refused, 0, {}});
     }
     return welcomed;

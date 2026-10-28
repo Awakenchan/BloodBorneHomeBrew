@@ -137,6 +137,76 @@ bool BellRules(std::uint8_t* image, std::size_t size) {
     return any;
 }
 
+constexpr std::size_t kSlotSummary = 0x186fe40;
+constexpr std::uint8_t kSlotSummaryEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
+                                              0x41, 0x54, 0x53, 0x48, 0x81, 0xec, 0x88, 0x00, 0x00, 0x00};
+constexpr std::size_t kKindCount = 0x18796c0;
+constexpr std::uint8_t kKindCountEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56};
+constexpr std::size_t kCoopCount = 0x15bdc20;
+constexpr std::uint8_t kCoopCountEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
+                                            0x41, 0x55, 0x41, 0x54, 0x53, 0x50};
+constexpr std::size_t kBossCountCall = 0x17bf187;
+constexpr std::uint8_t kBossCountCallBytes[] = {0xe8, 0x94, 0xea, 0xdf, 0xff};
+constexpr std::size_t kDopingBranch = 0x138bcbf;
+constexpr std::uint8_t kDopingOriginal[] = {0x83, 0xf8, 0x02, 0x75, 0x32};
+constexpr std::uint8_t kDopingPatched[] = {0x83, 0xf8, 0x02, 0x7c, 0x32};
+constexpr int kCoopKinds[] = {7, 1, 0x15, 0x16, 0x17};
+constexpr int kMaxCooperators = 3;
+
+std::uint8_t* g_image = nullptr;
+thread_local bool g_in_summary = false;
+thread_local bool g_in_coop_count = false;
+
+std::int64_t __attribute__((sysv_abi)) OnSlotSummary(std::uint64_t, const std::uint64_t* saved) {
+    if (g_in_summary) return 0;
+    const std::uint64_t out = saved[5], selector = saved[4], debug = saved[3];
+    g_in_summary = true;
+    const std::int64_t result = Call(reinterpret_cast<std::uint64_t>(g_image + kSlotSummary), out, selector, debug);
+    g_in_summary = false;
+    std::int32_t status = 0;
+    if (out && selector && Peek(out + 4, &status) && status == 2) {
+        int cooperators = 0;
+        for (const int kind : kCoopKinds)
+            cooperators += static_cast<std::int32_t>(Call(reinterpret_cast<std::uint64_t>(g_image + kKindCount), selector, kind));
+        if (cooperators < kMaxCooperators) *reinterpret_cast<std::int32_t*>(out + 4) = 0;
+    }
+    const_cast<std::uint64_t*>(saved)[-1] = static_cast<std::uint64_t>(result);
+    return 1;
+}
+
+std::int64_t __attribute__((sysv_abi)) OnCoopCount(std::uint64_t, const std::uint64_t* saved) {
+    if (g_in_coop_count || saved[6] != reinterpret_cast<std::uint64_t>(g_image + kBossCountCall + sizeof kBossCountCallBytes))
+        return 0;
+    g_in_coop_count = true;
+    const std::int64_t count = static_cast<std::int32_t>(
+        Call(reinterpret_cast<std::uint64_t>(g_image + kCoopCount), saved[5], saved[4], saved[3]));
+    g_in_coop_count = false;
+    const_cast<std::uint64_t*>(saved)[-1] = static_cast<std::uint64_t>(std::min<std::int64_t>(count, 2));
+    return 1;
+}
+
+bool FourPlayers(std::uint8_t* image, std::size_t size) {
+    if (!Matches(image, size, kKindCount, kKindCountEntry, sizeof kKindCountEntry) ||
+        !Matches(image, size, kBossCountCall, kBossCountCallBytes, sizeof kBossCountCallBytes) ||
+        !Matches(image, size, kDopingBranch, kDopingOriginal, sizeof kDopingOriginal)) {
+        Say("seamless: 4 players in one world left off: the game's code there is not 1.09's");
+        return false;
+    }
+    g_image = image;
+    Hook hooks[2];
+    if (!Prepare(hooks[0], image, size, kSlotSummary, kSlotSummaryEntry, OnSlotSummary) ||
+        !Prepare(hooks[1], image, size, kCoopCount, kCoopCountEntry, OnCoopCount)) {
+        Discard(hooks[0]);
+        Discard(hooks[1]);
+        Say("seamless: 4 players in one world left off: the game's code there is not 1.09's");
+        return false;
+    }
+    Commit(std::span(hooks, 2));
+    WriteCode(image + kDopingBranch, kDopingPatched, sizeof kDopingPatched);
+    Say("seamless: up to 4 players in one world (host and 3 cooperators); bosses scale as for 2 cooperators beyond 2");
+    return true;
+}
+
 bool SetSignTimeout(std::uint8_t* image, std::size_t size, long seconds) {
     const std::size_t end = kAgeCheck + sizeof kAgeCheckHead + 4;
     if (!Matches(image, size, kAgeCheck, kAgeCheckHead, sizeof kAgeCheckHead)) {
@@ -164,6 +234,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
     bool any = FixCharacterId(image, size);
     if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "room") == 0)
         any = BellRules(image, size) || any;
+        any = FourPlayers(image, size) || any;
     const char* timeout = std::getenv("BB_SIGN_TIMEOUT");
     const long seconds = timeout ? std::strtol(timeout, nullptr, 10) : 0;
     if (seconds > 0 && seconds != 180) any = SetSignTimeout(image, size, seconds) || any;
