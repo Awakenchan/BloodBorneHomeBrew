@@ -648,7 +648,8 @@ COMMUNITY_NAMES = (
     'Restore Debug Menu (READ NOTES)', 'Disable Camera Auto Rotation via Movement', 'Increased camera distance',
     'No Rally Decay', 'Disable Rally (HP Regain)', 'Player No Dead (Read note)', 'Player Stealth (Read note)',
     'Player Silent (Read note)', 'Sensitive Analog Input (easier to run)', 'Unlock Game Region',
-    'Bookmark and Capture outputs', 'Enemy Control', '1280x800 Light Grid For SteamDeck (READ NOTES)',
+    'Bookmark and Capture outputs', 'Enemy Control', 'Enable Extra Messenger Skins',
+    '1280x800 Light Grid For SteamDeck (READ NOTES)',
     '1080p Light Grid (READ NOTES)', '1440p Light Grid (READ NOTES)', '4k Light Grid (READ NOTES)', 'Optimal 1080p',
     'Resolution Patch 640x360 (16:9)', 'Resolution Patch 960x540 (16:9)', 'Resolution Patch 1280x720 (16:9)',
     'Resolution Patch 1440x810 (16:9)', 'Resolution Patch 1600x900 (16:9)', 'Resolution Patch 2560x1440 (16:9)',
@@ -662,7 +663,7 @@ COMMUNITY_NAMES = (
 class OwnPatchTests(unittest.TestCase):
     def test_every_community_name_is_built_in(self):
         names = [meta.get('Name') for meta in ET.parse(XML).getroot().iter('Metadata')]
-        self.assertEqual(len(COMMUNITY_NAMES), 61)
+        self.assertEqual(len(COMMUNITY_NAMES), 62)
         self.assertEqual(sorted(names), sorted(COMMUNITY_NAMES))
 
     def test_the_movement_steps_follow_the_frame_time(self):
@@ -690,9 +691,9 @@ class OwnPatchTests(unittest.TestCase):
             writes = {o + EBOOT_BASE for o, _ in compile_patches(XML, [name], '01.09', [(0, 1 << 40)])}
             self.assertFalse(writes & {0x1E4ABCA, 0x3ABC500, 0x3ABC560}, name)
 
-    def test_every_built_in_patch_is_lantern_engines(self):
+    def test_every_built_in_patch_is_lantern_engines_or_credited(self):
         metas = list(ET.parse(XML).getroot().iter('Metadata'))
-        self.assertEqual({meta.get('Author') for meta in metas}, {'Lantern Engine'})
+        self.assertTrue({meta.get('Author') for meta in metas} <= {'Lantern Engine', 'distpade (NexusMods)'})
         names = [meta.get('Name') for meta in metas]
         self.assertEqual(len(names), len(set(names)))
         for meta in metas:

@@ -6,7 +6,7 @@
 # to the executable (out/ by default) and in BB_DLSS_DIR. Needs an NVIDIA RTX GPU.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
-version=v310.9.1
+version=v310.9.16
 base="https://raw.githubusercontent.com/NVIDIA/DLSS/$version/lib"
 dest=${1:-out}
 mkdir -p "$dest"
