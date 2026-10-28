@@ -344,7 +344,7 @@ state.
   Liverpool's elsewhere) and shader user data through `Shader::Info::UserData()/FlatUserData()/
   ProgramBase()`, which return the snapshot stage B installed for the stages of the current
   draw (`Info::ud_snapshots`, thread-local).
-- Everything else stage A does on stage B's state first waits for it to run dry
+- Everything else that stage A does on stage B's state first waits for it to run dry
   (`Rasterizer::DrainDrawPipe`): every public rasterizer entry point on the GPU thread, PM4
   packets other than register writes/draws/dispatches/fences (`PipelinedOpcode`), pending
   commands (`ProcessCommands`), compute queue packets, `DumpConstRam`.
