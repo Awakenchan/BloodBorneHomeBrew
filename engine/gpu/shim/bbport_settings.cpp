@@ -226,6 +226,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.mouse_invert_y=i!=0;
     } else if (key == "mouse_auto_rotation") {
         v.mouse_auto_rotation=i!=0;
+    } else if (key == "pc_menus") {
+        v.pc_menus=i!=0;
     } else if (key == "button_prompts") {
         int mode = -1;
         for (int m = 0; m < PromptsCount; ++m) {
@@ -634,6 +636,7 @@ void Save() {
     put("mouse_invert_x",flag(v.mouse_invert_x));
     put("mouse_invert_y",flag(v.mouse_invert_y));
     put("mouse_auto_rotation",flag(v.mouse_auto_rotation));
+    put("pc_menus",flag(v.pc_menus));
     put("mouse_sensitivity",std::to_string(v.mouse_sensitivity.load()));
     put("button_prompts", ButtonPromptsNames[std::clamp(v.button_prompts.load(), 0, PromptsCount - 1)]);
     put("pad_icons", PadIconsNames[std::clamp(v.pad_icons.load(), 0, PadIconsCount - 1)]);

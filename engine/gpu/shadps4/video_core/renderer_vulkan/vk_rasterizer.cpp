@@ -2003,6 +2003,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             }
             const VAddr address = buffer.base_address;
             if (role == Motion::BufferRole::SmallSkeleton &&
+                buffer_cache.IsRegionGpuModified(address, size)) {
+                gated = false;
+                break;
+            }
+            if (role == Motion::BufferRole::SmallSkeleton &&
                 memory->IsValidGpuMapping(address, 0) &&
                 memory->ClampRangeSize(address, size) == size) {
                 palette = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,

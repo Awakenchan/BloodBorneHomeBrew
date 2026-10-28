@@ -5,6 +5,9 @@
 #include "cheats.h"
 #include "effect_timing.h"
 #include "engine_state.h"
+#include "frame_rate.h"
+#include "game_status.h"
+#include "job_slots.h"
 #include "graphics.h"
 #include "loading.h"
 #include "menu_memory.h"
@@ -45,6 +48,7 @@ std::int64_t __attribute__((sysv_abi)) OnStep(std::uint64_t, const std::uint64_t
 }
 
 std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_t* saved) {
+    FrameRate::Tick();
     Loading::Tick(saved[5]);
     ChangeAppearance::Tick();
     Rebirth::Tick();
@@ -54,6 +58,7 @@ std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_
     Widescreen::Tick();
     Cheats::Tick();
     TrophySync::Tick();
+    GameStatus::Tick();
     return 0;
 }
 
@@ -120,7 +125,11 @@ void Install(std::uint8_t* image, std::size_t size) {
     const bool online = OnlineFixes::Install(image, size);
     const bool guard = RenderGuard::Install(image, size);
     const bool timing = EffectTiming::Install(image, size);
-    if (!(editor || input || camera || wide || graphics || menus || rebirth || cheats || online || guard || timing)) {
+    const bool frame_rate = FrameRate::Install(image, size);
+    const bool slots = JobSlots::Install(image, size);
+    const bool status = GameStatus::Install(image, size);
+    if (!(editor || input || camera || wide || graphics || menus || rebirth || cheats || online || guard || timing ||
+          frame_rate || slots || status)) {
         for (auto& h : hooks) Discard(h);
         host_log("engine features off: none could be prepared");
         return;

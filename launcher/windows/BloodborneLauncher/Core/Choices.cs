@@ -138,9 +138,9 @@
         {
             new("60 FPS", "60"),
             new("90 FPS", "90", L.T("Includes the sprint fix for high frame rates")),
-            new("120 FPS", "120", L.T("The 90 FPS patch made for 120")),
-            new("144 FPS", "144", L.T("The 90 FPS patch made for 144")),
-            new(L.T("Uncapped"), "uncap", L.T("The community uncapped patch, no limit. It can freeze at the end of a boss intro (Vicar Amelia's); 120 and 144 use another patch")),
+            new("120 FPS", "120", L.T("For 120 Hz screens")),
+            new("144 FPS", "144", L.T("For 144 Hz screens")),
+            new(L.T("Uncapped"), "uncap", L.T("No frame-rate limit: the game's timing follows its frame rate. It can freeze at the end of a boss intro (Vicar Amelia's)")),
             new(L.T("30 FPS (as on PS4)"), "30"),
         };
 

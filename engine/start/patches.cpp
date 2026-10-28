@@ -677,8 +677,17 @@ PatchResult CompilePatches(const PatchRequest& request) {
     const std::map<std::string, int> scaled_fps{{"120", 120}, {"144", 144}};
     const auto preset_it = presets.find(request.fps);
     if (preset_it == presets.end() && !scaled_fps.count(request.fps)) throw Error("invalid FPS preset " + request.fps);
-    const std::vector<std::string> preset =
+    const std::vector<std::string> listed =
         preset_it != presets.end() ? preset_it->second : std::vector<std::string>{kScaledBase, kSprint};
+    const bool engine_rate =
+        !listed.empty() && Env("LANTERN_FRAMERATE", "1") != "0" && !Env("BB_ENGINE_IMAGE_SHA256", "").empty();
+    if (engine_rate) {
+        SetEnv("LANTERN_FRAMERATE_FROM_ENGINE", "1");
+        Log("Patches: %s FPS from the engine's native frame rate (no frame-rate patches)", request.fps.c_str());
+    } else {
+        UnsetEnv("LANTERN_FRAMERATE_FROM_ENGINE");
+    }
+    const std::vector<std::string> preset = engine_rate ? std::vector<std::string>{} : listed;
     std::vector<std::string> names = preset;
     const auto has = [&](const std::string& n) { return std::find(names.begin(), names.end(), n) != names.end(); };
     for (const std::string& n : Split(request.extra, ';'))

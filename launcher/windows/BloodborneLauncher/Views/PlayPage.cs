@@ -114,6 +114,11 @@ namespace BloodborneLauncher.Views
             _gameIcon = gameCard.Icon;
             gameCard.ShowIcon = true;
             Add(gameCard);
+            ToggleRow(SymbolRegular.TextBulletListSquare24, L.T("Lantern menus in the game"),
+                L.T("The PC menus Lantern Engine adds to the game: the extra pages in System (PC graphics, controls, camera), the title ") +
+                L.T("screen's entries and the Altar of Despair's rebirth. Off: only the game's own menus, as on PS4; the launcher and the ") +
+                L.T("overlay (Insert or L3 + R3) still change every setting. Takes effect at the next start"),
+                () => Ini.Get("pc_menus", "1") != "0", v => Ini.Set("pc_menus", v ? "1" : "0"));
 
             // The Old Hunters on base-game dumps: the folder of the dumped add-ons (BB_DLC_DIR).
             _resetDlc = IconButton(SymbolRegular.Dismiss24, L.T("No DLC folder"), (_, _) =>

@@ -413,8 +413,10 @@ void host_bindings_mouse_held(std::uint32_t inputs, bool held[kBindCount]) {
 }
 
 void host_bindings_apply(const bool held[kBindCount], bool strong, PadState& pad) {
+    const bool menu = menu_pointer_in_menu();
     for (int a = 0; a < kBindCount; ++a) {
         if (!held[a]) continue;
+        if ((a == kBindConfirm || a == kBindBack) && !menu) continue;
         std::uint32_t bit = kActions[a].button;
         if (a == kBindAttack && strong) bit = kR2;
         if (a == kBindConfirm) bit = menu_confirm_button();

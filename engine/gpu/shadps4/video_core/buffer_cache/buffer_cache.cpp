@@ -450,6 +450,16 @@ static u32 DynamicRetrySeconds() {
     return seconds;
 }
 
+/// LANTERN_MEMORY_RETRY_LIMIT (Engine switches, on by default; 0: no limit): a block the CPU moved
+/// back in place three times stays in place for good, so the retries do not grow with every area seen.
+static u32 DynamicRetryStrikes() {
+    static const u32 strikes = [] {
+        const char* env = std::getenv("LANTERN_MEMORY_RETRY_LIMIT");
+        return env && env[0] == '0' ? 0u : 3u;
+    }();
+    return strikes;
+}
+
 /// bbport BB_DYNAMIC_RETRY_MB=<MiB a second> (default 8): blocks retried at most, so a retry of
 /// data the CPU does rewrite every frame (write faults, then a move back) comes a little at a time.
 static u64 DynamicRetryBytes() {
@@ -2259,6 +2269,11 @@ void BufferCache::NoteDynamic(u64 block) {
     auto& retry = dynamic_retry[block];
     // Long in VRAM since its last retry (four times its wait): what the CPU writes there now is
     // new, and it starts over.
+    const u32 limit = DynamicRetryStrikes();
+    if (limit != 0 && retry.strikes >= limit) {
+        retry.since = now;
+        return;
+    }
     if (retry.strikes != 0 &&
         now - retry.since > 4 * (DynamicRetrySeconds() << std::min<u32>(retry.strikes - 1, 5))) {
         retry.strikes = 0;
@@ -2280,7 +2295,8 @@ void BufferCache::ProcessDynamicRetries(u32 now) {
         if (budget == 0) {
             break;
         }
-        if (now - retry.since < (base << std::min<u32>(retry.strikes - 1, 5))) {
+        if (now - retry.since < (base << std::min<u32>(retry.strikes - 1, 5)) ||
+            (DynamicRetryStrikes() != 0 && retry.strikes >= DynamicRetryStrikes())) {
             continue;
         }
         const u64 group = std::min<u64>((block << block_shift) >> USE_GROUP_BITS, group_use.size() - 1);

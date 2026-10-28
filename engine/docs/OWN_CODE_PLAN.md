@@ -114,3 +114,48 @@ WPF-UI, cpp-httplib, wepoll, the fonts. And The Hunter's Dream servers while we 
    renamed.
 4. **Then shadPS4.** The shadPS4-derived renderer and core are replaced or reduced to what Lantern
    needs, module by module, the same way as bbhost.
+
+## Where it stands (2026-10-28)
+
+About 186k inherited lines are left, libraries excluded:
+
+| Part | Inherited lines | Plan |
+|---|---|---|
+| Renderer and shader compiler | ~101k (54%) | rewrite |
+| Online: shadNet pool | ~54k | drop or rewrite (user's call) |
+| Start, tools, tests | ~14k | mostly delete |
+| Runtime (loader, memory, saves) | ~8k | rewrite |
+| PC layer leftovers | ~7k | rewrite |
+| Online: Hunter's Dream backend | ~3.6k | kept on purpose |
+
+Steps, in order:
+
+1. Delete dead bbport code: the old Python launcher, the GTK launcher, the fsr4cap tools (small).
+2. Rename the ~415 `BB_` switches to `LANTERN_` with toggles; rename `bbport_` and shadPS4 names (small).
+3. Rewrite the credited bits: AwesomeObserver, deadinside28, 0xCydral fixes (small).
+4. Rewrite the runtime and PC-layer leftovers, module by module (medium).
+5. shadNet online pool: drop it or rewrite it (user's call).
+6. Renderer: the GPU reads descriptors, textures as objects, all shaders built at install (big, weeks).
+
+Compared with bbhost's render/next-13 branch:
+
+| | bbhost next-13 | Lantern 0.9.37 |
+|---|---|---|
+| Game CPU code | native | native |
+| System libraries | their own, all 660 | mostly bbport's (16% ours) |
+| Draws | built from the engine's objects | read from the GPU command stream, then translated |
+| Shaders | decompiled to structured SPIR-V/HLSL | our native compiler translates them, shadPS4-style |
+| Textures | known by engine object | guessed by address and hash |
+| GPU command stream | still emulated, only for labels and fences | the core of the renderer |
+| Own code | almost all | about 28% |
+
+## Native frame-rate changer (user, 2026-10-28)
+
+The frame rate stops being byte lists in `patches/Bloodborne.xml` that the start applies before boot, the
+way shadPS4 applies patches. It becomes an engine module: typed sites (frame timer, step constants,
+frame counts, eases, cloth, air drag, physics step) found and checked in the eboot at start, written by
+the engine and changeable while playing, so it survives the move off emulation. 0.9.37's regressions
+belong here: charged strong attacks letting go early, slow ragdolls and corpses, jittery elevators and
+ladder tops, slower stamina above 90 FPS, cloth (Cainhurst ghosts, Queen Yharnam). Beta 9's lists did
+not have them; the stable lists (`tools/re/game_patches.py`) changed or dropped about 100 sites a rate.
+Each site is compared with beta 9's behaviour in the game before the switch.

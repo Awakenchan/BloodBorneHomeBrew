@@ -934,7 +934,7 @@ def messenger_skins(b):
                                               "offers them in the Hunter's Dream: they are in the game's own files, "
                                               'only the licence flags kept them out.',
               author='distpade (NexusMods)')
-    b.site(p, 0x1fb67b3, h('49c7460800000000'), h('49c7460801010101'))
+    b.site(p, 0x23b67b3, h('49c7460800000000'), h('49c7460801010101'))
     return p
 
 

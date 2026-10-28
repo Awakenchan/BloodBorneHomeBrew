@@ -341,6 +341,10 @@ bool BindSettings() {
 
 bool Install(std::uint8_t* image, std::size_t size) {
     auto& settings = BbSettings::Get();
+    if (!settings.pc_menus) {
+        host_log("pc-options off: turned off in the launcher (Play, Lantern menus in the game)");
+        return false;
+    }
     if (!settings.camera_controls && !settings.change_appearance && !settings.rebirth && !settings.graphics_controls &&
         !settings.pc_controls)
         return false;

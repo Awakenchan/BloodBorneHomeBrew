@@ -143,6 +143,7 @@ struct Values {
     std::atomic<bool> widescreen{true},pc_controls{true},mouse_camera{true},mouse_menu{true};
     std::atomic<bool> menu_move{false};
     std::atomic<bool> mouse_invert_x{false},mouse_invert_y{false},mouse_auto_rotation{false};
+    std::atomic<bool> pc_menus{true};
     std::atomic<int> mouse_sensitivity{5};
     std::atomic<int> button_prompts{PromptsAuto};
     std::atomic<int> pad_icons{PadIconsAuto};

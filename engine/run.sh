@@ -50,6 +50,15 @@ if [[ -z ${PYTHON:-} ]]; then
     fi
 fi
 if [[ -z ${PYTHON:-} ]]; then echo 'Install Python 3 or set PYTHON.' >&2; exit 1; fi
+if [[ -n ${BB_CONFIG:-} ]]; then
+    online_env=$("$PYTHON" scripts/online.py --config "$BB_CONFIG" --data "$data") || exit 1
+    while IFS= read -r line; do
+        case $line in
+            "unset "*) unset "${line#unset }" ;;
+            *=*) export "$line" ;;
+        esac
+    done <<< "$online_env"
+fi
 # BB_GAME_DIR: the game's folder (eboot.bin, sce_module, ...); default next to this directory.
 game=${BB_GAME_DIR:-../CUSA03173}
 if [[ ! -f $game/eboot.bin ]]; then echo "No eboot.bin in $game (set BB_GAME_DIR)." >&2; exit 1; fi
@@ -81,6 +90,11 @@ fi
 # Frame rate: BB_FPS=uncap (default; delta-time patch, vblank 480 Hz, frames shown at once),
 # 60/90 (fixed-timestep patches) or 30 (unpatched). BB_PATCHES adds patch names ("a;b").
 fps=${BB_FPS:-uncap}
+if [[ $fps != 30 && ${LANTERN_FRAMERATE:-1} != 0 && -n ${BB_ENGINE_IMAGE_SHA256:-} ]]; then
+    export LANTERN_FRAMERATE_FROM_ENGINE=1
+else
+    unset LANTERN_FRAMERATE_FROM_ENGINE
+fi
 # bbport.ini output_res other than 1080p (720p for the Steam Deck, 1440p, 2160p): the whole game
 # renders at the preset's size of the output (a patch), the upscaler fills the output, the UI is
 # drawn at the output size. Preset and output changes need a restart.

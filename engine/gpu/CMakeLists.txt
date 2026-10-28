@@ -263,6 +263,7 @@ target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic
 if (WIN32)
     # Windows headers: no min/max macros, no winsock 1 clash; Windows 10+ APIs (SetThreadDescription).
     target_compile_definitions(bbgpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_link_libraries(bbgpu PUBLIC setupapi)
     if (BB_PGO STREQUAL "generate")
         # bbport: the instrumented static library needs the profile runtime in bb-probe.exe's
         # link (add_link_options does not reach it): written into bbgpu_link.txt below.
@@ -389,6 +390,9 @@ target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan:
 add_executable(engine-hooks-test EXCLUDE_FROM_ALL ../tests/test_engine_hooks.cpp shim/engine/engine_hooks.cpp)
 target_compile_options(engine-hooks-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(engine-hooks-test PRIVATE ..)
+add_executable(frame-rate-test EXCLUDE_FROM_ALL ../tests/test_frame_rate.cpp shim/engine/engine_hooks.cpp)
+target_compile_options(frame-rate-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(frame-rate-test PRIVATE .. shim shim/engine)
 # Local game-derived native menu assets. No game data is embedded in this tool.
 find_package(ZLIB REQUIRED)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS

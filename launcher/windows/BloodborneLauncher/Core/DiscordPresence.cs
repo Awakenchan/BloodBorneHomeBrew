@@ -36,12 +36,16 @@ namespace BloodborneLauncher.Core
         public static string Version => Updater.CurrentLabel;
 
         /// <summary>The look for the settings; null when the status is off.</summary>
-        public static Look? LookOf(LauncherSettings s)
+        public static Look? LookOf(LauncherSettings s, LiveGameInfo? example = null)
         {
             var mode = s.Str("discord_status");
             if (mode.Length == 0 || mode == "off") return null;
+            var game = LiveGame.Current ?? example;
+            bool place = s.Bool("discord_game_place"), stats = s.Bool("discord_game_stats");
             if (mode != "custom")
-                return new Look(LanternApp, "Lantern Engine", "Hunting in Yharnam", Version, "logo", "Lantern Engine", "", "", true, Array.Empty<(string, string)>());
+                return new Look(LanternApp, "Lantern Engine", (place ? Doing(game) : null) ?? "Hunting in Yharnam", (stats ? Progress(game) : null) ?? Version, "logo",
+                    "Lantern Engine", "", "", true, Array.Empty<(string, string)>());
+            string Fill(string text) => FillIn(text, game, place, stats);
             string Text(string key, string fallback) => Fill(s.Str(key).Trim() is { Length: > 0 } v ? v : fallback);
             var picture = s.Str("discord_picture") == "url" && IsLink(s.Str("discord_image_url")) ? s.Str("discord_image_url").Trim() : "logo";
             var badge = IsLink(s.Str("discord_badge_url")) ? s.Str("discord_badge_url").Trim() : "";
@@ -61,7 +65,7 @@ namespace BloodborneLauncher.Core
             };
             // Another app has none of the Lantern Engine app's uploaded pictures: a link or nothing.
             if (picture == "logo" && app != LanternApp) picture = "";
-            return new Look(app, name, Text("discord_details", "Hunting in Yharnam"), Fill(s.Str("discord_state").Trim()), picture,
+            return new Look(app, name, Text("discord_details", (place ? Doing(game) : null) ?? "Hunting in Yharnam"), Text("discord_state", (stats ? Progress(game) : null) ?? ""), picture,
                 Text("discord_image_text", "Lantern Engine"), badge, Fill(s.Str("discord_badge_text").Trim()),
                 s.Bool("discord_timer"), buttons);
         }
@@ -71,7 +75,26 @@ namespace BloodborneLauncher.Core
         public static bool IsLink(string text) =>
             Uri.TryCreate(text.Trim(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps;
 
-        private static string Fill(string text) => text.Replace("{version}", Version, StringComparison.OrdinalIgnoreCase);
+        private static string? Doing(LiveGameInfo? game) =>
+            game == null ? null
+            : game.BossName.Length > 0 ? $"Fighting {game.BossName}"
+            : game.Area.Length > 0 ? $"In {game.Area}"
+            : null;
+
+        private static string? Progress(LiveGameInfo? game) =>
+            game == null ? null : $"Level {game.Level} \u2022 {game.Echoes:N0} Blood Echoes \u2022 Insight {game.Insight}";
+
+        private static string FillIn(string text, LiveGameInfo? game, bool place, bool stats)
+        {
+            var where = place ? game : null;
+            var mine = stats ? game : null;
+            return text.Replace("{version}", Version, StringComparison.OrdinalIgnoreCase)
+                .Replace("{area}", where?.Area ?? "", StringComparison.OrdinalIgnoreCase)
+                .Replace("{boss}", where?.BossName ?? "", StringComparison.OrdinalIgnoreCase)
+                .Replace("{level}", mine?.Level.ToString() ?? "", StringComparison.OrdinalIgnoreCase)
+                .Replace("{echoes}", mine?.Echoes.ToString("N0") ?? "", StringComparison.OrdinalIgnoreCase)
+                .Replace("{insight}", mine?.Insight.ToString() ?? "", StringComparison.OrdinalIgnoreCase);
+        }
 
         private static string Cut(string text, int max) => text.Length > max ? text[..max] : text;
 
@@ -113,8 +136,28 @@ namespace BloodborneLauncher.Core
         private static CancellationTokenSource? _loop;
 
         /// <summary>The game started or stopped, or the settings changed.</summary>
+        private static LauncherSettings? _settings;
+        private static bool _running;
+        private static DateTime? _startedUtc;
+
+        static DiscordPresence()
+        {
+            LiveGame.Changed += () =>
+            {
+                LauncherSettings? s;
+                lock (Gate) s = _settings;
+                if (s != null && _running) Update(s, true, _startedUtc);
+            };
+        }
+
         public static void Update(LauncherSettings s, bool gameRunning, DateTime? startedUtc)
         {
+            lock (Gate)
+            {
+                _settings = s;
+                _running = gameRunning;
+                _startedUtc = startedUtc;
+            }
             var look = gameRunning ? LookOf(s) : null;
             lock (Gate)
             {

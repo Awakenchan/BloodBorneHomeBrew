@@ -162,3 +162,32 @@ def configure_huntersdream(settings, data, env):
     timeout = settings.get('online_sign_timeout', '').strip()
     env['BB_SIGN_TIMEOUT'] = str(min(max(int(timeout), 0), 600)) if timeout.isdigit() else str(DEFAULT_SIGN_TIMEOUT)
     return destination
+
+
+def main(argv):
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', required=True)
+    parser.add_argument('--data', required=True)
+    args = parser.parse_args(argv)
+    config = Path(args.config)
+    env = dict(os.environ)
+    try:
+        override = configure_online(read_settings(config) if config.is_file() else {}, args.data, env)
+    except (OSError, ValueError) as error:
+        print(f'Online configuration: {error}', file=sys.stderr)
+        return 1
+    print('Online: configured server profile and automatic game redirect' if override else 'Online: offline mode',
+          file=sys.stderr)
+    for key in sorted(set(os.environ) - set(env)):
+        print(f'unset {key}')
+    for key, value in sorted(env.items()):
+        if os.environ.get(key) != value and '\n' not in value:
+            print(f'{key}={value}')
+    return 0
+
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(main(sys.argv[1:]))

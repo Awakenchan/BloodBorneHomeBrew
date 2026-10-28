@@ -70,6 +70,7 @@ namespace BloodborneLauncher.Core
 #endif
         private static (string Name, string Vendor, long Vram) DetectGpu()
         {
+            if (DetectGpuDxgi() is { } present) return present;
             var best = ("GPU", "", 0L);
             try
             {
@@ -98,6 +99,55 @@ namespace BloodborneLauncher.Core
             }
             catch { /* no access: unknown GPU */ }
             return best;
+        }
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int EnumAdapters1Fn(IntPtr self, uint index, out IntPtr adapter);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int GetDesc1Fn(IntPtr self, out AdapterDesc1 desc);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct AdapterDesc1
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Description;
+            public uint VendorId, DeviceId, SubSysId, Revision;
+            public UIntPtr DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+            public uint LuidLow;
+            public int LuidHigh;
+            public uint Flags;
+        }
+
+        [DllImport("dxgi.dll")]
+        private static extern int CreateDXGIFactory1(ref Guid riid, out IntPtr factory);
+
+        private static T Method<T>(IntPtr com, int slot) where T : Delegate =>
+            Marshal.GetDelegateForFunctionPointer<T>(Marshal.ReadIntPtr(Marshal.ReadIntPtr(com), slot * IntPtr.Size));
+
+        private static (string Name, string Vendor, long Vram)? DetectGpuDxgi()
+        {
+            var factory = IntPtr.Zero;
+            try
+            {
+                var iid = new Guid("770aae78-f26f-4dba-a829-253c83d1b387");
+                if (CreateDXGIFactory1(ref iid, out factory) < 0 || factory == IntPtr.Zero) return null;
+                var enumAdapters = Method<EnumAdapters1Fn>(factory, 12);
+                (string, string, long)? best = null;
+                for (uint i = 0; enumAdapters(factory, i, out var adapter) >= 0 && adapter != IntPtr.Zero; i++)
+                {
+                    try
+                    {
+                        if (Method<GetDesc1Fn>(adapter, 10)(adapter, out var desc) < 0 || (desc.Flags & 2) != 0) continue;
+                        if (desc.VendorId == 0x1414) continue;
+                        var vendor = desc.VendorId switch { 0x10DE => "NVIDIA", 0x1002 => "AMD", 0x8086 => "Intel", _ => "" };
+                        var memory = (long)desc.DedicatedVideoMemory.ToUInt64();
+                        if (best == null || memory > best.Value.Item3) best = (desc.Description.Trim(), vendor, memory);
+                    }
+                    finally { Marshal.Release(adapter); }
+                }
+                return best;
+            }
+            catch { return null; }
+            finally { if (factory != IntPtr.Zero) Marshal.Release(factory); }
         }
 
 #if AVALONIA

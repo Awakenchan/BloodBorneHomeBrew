@@ -847,6 +847,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
 }
 
 const char* Unavailable(Which which) {
+    if (SharedWorld()) return "off while playing online (turn online off in the launcher to use cheats)";
     if (which == Vials || which == Bullets) return g_cheats[which == Bullets ? 1 : 0].unavailable.load();
     if (which == Echoes) return g_echoes_unavailable.load();
     if (which >= WhichCount) return kNotVerified;

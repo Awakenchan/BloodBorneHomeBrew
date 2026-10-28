@@ -175,7 +175,8 @@ namespace BloodborneLauncher.Views
                         Ws.Log(L.T("Could not save patches.json: ") + e.Message, LogLevel.Bad);
                     }
                 };
-                var hint = patch.File + (patch.Author.Length > 0 ? L.F($" · by {patch.Author}") : "");
+                var source = patch.File + (patch.Author.Length > 0 ? L.F($" · by {patch.Author}") : "");
+                var hint = patch.Note.Length > 0 ? patch.Note + "\n\n" + source : source;
                 var card = Card(SymbolRegular.DocumentText24, patch.Name, hint, toggle, out _);
                 card.Margin = new Thickness(24, 0, 0, 4);
                 if (patch.Note.Length > 0)

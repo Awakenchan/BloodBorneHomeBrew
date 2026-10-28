@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "gpu/bbgpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -288,7 +289,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 p->window_count=0;
             }
             p->next_deadline_ns+=(uint64_t)p->adjust_ns;
-            SDL_PutAudioStreamData(p->stream,converted,(int)bytes);
+            static int mute_unfocused=-1;
+            if (mute_unfocused<0) { const char *m=getenv("LANTERN_MUTE_UNFOCUSED"); mute_unfocused=m && m[0]=='1'; }
+            SDL_PutAudioStreamData(p->stream,mute_unfocused && bbgpu_window_in_background() ? silence : converted,(int)bytes);
         }
         ++buffers_out;
     }

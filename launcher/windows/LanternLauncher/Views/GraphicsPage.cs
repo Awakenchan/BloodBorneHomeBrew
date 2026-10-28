@@ -29,6 +29,10 @@ namespace BloodborneLauncher.Views
             IniCombo(SymbolRegular.Sparkle24, L.T("Upscaler"), null,
                 fsr411 ? Choices.Upscalers : Choices.Upscalers.Where(c => c.Value != "fsr411").ToArray(), "upscaler", changed: UpdateUpscaler);
             _upscalerHint = (TextBlock)((SettingRow)Body.Children[^1]).Tag!;
+            if (AmdFsrDriver.ProviderPath() is { } amdFsr)
+                Add(Card(SymbolRegular.Sparkle24, L.T("FSR 4 from your AMD driver"),
+                    L.F($"Your AMD driver has its own FSR 4 provider (driver {AmdFsrDriver.DriverVersion(amdFsr)}). Turn on \"FSR 4 from the AMD driver\" in Engine switches to use the driver's FSR 4 version: FSR 4.1.2 on Adrenalin 26.10.1 and newer. Being tested on RX 9000 cards"),
+                    null, out _));
 
             IniCombo(SymbolRegular.ZoomIn24, L.T("Quality preset"), L.T("How far below the output resolution the game renders"),
                 Choices.Presets, "preset", changed: UpdateUpscaler);

@@ -335,7 +335,11 @@ void CameraMotion::OnConstants(const float* data) {
                         pass_camera.proj[1] < 0.0f ? "-y" : "+y");
         }
     }
-    pass_camera.valid = pass_camera.proj[0] != 0.0f && pass_camera.proj[1] != 0.0f;
+    const auto finite = [](const auto& values) {
+        return std::all_of(values.begin(), values.end(), [](float v) { return std::isfinite(v); });
+    };
+    pass_camera.valid = pass_camera.proj[0] != 0.0f && pass_camera.proj[1] != 0.0f && finite(pass_camera.proj) &&
+                        finite(pass_camera.view) && finite(pass_camera.inv_view);
     const std::array<u32, 2> size{u32(data[4]), u32(data[5])};
     if (size != render_size) {
         std::printf("Camera motion: scene render size %ux%u\n", size[0], size[1]);

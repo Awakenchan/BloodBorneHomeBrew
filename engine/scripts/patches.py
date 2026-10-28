@@ -613,6 +613,9 @@ def main():
         if size: print(f'{size[0]}x{size[1]}')
         return
     preset=FPS_PRESETS[a.fps] if a.fps in FPS_PRESETS else [SCALED_BASE,'Sprint Fix (High FPS)']
+    if os.environ.get('LANTERN_FRAMERATE_FROM_ENGINE')=='1':
+        print(f"Patches: {a.fps} FPS from the engine's native frame rate (no frame-rate patches)")
+        preset=[]
     names=preset+[n.strip() for n in a.extra.split(';') if n.strip()]
     names+=[n for n in effect_patches(read_settings(a.settings)) if n not in names]
     selected=[n for n in builtin_selection(a.xml,a.patches_config) if n not in names]

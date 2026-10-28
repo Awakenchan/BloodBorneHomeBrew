@@ -122,7 +122,7 @@ namespace BloodborneLauncher.Views
             SettingCombo(SymbolRegular.Image24, L.T("Presentation mode"), null, Choices.PresentModes, "present_mode", into: screenMore);
 
             Group(L.T("Frame rate"));
-            SettingCombo(SymbolRegular.Gauge24, L.T("Frame rate"), L.T("30, 60, 90, 120 and 144 are the game's frame-rate patches for that rate; Uncapped uses the community uncapped patch"), Choices.FpsModes, "fps_mode");
+            SettingCombo(SymbolRegular.Gauge24, L.T("Frame rate"), L.T("Lantern Engine runs the game at the rate you pick and keeps its timing right there, also when a scene runs slower. 30 FPS is the game's own"), Choices.FpsModes, "fps_mode");
 
             // bbport: the FPS counter (was on the Graphics page among the upscaler settings).
             Group(L.T("FPS counter"));

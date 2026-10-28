@@ -177,6 +177,7 @@ namespace BloodborneLauncher.Core
             var output = s.Bool("safe_mode_next") ? "" : s.Str("sound_output");
             if (output.StartsWith("directsound")) env["SDL_AUDIO_DRIVER"] = "directsound";
             if (output == "directsound_large") env["SDL_AUDIO_DEVICE_SAMPLE_FRAMES"] = "2048";
+            if (s.Bool("mute_unfocused")) env["LANTERN_MUTE_UNFOCUSED"] = "1";
             if (s.Bool("exp_fast_loading")) env["BB_FAST_LOADING"] = "1";
             if (s.Bool("exp_hot_pages")) env["BB_HOT_PAGES"] = "2";
             // The PC memory model (the GPU reads the game's memory in place; the engine checks the

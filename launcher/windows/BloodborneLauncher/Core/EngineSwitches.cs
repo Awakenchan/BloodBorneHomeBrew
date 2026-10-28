@@ -97,6 +97,9 @@ namespace BloodborneLauncher.Core
             Flag("BB_UPSCALER_NO_BLUR", Graphics, L.T("No motion blur smear with upscalers"),
                 L.T("With an upscaler at an output other than 1920x1080 the game's motion blur is left out: the upscaler would ") +
                 L.T("smear it over the whole picture. Off (default): the blur stays. The Motion blur setting is not changed")),
+            Flag(AmdFsrDriver.Switch, Graphics, L.T("FSR 4 from the AMD driver"),
+                L.T("FSR 4 runs through the FSR provider that comes with your AMD driver, in the version the driver has (FSR 4.1.2 on ") +
+                L.T("Adrenalin 26.10.1 and newer). Being tested on RX 9000 cards. When the driver has none, FSR 4.1.1 runs as before")),
 
             Pick("BB_PIPELINE_THREADS", Performance, L.T("Shader compile threads"),
                 L.T("How many threads compile new shaders in the background. More finish a new area's shaders sooner but take CPU ") +
@@ -110,6 +113,16 @@ namespace BloodborneLauncher.Core
                 L.T("The frame-rate limit while the game window is in the background or minimized, to save power and heat. Online ") +
                 L.T("play is never limited, so co-op and invasions keep their pace"), "30",
                 new("10 FPS", "10"), new("15 FPS", "15"), new("30 FPS", "30"), new("60 FPS", "60"), new(L.T("No limit"), "0")),
+            OnUnless0("LANTERN_FRAMERATE", Performance, L.T("Native frame rate"),
+                L.T("Lantern Engine sets the game's frame rate itself: every per-frame step follows the time a frame really takes, ") +
+                L.T("so physics, stamina and animations keep their real speed when a scene runs slower. Off: the older frame-rate ") +
+                L.T("patches with fixed steps")),
+            OnUnless0("LANTERN_FRAMERATE_FOLLOW", Performance, L.T("Steps follow the frame rate"),
+                L.T("With the native frame rate: the game's steps take the frame rate it actually holds. Off: they stay at the ") +
+                L.T("chosen frame rate, and the game slows down when it runs below it")),
+            OnUnless0("LANTERN_MEMORY_RETRY_LIMIT", Performance, L.T("Memory retry limit"),
+                L.T("With the PC memory model: game data the processor keeps rewriting stays in system memory after three tries ") +
+                L.T("instead of moving back and forth for ever, which slowed the game down the longer you played. Off: no limit")),
 
 
 
@@ -124,6 +137,12 @@ namespace BloodborneLauncher.Core
 
             OnUnless0("BB_RESPAWN_DELAY_FIX", Fixes, L.T("No minimum loading time after death"),
                 L.T("Skips the game's 12-second minimum loading screen after dying. Off: the original delay")),
+            OnUnless0("LANTERN_JOB_SLOTS", Fixes, L.T("Cutscene freeze fix"),
+                L.T("A physics job that boss cutscenes start (Rom, Ludwig, the Queen) gives its memory slot back when it has to try again, ") +
+                L.T("so the game no longer waits for ever on a black screen. Off: the game's own behaviour")),
+            OnUnless0("LANTERN_GAME_STATUS", Fixes, L.T("Live Discord status"),
+                L.T("The game tells the launcher the area, the boss, your level, Blood Echoes and Insight, so the Discord status can show them. ") +
+                L.T("Off: the status shows only its own lines")),
             OnUnless0("BB_SOUND_HACK", Fixes, L.T("Weapon sound save fix"),
                 L.T("Sets the flag in the game's save that some weapon and player sounds need (without it they never play), before ") +
                 L.T("the game reads the save. Off leaves saves untouched")),
