@@ -33,6 +33,8 @@ namespace BloodborneLauncher
             ws.GameCrashed += OnGameCrashed;
             ws.SignInRefused += OnSignInRefused;
             ws.Initialise();
+            // The settings are read by Initialise: the saved window placement comes after it.
+            RestoreWindowPlacement(ws.Settings);
             KeyDown += Window_KeyDown;
             PreviewMouseDown += Window_PreviewMouseDown;
             Deactivated += (_, _) => SearchResults.Visibility = Visibility.Collapsed;
@@ -501,8 +503,76 @@ namespace BloodborneLauncher
             DiscordPresence.Update(Workspace.Current.Settings, running, _gameStartedUtc);
         }
 
+        /// <summary>The size and position the window had when it was last closed (settings.json:
+        /// window_width, window_height, window_x, window_y, window_maximized), else the default size.
+        /// Either way it is made to fit the screen: 1040 x 780 does not fit a 1080p screen at 150% or
+        /// 200% Windows scaling. A saved position no screen shows any more (a monitor unplugged) is
+        /// dropped and the window opens centred.</summary>
+        private void RestoreWindowPlacement(LauncherSettings settings)
+        {
+            try
+            {
+                var work = SystemParameters.WorkArea;
+                double width = Width, height = Height;
+                int savedWidth = settings.Int("window_width"), savedHeight = settings.Int("window_height");
+                if (savedWidth >= 400 && savedHeight >= 300)
+                {
+                    width = savedWidth;
+                    height = savedHeight;
+                }
+                MinWidth = Math.Min(MinWidth, work.Width - 16);
+                MinHeight = Math.Min(MinHeight, work.Height - 16);
+                width = Math.Max(MinWidth, Math.Min(width, work.Width - 16));
+                height = Math.Max(MinHeight, Math.Min(height, work.Height - 16));
+                Width = width;
+                Height = height;
+                if (settings.Str("window_x").Length > 0 && settings.Str("window_y").Length > 0)
+                {
+                    double x = settings.Int("window_x"), y = settings.Int("window_y");
+                    double left = SystemParameters.VirtualScreenLeft, top = SystemParameters.VirtualScreenTop;
+                    double right = left + SystemParameters.VirtualScreenWidth, bottom = top + SystemParameters.VirtualScreenHeight;
+                    // The title bar must be on a screen, or the window could not be moved back.
+                    if (x + 120 >= left && x + 120 < right && y + 20 >= top && y + 20 < bottom)
+                    {
+                        WindowStartupLocation = WindowStartupLocation.Manual;
+                        Left = Math.Max(left, Math.Min(x, right - width));
+                        Top = Math.Max(top, Math.Min(y, bottom - height));
+                    }
+                }
+                if (settings.Bool("window_maximized"))
+                    WindowState = WindowState.Maximized;
+            }
+            catch (Exception)
+            {
+                // The default size, centred.
+            }
+        }
+
+        /// <summary>Called as the window closes. A maximised window keeps the size and position it
+        /// had before (RestoreBounds); a minimised one (the --play start) saves nothing.</summary>
+        private void SaveWindowPlacement()
+        {
+            try
+            {
+                if (_directPlay || WindowState == WindowState.Minimized || !IsVisible) return;
+                var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, ActualWidth, ActualHeight) : RestoreBounds;
+                if (bounds.IsEmpty || double.IsNaN(bounds.Left) || double.IsNaN(bounds.Top) || bounds.Width < 1 || bounds.Height < 1) return;
+                var settings = Workspace.Current.Settings;
+                settings.Set("window_maximized", WindowState == WindowState.Maximized);
+                settings.Set("window_width", (int)Math.Round(bounds.Width));
+                settings.Set("window_height", (int)Math.Round(bounds.Height));
+                settings.Set("window_x", (int)Math.Round(bounds.Left));
+                settings.Set("window_y", (int)Math.Round(bounds.Top));
+            }
+            catch (Exception)
+            {
+                // The window closes without remembering where it was.
+            }
+        }
+
         private async void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
+            SaveWindowPlacement();
             Workspace.Current.SaveNow();
             DiscordPresence.Stop();
             if (_closing || !Workspace.Current.Game.Running)
