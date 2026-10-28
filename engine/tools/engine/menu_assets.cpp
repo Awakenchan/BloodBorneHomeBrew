@@ -542,7 +542,17 @@ Kind KindOf(std::int32_t id) {
     return Kind::Menu;
 }
 
+Language LanguageOf(const std::string& folder) {
+    return folder == "zhocn" ? Language::Chinese : folder == "rusru" ? Language::Russian : Language::English;
+}
+
 std::map<std::int32_t, PcMessage> PcMessages(bool chinese) {
+    return PcMessages(chinese ? Language::Chinese : Language::English);
+}
+
+std::map<std::int32_t, PcMessage> PcMessages(Language language) {
+    // Columns: 0 id, 1-2 English text and help, 3-4 Simplified Chinese, 5-6 Russian.
+    const std::size_t translated_text = language == Language::Chinese ? 3 : language == Language::Russian ? 5 : 1;
     std::map<std::int32_t, PcMessage> out;
     const std::string all(kTsv);
     for (std::size_t at = 0; at < all.size();) {
@@ -562,12 +572,12 @@ std::map<std::int32_t, PcMessage> PcMessages(bool chinese) {
         }
         if (column.size() < 2) throw Error("pc_option_messages.tsv: a line without text: " + line);
         auto pick = [&](std::size_t english, std::size_t translated) {
-            const std::size_t c = chinese && column.size() > translated && !column[translated].empty() ? translated : english;
+            const std::size_t c = translated != english && column.size() > translated && !column[translated].empty() ? translated : english;
             return c < column.size() ? Unescape(column[c]) : std::string();
         };
         const std::int32_t id = std::stoi(column[0]);
         if (out.count(id)) throw Error("pc_option_messages.tsv: id " + column[0] + " twice");
-        out[id] = PcMessage{pick(1, 3), pick(2, 4)};
+        out[id] = PcMessage{pick(1, translated_text), pick(2, translated_text + 1)};
     }
     return out;
 }
@@ -729,10 +739,14 @@ Bytes FmgWrite(const Fmg& f) {
 }
 
 Bytes MenuMessages(const Bytes& file, bool chinese) {
+    return MenuMessages(file, chinese ? Language::Chinese : Language::English);
+}
+
+Bytes MenuMessages(const Bytes& file, Language language) {
     const bool packed = Has(file, 0, "DCX\0", 4);
     Dcx dcx = packed ? DcxRead(file) : Dcx{{}, file};
     Binder bundle = BinderRead(dcx.data);
-    const auto messages = PcMessages(chinese);
+    const auto messages = PcMessages(language);
     struct Group {
         std::uint32_t id;
         Kind kind;

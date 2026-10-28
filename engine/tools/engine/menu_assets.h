@@ -50,10 +50,17 @@ std::u16string Utf16(const std::string& utf8);
 struct PcMessage {
     std::string text, help;
 };
+// The language bundles that carry their own translation of the PC port's strings; every other
+// bundle gets the English columns.
+enum class Language { English, Chinese, Russian };
+// The language of a msg/<folder> bundle: "zhocn" is Chinese, "rusru" is Russian.
+Language LanguageOf(const std::string& folder);
+std::map<std::int32_t, PcMessage> PcMessages(Language language);
 std::map<std::int32_t, PcMessage> PcMessages(bool chinese = false);
 enum class Kind { Menu, Question, Event };
 Kind KindOf(std::int32_t id);
 
+Bytes MenuMessages(const Bytes& dcx, Language language);
 Bytes MenuMessages(const Bytes& dcx, bool chinese = false);
 Bytes OptionMovie(const Bytes& gfx);
 Bytes AltarScripts(const Bytes& dcx);

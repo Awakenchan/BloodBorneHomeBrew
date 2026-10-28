@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
         const menu_assets::Bytes made =
             args[1] == "movie"     ? menu_assets::OptionMovie(source)
             : args[1] == "rebirth" ? menu_assets::AltarScripts(source)
-                                   : menu_assets::MenuMessages(source, args[2].parent_path().filename() == "zhocn");
+                                   : menu_assets::MenuMessages(source, menu_assets::LanguageOf(args[2].parent_path().filename().string()));
         std::ofstream out(args[3], std::ios::binary | std::ios::trunc);
         if (!out.write(reinterpret_cast<const char*>(made.data()), std::streamsize(made.size())) || !out.flush())
             throw menu_assets::Error("the destination cannot be written");
