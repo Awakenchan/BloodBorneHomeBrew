@@ -232,7 +232,10 @@ Json HandleSession(int slot, const std::string& path, const Json& body) {
     std::lock_guard lock(S().host_mu);
     if (path == "/mp/matching2/context_start") {
         const std::string name = StrOf(body, "OnlineId");
-        if (!name.empty()) S().names[slot] = name;
+        if (!name.empty() && S().names[slot] != name) {
+            S().names[slot] = name;
+            Log("slot %d is %s", slot, name.c_str());
+        }
         return {{"ResKind", 0}};
     }
     if (path == "/np/signaling/resolve") {
@@ -420,7 +423,13 @@ int HostSlotWait(int timeout_ms) {
 
 bool Rpc(const Json& request, Json& reply, std::string& error, int timeout_ms) {
     if (S().host) {
-        const int own = S().own_slot.load() ? S().own_slot.load() : 1;
+        const auto end = Clock::now() + std::chrono::milliseconds(std::min(timeout_ms, 10000));
+        while (!S().own_slot.load() && Clock::now() < end) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const int own = S().own_slot.load();
+        if (!own) {
+            error = "not in the room yet";
+            return false;
+        }
         reply = HandleHost(own, request);
         Localize(reply);
         return true;
@@ -589,6 +598,7 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
             SendJson(sender, kReply, HandleHost(sender, value), id, true);
             return;
         }
+        if (!id) return;
         {
             std::lock_guard lock(S().mu);
             S().replies[id] = std::move(value);
@@ -642,6 +652,9 @@ void LinkLoop() {
                     S().cv.notify_all();
                 }
                 last_host = e.slot;
+                if (e.slot && !S().host && !S().player.empty())
+                    SendJson(e.slot, kRequest,
+                             Json{{"p", "/mp/matching2/context_start"}, {"b", {{"OnlineId", S().player}}}}, 0, true);
                 break;
             case Event::Kind::Data:
                 OnFrame(e.slot, e.data);
@@ -725,7 +738,7 @@ std::string SsInfo() {
         "DeathVisionGet", "TombMessRemove", "WanderingGhostCreate", "WanderingGhostGet"};
     static const std::pair<const char*, const char*> numbers[] = {
         {"ReloadServerStatusInfoInterval", "600"},
-        {"SummonDataCreateInterval", "2"},
+        {"SummonDataCreateInterval", "1"},
         {"SummonDataGetListInterval", "1"},
         {"SummonDataGetListGuardTimer", "0"},
         {"SummonDataGetListNomalCoopWaitCount", "0"},

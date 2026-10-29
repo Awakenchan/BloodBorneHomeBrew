@@ -92,6 +92,10 @@ int Host(int game_port, int http_port) {
     if (!list.is_object() || list["SummonDataList"].size() != 1) return Fail("the guest's sign never showed up");
     const long long user = list["SummonDataList"][0].value("UserId", 0LL);
     std::printf("host: sign from user %lld\n", user);
+    if (!BbRoom::Call("/np/signaling/resolve", {{"OnlineId", "GuestHunter"}}, reply, error, 8000) ||
+        reply.value("ResKind", -1) != 0)
+        return Fail("the host cannot find the guest by name");
+    std::printf("host: guest found by name\n");
     Game(http_port, "/summon_messenger/request", {{"TargetUserId", user}});
     Json ev;
     if (!Poll(ev, "room_member_joined")) return Fail("host saw no member join");
@@ -110,15 +114,21 @@ int Host(int game_port, int http_port) {
     return 0;
 }
 
-int Guest(int game_port, int http_port) {
+int Guest(int game_port, int http_port, bool early) {
     const int udp = OpenUdp(game_port);
     BbRoom::Start(game_port);
     Json reply;
     std::string error;
-    if (!BbRoom::Call("/mp/matching2/context_start", {{"OnlineId", "GuestHunter"}}, reply, error, 15000)) return Fail("guest context_start");
+    const bool started = BbRoom::Call("/mp/matching2/context_start", {{"OnlineId", "GuestHunter"}}, reply, error, early ? 2000 : 15000);
+    if (!started && !early) return Fail("guest context_start");
+    if (early) std::printf("guest: context_start before the host: %s\n", started ? "answered" : error.c_str());
     const Json login = Game(http_port, "/basic_utils/login", Json::object());
     if (!login.is_object() || login.value("ResKind", -1) != 0) return Fail("login");
-    const Json created = Game(http_port, "/summon_messenger/create", {{"SummonData", Sign()}, {"SummonType", 7}, {"CharaId", 2}});
+    Json created;
+    for (int i = 0; i < 12; ++i) {
+        created = Game(http_port, "/summon_messenger/create", {{"SummonData", Sign()}, {"SummonType", 7}, {"CharaId", 2}});
+        if (created.is_object() && created.value("ResKind", -1) == 0) break;
+    }
     if (!created.is_object() || created.value("ResKind", -1) != 0) return Fail("sign create");
     Json ev;
     if (!Poll(ev, "guest_invite")) return Fail("no invite");
@@ -155,11 +165,11 @@ int main(int argc, char** argv) {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
     setvbuf(stdout, nullptr, _IONBF, 0);
-    if (argc < 2) return Fail("usage: room-service-test host|guest");
+    if (argc < 2) return Fail("usage: room-service-test host|guest|early-guest");
     const bool host = std::string(argv[1]) == "host";
     const int game_port = host ? 47658 : 48658;
     const int http_port = game_port + 1;
-    const int result = host ? Host(game_port, http_port) : Guest(game_port, http_port);
+    const int result = host ? Host(game_port, http_port) : Guest(game_port, http_port, std::string(argv[1]) == "early-guest");
     std::fflush(stdout);
     std::_Exit(result);
 }
