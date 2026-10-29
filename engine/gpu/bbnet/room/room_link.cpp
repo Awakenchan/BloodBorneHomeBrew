@@ -114,11 +114,20 @@ void Link::Push(Event event) {
     cv_.notify_all();
 }
 
+constexpr auto kGiveUpAfter = std::chrono::minutes(2);
+
 void Link::Run() {
     int backoff_ms = 500;
+    auto reached = std::chrono::steady_clock::now();
     while (!stop_) {
         const bool welcomed = Session();
         if (stop_) break;
+        const auto now = std::chrono::steady_clock::now();
+        if (welcomed) reached = now;
+        if (now - reached >= kGiveUpAfter) {
+            Push({Event::Kind::GaveUp, 0, {}});
+            break;
+        }
         backoff_ms = welcomed ? 500 : std::min(backoff_ms * 2, 8000);
         std::unique_lock lock(mutex_);
         cv_.wait_for(lock, std::chrono::milliseconds(backoff_ms), [this] { return stop_.load(); });

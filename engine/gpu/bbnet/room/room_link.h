@@ -17,7 +17,7 @@
 namespace BbRoom {
 
 struct Event {
-    enum class Kind { Connected, Joined, Left, Host, Data, Disconnected, Refused };
+    enum class Kind { Connected, Joined, Left, Host, Data, Disconnected, Refused, GaveUp };
     Kind kind = Kind::Data;
     int slot = 0;
     std::vector<std::uint8_t> data;

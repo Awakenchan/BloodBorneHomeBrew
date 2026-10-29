@@ -350,6 +350,7 @@ constexpr std::int32_t kLampEvent = 7200;
 std::atomic<int> g_role{-1};
 std::atomic<std::uint32_t> g_lamp_talk{0};
 std::atomic<bool> g_solo_lamp{false};
+std::atomic<bool> g_wall_kept_down{false};
 
 constexpr std::size_t kFlagMan = 0x553b100;
 constexpr std::size_t kGroupKey = 0x13bc710;
@@ -415,7 +416,7 @@ std::atomic<bool> g_chalice{false};
 std::atomic<bool> g_join_dungeon{false};
 std::atomic<bool> g_joined_read{false};
 std::chrono::steady_clock::time_point g_save_due;
-constexpr auto kVitalsEvery = std::chrono::milliseconds(250);
+constexpr auto kVitalsEvery = std::chrono::milliseconds(500);
 constexpr auto kVitalsHeartbeat = std::chrono::milliseconds(2000);
 
 std::uint16_t g_revives = 0;
@@ -829,6 +830,11 @@ void LampNotes() {
             Role() == kRoleClient ? "guest" : "host");
     if (g_solo_lamp.exchange(false, std::memory_order_relaxed))
         Say("seamless: a guest's lamp: this guest travels alone and leaves the host's world");
+    static bool told_wall = false;
+    if (g_wall_kept_down.exchange(false, std::memory_order_relaxed) && !told_wall) {
+        told_wall = true;
+        Say("seamless: a multiplayer fog wall stayed down (boss fogs are kept)");
+    }
 }
 
 bool LampTalk(std::uint32_t talk) {
@@ -856,15 +862,38 @@ std::int64_t __attribute__((sysv_abi)) OnTalkTest(std::uint64_t, const std::uint
     return 1;
 }
 
+struct CoopWall {
+    std::int32_t event, wall_index, effect_index;
+};
+constexpr CoopWall kCoopWalls[] = {{7600, 6, 7}, {12907600, 6, 7}, {13400010, 7, 8}};
+
+bool CoopWallStep(std::int32_t event_id, std::int32_t index, std::int32_t bank, std::int32_t id) {
+    for (const CoopWall& w : kCoopWalls) {
+        if (w.event != event_id) continue;
+        return (bank == 2005 && id == 3 && index == w.wall_index) || (bank == 2006 && id == 2 && index == w.effect_index);
+    }
+    return false;
+}
+
 std::int64_t __attribute__((sysv_abi)) OnEmevdStep(std::uint64_t, const std::uint64_t* saved) {
     const std::uint64_t event = saved[4];
-    if (!event || *reinterpret_cast<const std::int32_t*>(event + 0x28) != kLampEvent ||
-        *reinterpret_cast<const std::int32_t*>(event + 0xa0) != 0 || g_role.load(std::memory_order_relaxed) != kRoleClient)
+    if (!event) return 0;
+    const std::int32_t event_id = *reinterpret_cast<const std::int32_t*>(event + 0x28);
+    if (event_id != kLampEvent && event_id != kCoopWalls[0].event && event_id != kCoopWalls[1].event &&
+        event_id != kCoopWalls[2].event)
         return 0;
     const std::uint64_t instr = *reinterpret_cast<const std::uint64_t*>(event + 0xb0);
-    if (!instr || *reinterpret_cast<const std::int32_t*>(instr) != 1003 || *reinterpret_cast<const std::int32_t*>(instr + 4) != 6)
+    if (!instr) return 0;
+    const std::int32_t index = *reinterpret_cast<const std::int32_t*>(event + 0xa0);
+    const std::int32_t bank = *reinterpret_cast<const std::int32_t*>(instr), id = *reinterpret_cast<const std::int32_t*>(instr + 4);
+    if (event_id == kLampEvent) {
+        if (index != 0 || bank != 1003 || id != 6 || g_role.load(std::memory_order_relaxed) != kRoleClient) return 0;
+        g_solo_lamp.store(true, std::memory_order_relaxed);
+    } else if (CoopWallStep(event_id, index, bank, id)) {
+        g_wall_kept_down.store(true, std::memory_order_relaxed);
+    } else {
         return 0;
-    g_solo_lamp.store(true, std::memory_order_relaxed);
+    }
     const_cast<std::uint64_t*>(saved)[-1] = 1;
     return 1;
 }
@@ -888,7 +917,7 @@ bool LampTravel(std::uint8_t* image, std::size_t size) {
     WriteCode(image + kLampGate, kLampGateOpen, sizeof kLampGateOpen);
     g_lamp_travel = true;
     Say("seamless: lamps work in a party: the host's lamp takes everyone along (the bells ring by themselves), a guest's lamp "
-        "takes only that guest");
+        "takes only that guest; no multiplayer fog walls outside boss fights");
     return true;
 }
 

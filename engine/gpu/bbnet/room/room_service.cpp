@@ -47,9 +47,11 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12 };
 constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4 + 4;
 constexpr std::size_t kBatchBytes = 16000;
+constexpr std::size_t kBundleBytes = 60000;
+constexpr auto kBundleWindow = std::chrono::milliseconds(25);
 constexpr std::size_t kLargestPortrait = 128 * 1024;
 
 std::string Env(const char* name) {
@@ -731,6 +733,24 @@ void BridgeToGame(int slot, const std::uint8_t* data, std::size_t size) {
              sizeof(to));
 }
 
+void SendBundle(std::map<int, std::vector<std::uint8_t>>& pending) {
+    std::vector<std::uint8_t> frame{kBundle};
+    const auto flush = [&] {
+        if (frame.size() > 1) S().link.Send(0, frame.data(), frame.size());
+        frame.assign(1, kBundle);
+    };
+    for (auto& [slot, bytes] : pending) {
+        if (bytes.empty()) continue;
+        if (frame.size() + 5 + bytes.size() > kBundleBytes) flush();
+        frame.push_back(static_cast<std::uint8_t>(slot));
+        const auto n = static_cast<std::uint32_t>(bytes.size());
+        frame.insert(frame.end(), reinterpret_cast<const std::uint8_t*>(&n), reinterpret_cast<const std::uint8_t*>(&n) + 4);
+        frame.insert(frame.end(), bytes.begin(), bytes.end());
+        bytes.clear();
+    }
+    flush();
+}
+
 void BridgeLoop() {
     std::vector<std::uint8_t> buffer(65536);
     for (;;) {
@@ -743,37 +763,45 @@ void BridgeLoop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
-        fd_set set;
-        FD_ZERO(&set);
-        SocketHandle top = 0;
-        for (const auto& [slot, s] : bridges) {
-            FD_SET(s, &set);
-            top = std::max(top, s);
-        }
-        timeval tv{0, 50000};
-        if (::select(static_cast<int>(top + 1), &set, nullptr, nullptr, &tv) <= 0) continue;
-        for (const auto& [slot, s] : bridges) {
-            if (!FD_ISSET(s, &set)) continue;
-            std::vector<std::uint8_t> batch{kBatch};
-            int count = 0;
-            for (;;) {
-                sockaddr_in from{};
-                socklen_t len = sizeof(from);
-                const int n = ::recvfrom(s, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0,
-                                         reinterpret_cast<sockaddr*>(&from), &len);
-                if (n <= 0) break;
-                if (batch.size() + 2 + static_cast<std::size_t>(n) > kBatchBytes && count) {
-                    S().link.Send(slot, batch.data(), batch.size());
-                    batch.assign(1, kBatch);
-                    count = 0;
-                }
-                batch.push_back(static_cast<std::uint8_t>(n));
-                batch.push_back(static_cast<std::uint8_t>(n >> 8));
-                batch.insert(batch.end(), buffer.begin(), buffer.begin() + n);
-                ++count;
+        std::map<int, std::vector<std::uint8_t>> pending;
+        std::size_t held = 0;
+        Clock::time_point until{};
+        for (;;) {
+            fd_set set;
+            FD_ZERO(&set);
+            SocketHandle top = 0;
+            for (const auto& [slot, s] : bridges) {
+                FD_SET(s, &set);
+                top = std::max(top, s);
             }
-            if (count) S().link.Send(slot, batch.data(), batch.size());
+            long wait_us = 50000;
+            if (until != Clock::time_point{}) {
+                wait_us = std::max<long>(0, long(std::chrono::duration_cast<std::chrono::microseconds>(until - Clock::now()).count()));
+            }
+            timeval tv{0, wait_us};
+            const int ready = ::select(static_cast<int>(top + 1), &set, nullptr, nullptr, &tv);
+            if (ready > 0) {
+                for (const auto& [slot, s] : bridges) {
+                    if (!FD_ISSET(s, &set)) continue;
+                    for (;;) {
+                        sockaddr_in from{};
+                        socklen_t len = sizeof(from);
+                        const int n = ::recvfrom(s, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0,
+                                                 reinterpret_cast<sockaddr*>(&from), &len);
+                        if (n <= 0) break;
+                        auto& out = pending[slot];
+                        out.push_back(static_cast<std::uint8_t>(n));
+                        out.push_back(static_cast<std::uint8_t>(n >> 8));
+                        out.insert(out.end(), buffer.begin(), buffer.begin() + n);
+                        held += 2 + static_cast<std::size_t>(n);
+                    }
+                }
+                if (until == Clock::time_point{} && held) until = Clock::now() + kBundleWindow;
+            }
+            if (until == Clock::time_point{}) break;
+            if (Clock::now() >= until || held >= kBundleBytes) break;
         }
+        if (held) SendBundle(pending);
     }
 }
 
@@ -782,6 +810,25 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
     const std::uint8_t kind = data[0];
     if (kind == kDatagram) {
         BridgeToGame(sender, data.data() + 1, data.size() - 1);
+        return;
+    }
+    if (kind == kBundle) {
+        const int own = S().own_slot.load();
+        for (std::size_t at = 1; data.size() - at >= 5;) {
+            const int slot = data[at];
+            std::uint32_t n = 0;
+            std::memcpy(&n, data.data() + at + 1, 4);
+            at += 5;
+            if (n > data.size() - at) return;
+            for (std::size_t p = at; slot == own && at + n - p >= 2;) {
+                const std::size_t m = data[p] | (std::size_t(data[p + 1]) << 8);
+                p += 2;
+                if (m > at + n - p) break;
+                BridgeToGame(sender, data.data() + p, m);
+                p += m;
+            }
+            at += n;
+        }
         return;
     }
     if (kind == kBatch) {
@@ -946,6 +993,9 @@ void LinkLoop() {
                 break;
             case Event::Kind::Disconnected:
                 Log("lost the room connection; reconnecting");
+                break;
+            case Event::Kind::GaveUp:
+                Log("the room could not be reached for 2 minutes: seamless co-op is off until the next start");
                 break;
             case Event::Kind::Refused:
                 Log("could not join the room (%s): it may be full (5 players), or your connection already has another "
