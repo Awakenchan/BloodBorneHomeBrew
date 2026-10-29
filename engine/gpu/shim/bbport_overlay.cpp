@@ -9,7 +9,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <cctype>
+#include <cfloat>
 #include <string>
+#include <vector>
 
 #include <SDL3/SDL.h>
 #include "bbport_menu_i18n.h"
@@ -17,6 +20,7 @@
 #include "bbport_usage.h"
 #include "engine/cheats.h"
 #include "engine/graphics.h"
+#include "engine/online_fixes.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -1886,6 +1890,73 @@ void FpsCounter() {
     ImGui::PopStyleColor(2);
 }
 
+void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
+    static const ImU32 accents[] = {IM_COL32(196, 160, 92, 255), IM_COL32(92, 160, 170, 255),
+                                    IM_COL32(176, 78, 64, 255), IM_COL32(140, 110, 180, 255)};
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    const float left = viewport->WorkPos.x + 40.0f * k;
+    const float card_w = 330.0f * k, card_h = 62.0f * k, gap = 8.0f * k;
+    float top = viewport->WorkPos.y + 175.0f * k;
+    ImFont* font = ImGui::GetFont();
+    const float name_size = ImGui::GetFontSize() * 1.05f;
+    const float small_size = ImGui::GetFontSize() * 0.8f;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto& row = rows[i];
+        const ImU32 accent = accents[i % std::size(accents)];
+        const float dim = row.down ? 0.45f : 1.0f;
+        const ImVec2 a(left, top), b(left + card_w, top + card_h);
+        draw->AddRectFilledMultiColor(a, b, IM_COL32(8, 12, 22, 150), IM_COL32(8, 12, 22, 0), IM_COL32(8, 12, 22, 0),
+                                      IM_COL32(8, 12, 22, 150));
+        draw->AddRectFilled(a, ImVec2(left + 2.0f * k, top + card_h), accent);
+        const ImVec2 badge(left + 32.0f * k, top + card_h * 0.5f);
+        const float radius = 20.0f * k;
+        draw->AddCircleFilled(badge, radius, IM_COL32(18, 22, 34, 220), 32);
+        draw->AddCircle(badge, radius, accent, 32, 1.5f * k);
+        char initial[8] = {row.name.empty() ? '?' : char(std::toupper(static_cast<unsigned char>(row.name[0]))), 0};
+        const ImVec2 initial_size = font->CalcTextSizeA(name_size * 1.1f, FLT_MAX, 0.0f, initial);
+        draw->AddText(font, name_size * 1.1f, ImVec2(badge.x - initial_size.x * 0.5f, badge.y - initial_size.y * 0.5f),
+                      IM_COL32(230, 222, 205, int(255 * dim)), initial);
+        const float text_x = left + 64.0f * k;
+        const float bar_w = 240.0f * k;
+        draw->AddText(font, name_size, ImVec2(text_x, top + 8.0f * k), IM_COL32(232, 224, 206, int(255 * dim)),
+                      row.name.c_str());
+        char where[32] = "";
+        if (row.down) {
+            std::snprintf(where, sizeof where, "%s", BbSettings::MenuText("down", "повержен"));
+        } else if (row.distance >= 0.0f) {
+            std::snprintf(where, sizeof where, "%.0f m", row.distance);
+        }
+        const float arrow_room = row.distance >= 0.0f && !row.down ? 16.0f * k : 0.0f;
+        if (where[0]) {
+            const ImVec2 size = font->CalcTextSizeA(small_size, FLT_MAX, 0.0f, where);
+            draw->AddText(font, small_size, ImVec2(text_x + bar_w - arrow_room - size.x, top + 11.0f * k),
+                          row.down ? IM_COL32(200, 90, 70, 255) : IM_COL32(200, 196, 186, 220), where);
+        }
+        if (arrow_room > 0.0f) {
+            const ImVec2 c(text_x + bar_w - 6.0f * k, top + 11.0f * k + small_size * 0.5f);
+            const ImVec2 d(std::sin(row.bearing), -std::cos(row.bearing));
+            const ImVec2 p(-d.y, d.x);
+            const float tip = 6.0f * k, back = 4.0f * k, wide = 4.0f * k;
+            draw->AddTriangleFilled(ImVec2(c.x + d.x * tip, c.y + d.y * tip),
+                                    ImVec2(c.x - d.x * back + p.x * wide, c.y - d.y * back + p.y * wide),
+                                    ImVec2(c.x - d.x * back - p.x * wide, c.y - d.y * back - p.y * wide),
+                                    IM_COL32(220, 214, 200, 230));
+        }
+        const float hp_y = top + 36.0f * k, hp_h = 4.0f * k;
+        draw->AddRectFilled(ImVec2(text_x, hp_y), ImVec2(text_x + bar_w, hp_y + hp_h), IM_COL32(0, 0, 0, 150));
+        draw->AddRectFilledMultiColor(ImVec2(text_x, hp_y), ImVec2(text_x + bar_w * row.health, hp_y + hp_h),
+                                      IM_COL32(150, 44, 30, int(255 * dim)), IM_COL32(210, 96, 52, int(255 * dim)),
+                                      IM_COL32(210, 96, 52, int(255 * dim)), IM_COL32(150, 44, 30, int(255 * dim)));
+        const float sp_y = hp_y + hp_h + 3.0f * k, sp_h = 2.5f * k;
+        draw->AddRectFilled(ImVec2(text_x, sp_y), ImVec2(text_x + bar_w, sp_y + sp_h), IM_COL32(0, 0, 0, 130));
+        draw->AddRectFilled(ImVec2(text_x, sp_y), ImVec2(text_x + bar_w * row.stamina, sp_y + sp_h),
+                            IM_COL32(104, 150, 92, int(230 * dim)));
+        top += card_h + gap;
+    }
+}
+
 void TextPrompt() {
     std::string title, text;
     {
@@ -2116,8 +2187,8 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized &&
-           (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive());
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() ||
+                           !BbEngine::OnlineFixes::PartyRows().empty());
 }
 
 bool MenuOpen() {
@@ -2164,6 +2235,10 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (prompt_active && !menu_open) {
         TextPrompt();
+    }
+    if (!menu_open) {
+        const auto party = BbEngine::OnlineFixes::PartyRows();
+        if (!party.empty()) PartyHud(party);
     }
     ImGui::Render();
 

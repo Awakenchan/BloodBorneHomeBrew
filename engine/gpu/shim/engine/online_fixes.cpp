@@ -3,10 +3,14 @@
 #include "engine_hooks.h"
 #include "bbport_platform.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <mutex>
+#include <vector>
+#include "../../bbnet/room/room_service.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -241,7 +245,8 @@ constexpr std::size_t kDeathLoad = 0x13cde30;
 constexpr std::uint8_t kDeathLoadEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
                                             0x41, 0x55, 0x41, 0x54, 0x53, 0x50};
 constexpr std::size_t kHostDead = 0x1381870;
-constexpr std::uint8_t kHostDeadEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x50};
+constexpr std::uint8_t kHostDeadEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
+                                           0x53, 0x50, 0x49, 0x89, 0xf6, 0x49, 0x89, 0xff};
 constexpr std::size_t kOwnDeathCall = 0x1381ede;
 constexpr std::uint8_t kOwnDeathCallBytes[] = {0xe8, 0x4d, 0xbf, 0x04, 0x00};
 constexpr std::size_t kPhantomDeathCall = 0x1382663;
@@ -275,8 +280,6 @@ constexpr std::uint32_t kDeathScriptFlag = 4000;
 constexpr std::uint32_t kDeadHitLayer = 0x36, kAliveHitLayer = 0x08;
 constexpr std::size_t kTaskStep = 0x50, kTaskNext = 0x54, kTaskPeer = 0xc8, kTaskMode = 0xe8, kTaskFlags = 0xed;
 constexpr int kStepCreate = 4;
-constexpr double kRemoteDeadRebuild = 20.0;
-constexpr double kRemoteAfterFight = 4.0;
 constexpr std::size_t kWarp = 0x13cb4f0;
 constexpr std::uint8_t kWarpEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41,
                                        0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x28};
@@ -285,6 +288,17 @@ constexpr std::size_t kBossId = 0x1658, kBossTarget = 0x165c, kBossStride = 0x14
 constexpr int kBossSlots = 3;
 constexpr float kFallDrop = 20.0f;
 constexpr double kFallSettle = 1.0;
+constexpr int kVitalsFresh = 5000;
+constexpr float kSameWorld = 8.0f;
+constexpr float kRebuildNear = 12.0f;
+constexpr auto kVitalsEvery = std::chrono::milliseconds(250);
+constexpr auto kVitalsHeartbeat = std::chrono::milliseconds(2000);
+
+std::uint16_t g_revives = 0;
+std::atomic<float> g_camera_yaw{0.0f};
+std::atomic<bool> g_camera_known{false};
+std::mutex g_rows_mu;
+std::vector<PartyRow> g_rows;
 
 std::atomic<bool> g_death_rules{false};
 
@@ -346,16 +360,52 @@ template <typename F> void ForEachPlayer(F&& f) {
     }
 }
 
-bool AnyoneElseUp(std::uint64_t local) {
-    bool up = false;
-    ForEachPlayer([&](std::uint64_t, std::uint64_t chr) { up = up || (chr != local && Hp(chr) > 0); });
-    return up;
-}
-
 bool Position(std::uint64_t chr, float out[3]) {
     const std::uint64_t physics =
         Field<std::uint64_t>(Field<std::uint64_t>(Field<std::uint64_t>(Field<std::uint64_t>(chr, 0x58), 8), 0x3b0), 0x68);
     return physics && Peek(physics + 0x1e0, reinterpret_cast<float(*)[3]>(out));
+}
+
+float Facing(std::uint64_t chr) {
+    const std::uint64_t physics =
+        Field<std::uint64_t>(Field<std::uint64_t>(Field<std::uint64_t>(Field<std::uint64_t>(chr, 0x58), 8), 0x3b0), 0x68);
+    return Field<float>(physics, 0x1d4, 0.0f);
+}
+
+float Distance2(const float a[3], const float b[3]) {
+    const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    return dx * dx + dy * dy + dz * dz;
+}
+
+std::uint64_t RemoteNear(const float at[3], float within) {
+    const std::uint64_t local = LocalPlayer();
+    std::uint64_t best = 0;
+    float best_d = within * within;
+    ForEachPlayer([&](std::uint64_t, std::uint64_t chr) {
+        float p[3];
+        if (chr == local || !Position(chr, p)) return;
+        const float d = Distance2(p, at);
+        if (d < best_d) {
+            best_d = d;
+            best = chr;
+        }
+    });
+    return best;
+}
+
+std::vector<BbRoom::Vitals> InWorld() {
+    std::vector<BbRoom::Vitals> out;
+    for (BbRoom::Vitals& v : BbRoom::Party(kVitalsFresh)) {
+        if (RemoteNear(v.pos, kSameWorld)) out.push_back(std::move(v));
+    }
+    return out;
+}
+
+bool AnyoneElseUp(std::uint64_t) {
+    for (const BbRoom::Vitals& v : InWorld()) {
+        if (v.hp > 0) return true;
+    }
+    return false;
 }
 
 bool SafeSpot(std::uint64_t chr, float pos[3], float rot[3]) {
@@ -388,6 +438,7 @@ bool ReviveHere(const char* who) {
         *reinterpret_cast<std::uint8_t*>(transition + 0x1523) = 0;
     }
     RearmDeathScript();
+    ++g_revives;
     Say("seamless: %s death: up again on the last safe ground, still in the party (HP %d)", who, Hp(player));
     return true;
 }
@@ -455,8 +506,6 @@ std::int64_t __attribute__((sysv_abi)) OnHostDead(std::uint64_t, const std::uint
     return 1;
 }
 
-std::map<std::uint64_t, std::chrono::steady_clock::time_point> g_down_since;
-std::chrono::steady_clock::time_point g_last_fight;
 
 void RebuildRemote(std::uint64_t world, std::uint64_t chr) {
     const std::uint64_t transition = Global(kTransition);
@@ -507,7 +556,7 @@ bool DeathRules(std::uint8_t* image, std::size_t size) {
         !Prepare(hooks[1], image, size, kHostDead, kHostDeadEntry, OnHostDead)) {
         Discard(hooks[0]);
         Discard(hooks[1]);
-        Say("seamless: deaths keep the party left off: the game's code there is not 1.09's");
+        Say("seamless: deaths keep the party left off: no room for the death hooks");
         return false;
     }
     Commit(std::span(hooks, 2));
@@ -543,6 +592,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
     if (!online || std::strcmp(online, "1") != 0) return false;
     bool any = FixCharacterId(image, size);
     if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "room") == 0) {
+        g_image = image;
         any = BellRules(image, size) || any;
         any = FourPlayers(image, size) || any;
         any = DeathRules(image, size) || any;
@@ -553,39 +603,88 @@ bool Install(std::uint8_t* image, std::size_t size) {
     return any;
 }
 
-void Tick() {
-    if (!g_death_rules.load()) return;
-    PendingTick();
-    const int role = Role();
-    if (role != kRoleHost && role != kRoleClient) {
-        g_down_since.clear();
-        return;
+void SendOwnVitals(std::uint64_t local) {
+    static BbRoom::Vitals last;
+    static std::chrono::steady_clock::time_point sent_at;
+    const std::uint64_t data = Field<std::uint64_t>(Field<std::uint64_t>(local, 0x3b0), 0x20);
+    BbRoom::Vitals own;
+    own.name = BbRoom::PlayerName();
+    own.hp = Field<std::int32_t>(data, 0xf8);
+    own.hp_max = Field<std::int32_t>(data, 0xfc);
+    own.stamina = Field<std::int32_t>(data, 0x134);
+    own.stamina_max = Field<std::int32_t>(data, 0x138);
+    own.revives = g_revives;
+    Position(local, own.pos);
+    const auto now = std::chrono::steady_clock::now();
+    const bool changed = own.hp != last.hp || own.hp_max != last.hp_max || own.stamina != last.stamina ||
+                         own.stamina_max != last.stamina_max || own.revives != last.revives ||
+                         Distance2(own.pos, last.pos) > 1.0f;
+    if (now - sent_at < (changed ? kVitalsEvery : kVitalsHeartbeat)) return;
+    BbRoom::SendVitals(own);
+    last = own;
+    sent_at = now;
+}
+
+void RebuildRevived(std::uint64_t world, const std::vector<BbRoom::Vitals>& party) {
+    static std::map<int, std::pair<std::uint16_t, std::array<float, 3>>> seen;
+    std::map<int, std::pair<std::uint16_t, std::array<float, 3>>> next;
+    for (const BbRoom::Vitals& v : party) {
+        const auto was = seen.find(v.slot);
+        if (was != seen.end() && v.revives != was->second.first) {
+            if (const std::uint64_t corpse = RemoteNear(was->second.second.data(), kRebuildNear))
+                RebuildRemote(world, corpse);
+        }
+        next[v.slot] = {v.revives, {v.pos[0], v.pos[1], v.pos[2]}};
     }
+    seen.swap(next);
+}
+
+void PublishRows(std::uint64_t local, const std::vector<BbRoom::Vitals>& party) {
+    float own[3] = {};
+    const bool placed = local && Position(local, own);
+    const float view = g_camera_known.load() ? g_camera_yaw.load() : Facing(local);
+    std::vector<PartyRow> rows;
+    for (const BbRoom::Vitals& v : party) {
+        PartyRow row;
+        row.name = v.name;
+        row.health = v.hp_max > 0 ? std::clamp(float(v.hp) / float(v.hp_max), 0.0f, 1.0f) : 0.0f;
+        row.stamina = v.stamina_max > 0 ? std::clamp(float(v.stamina) / float(v.stamina_max), 0.0f, 1.0f) : 0.0f;
+        row.down = v.hp <= 0;
+        if (placed && RemoteNear(v.pos, kSameWorld)) {
+            const float dx = v.pos[0] - own[0], dz = v.pos[2] - own[2];
+            row.distance = std::sqrt(Distance2(v.pos, own));
+            row.bearing = std::atan2(dx, dz) - view;
+        }
+        rows.push_back(std::move(row));
+    }
+    std::lock_guard lock(g_rows_mu);
+    g_rows.swap(rows);
+}
+
+void Tick() {
+    if (!g_image || !BbRoom::Active()) return;
+    if (g_death_rules.load()) PendingTick();
+    const int role = Role();
     const std::uint64_t world = Global(kWorldChrMan);
     const std::uint64_t local = Field<std::uint64_t>(world, 0x60);
-    const int count = Field<std::int32_t>(world, 0x30);
-    const std::uint64_t entries = Field<std::uint64_t>(world, 0x38);
-    if (!world || !entries || count <= 0 || count > 8) return;
-    const auto now = std::chrono::steady_clock::now();
-    if (BossUp() && (Hp(local) > 0 || AnyoneElseUp(local))) g_last_fight = now;
-    std::map<std::uint64_t, std::chrono::steady_clock::time_point> down;
-    for (int i = 0; i < count; ++i) {
-        const std::uint64_t chr = Field<std::uint64_t>(entries + std::uint64_t(i) * 0x38, 0);
-        if (!chr || chr == local) continue;
-        const auto seen = g_down_since.find(chr);
-        const std::int32_t hp = Hp(chr);
-        if (hp != 0 && (seen == g_down_since.end() || hp < 0)) continue;
-        const auto since = seen == g_down_since.end() ? now : seen->second;
-        const bool fought = g_last_fight > since;
-        const auto wait = std::chrono::duration<double>(fought ? kRemoteAfterFight : kRemoteDeadRebuild);
-        if (hp == 0 && now - (fought ? g_last_fight : since) < wait) {
-            down[chr] = since;
-            continue;
-        }
-        RebuildRemote(world, chr);
-        g_down_since.clear();
+    if (!local) {
+        std::lock_guard lock(g_rows_mu);
+        g_rows.clear();
         return;
     }
-    g_down_since.swap(down);
+    SendOwnVitals(local);
+    const std::vector<BbRoom::Vitals> party = BbRoom::Party(kVitalsFresh);
+    if (g_death_rules.load() && (role == kRoleHost || role == kRoleClient)) RebuildRevived(world, party);
+    PublishRows(local, party);
+}
+
+std::vector<PartyRow> PartyRows() {
+    std::lock_guard lock(g_rows_mu);
+    return g_rows;
+}
+
+void SetCameraYaw(float yaw) {
+    g_camera_yaw = yaw;
+    g_camera_known = true;
 }
 }

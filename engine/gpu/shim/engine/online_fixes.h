@@ -2,8 +2,19 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace BbEngine::OnlineFixes {
+struct PartyRow {
+    std::string name;
+    float health = 0, stamina = 0;
+    float distance = -1, bearing = 0;
+    bool down = false;
+};
+
 bool Install(std::uint8_t* image, std::size_t size);
 void Tick();
+std::vector<PartyRow> PartyRows();
+void SetCameraYaw(float yaw);
 }

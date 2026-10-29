@@ -68,6 +68,32 @@ int OpenUdp(int port) {
     return static_cast<int>(s);
 }
 
+bool SwapVitals(const char* own, const char* other) {
+    BbRoom::Vitals v;
+    v.name = own;
+    v.hp = 640;
+    v.hp_max = 800;
+    v.stamina = 90;
+    v.stamina_max = 100;
+    v.revives = 3;
+    v.pos[0] = 1.5f;
+    for (int i = 0; i < 50; ++i) {
+        BbRoom::SendVitals(v);
+        for (const BbRoom::Vitals& got : BbRoom::Party(5000)) {
+            if (got.name == other && got.hp == 640 && got.hp_max == 800 && got.revives == 3 && got.pos[0] == 1.5f) {
+                std::printf("%s: vitals from %s (slot %d)\n", own, other, got.slot);
+                for (int k = 0; k < 8; ++k) {
+                    BbRoom::SendVitals(v);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                }
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    return false;
+}
+
 std::string Sign() {
     return std::string(299, 'A') + "=";
 }
@@ -109,7 +135,7 @@ int Host(int game_port, int http_port) {
     if (ntohs(from.sin_port) != ev.value("Port", 0LL)) return Fail("datagram came from another port than the member's");
     ::sendto(udp, "back!", 5, 0, reinterpret_cast<sockaddr*>(&from), len);
     std::printf("host: P2P ok\n");
-    std::this_thread::sleep_for(std::chrono::seconds(3));
+    if (!SwapVitals("HostHunter", "GuestHunter")) return Fail("no vitals from the guest");
     std::printf("HOST OK\n");
     return 0;
 }
@@ -150,6 +176,7 @@ int Guest(int game_port, int http_port, bool early) {
         socklen_t len = sizeof(from);
         const int n = ::recvfrom(udp, buffer, sizeof(buffer), 0, reinterpret_cast<sockaddr*>(&from), &len);
         if (n == 5 && std::string(buffer, 5) == "back!") {
+            if (!SwapVitals("GuestHunter", "HostHunter")) return Fail("no vitals from the host");
             std::printf("GUEST OK\n");
             return 0;
         }

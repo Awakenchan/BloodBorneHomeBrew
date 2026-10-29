@@ -45,7 +45,8 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6 };
+constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4;
 constexpr std::size_t kBatchBytes = 16000;
 
 std::string Env(const char* name) {
@@ -126,6 +127,9 @@ struct State {
     std::mutex bridge_mu;
     std::map<int, SocketHandle> bridges;
     std::map<int, int> bridge_ports;
+
+    std::mutex vitals_mu;
+    std::map<int, std::pair<Vitals, Clock::time_point>> vitals;
 };
 
 State& S() {
@@ -587,6 +591,26 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         }
         return;
     }
+    if (kind == kVitals) {
+        if (data.size() < kVitalsFixed) return;
+        const std::size_t name_size = data[1];
+        if (data.size() != kVitalsFixed + name_size) return;
+        Vitals v;
+        v.slot = sender;
+        std::size_t at = 2;
+        v.name.assign(reinterpret_cast<const char*>(data.data() + at), name_size);
+        at += name_size;
+        for (std::int32_t* field : {&v.hp, &v.hp_max, &v.stamina, &v.stamina_max}) {
+            std::memcpy(field, data.data() + at, 4);
+            at += 4;
+        }
+        std::memcpy(&v.revives, data.data() + at, 2);
+        at += 2;
+        std::memcpy(v.pos, data.data() + at, sizeof v.pos);
+        std::lock_guard lock(S().vitals_mu);
+        S().vitals[sender] = {std::move(v), Clock::now()};
+        return;
+    }
     if (kind == kRequest || kind == kReply) {
         if (data.size() < 5) return;
         std::uint32_t id = 0;
@@ -638,6 +662,10 @@ void LinkLoop() {
                 break;
             case Event::Kind::Left:
                 Log("slot %d left the room", e.slot);
+                {
+                    std::lock_guard lock(S().vitals_mu);
+                    S().vitals.erase(e.slot);
+                }
                 if (S().host) {
                     std::lock_guard lock(S().host_mu);
                     ForgetSlotLocked(e.slot);
@@ -819,6 +847,37 @@ bool Active() {
 
 bool IsHost() {
     return Env("BB_ROOM_HOST") == "1";
+}
+
+void SendVitals(const Vitals& own) {
+    if (!S().started.load() || !S().link.Connected()) return;
+    const std::string name = own.name.substr(0, 32);
+    std::vector<std::uint8_t> frame(kVitalsFixed + name.size());
+    frame[0] = kVitals;
+    frame[1] = static_cast<std::uint8_t>(name.size());
+    std::size_t at = 2;
+    std::memcpy(frame.data() + at, name.data(), name.size());
+    at += name.size();
+    for (const std::int32_t field : {own.hp, own.hp_max, own.stamina, own.stamina_max}) {
+        std::memcpy(frame.data() + at, &field, 4);
+        at += 4;
+    }
+    std::memcpy(frame.data() + at, &own.revives, 2);
+    at += 2;
+    std::memcpy(frame.data() + at, own.pos, sizeof own.pos);
+    S().link.Send(0, frame.data(), frame.size());
+}
+
+std::vector<Vitals> Party(int max_age_ms) {
+    std::vector<Vitals> out;
+    const auto now = Clock::now();
+    std::lock_guard lock(S().vitals_mu);
+    for (const auto& [slot, entry] : S().vitals) {
+        Vitals v = entry.first;
+        v.age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - entry.second).count();
+        if (v.age_ms <= max_age_ms) out.push_back(std::move(v));
+    }
+    return out;
 }
 
 std::string PlayerName() {

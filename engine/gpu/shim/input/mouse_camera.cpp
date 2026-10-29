@@ -3,6 +3,7 @@
 #include "input.h"
 #include "mouse_turn.h"
 #include "../engine/engine_hooks.h"
+#include "../engine/online_fixes.h"
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -332,6 +333,11 @@ extern "C" __attribute__((sysv_abi)) void lantern_free_camera_turn(std::uint8_t*
                                                                     float stick_pitch, float stick_yaw) {
     using namespace MouseCamera;
     __atomic_store_n(&lantern_free_camera_ran, 1, __ATOMIC_RELAXED);
+    {
+        float seen;
+        std::memcpy(&seen, camera + kYaw, 4);
+        BbEngine::OnlineFixes::SetCameraYaw(seen);
+    }
     if (g_update_x == 0 && g_update_y == 0) return;
     if (stick_pitch != 0 || stick_yaw != 0) return;
     float pitch, yaw, highest, lowest;
