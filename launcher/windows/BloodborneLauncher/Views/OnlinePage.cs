@@ -32,7 +32,13 @@ namespace BloodborneLauncher.Views
             Group(L.T("Seamless co-op"));
             ToggleRow(SymbolRegular.PeopleTeam24, L.T("Seamless co-op"),
                 L.T("Play the campaign together in your own encrypted room: no Hunter's Dream, no ports to open"),
-                () => Ini.Get("seamless_enabled") == "1", v => Ini.Set("seamless_enabled", v ? "1" : "0"));
+                () => Ini.Get("seamless_enabled") == "1", v =>
+                {
+                    Ini.Set("seamless_enabled", v ? "1" : "0");
+                    if (!v || Ini.Get("online_enabled") == "1") return;
+                    Ini.Set("online_enabled", "1");
+                    _online.IsChecked = true;
+                });
             _role = ComboRow(SymbolRegular.Crown24, L.T("Role"), L.T("One player hosts, the others join the host's world"),
                 Choices.SeamlessRoles, () => Ini.Get("seamless_role", "guest"), v => { Ini.Set("seamless_role", v); ShowRoom(); });
             IniText(SymbolRegular.Person24, L.T("Plate name"), L.T("Your name on the plate above your hunter and in the party list (up to 16 characters, spaces and symbols allowed)"), "Hunter", "seamless_player", 220);

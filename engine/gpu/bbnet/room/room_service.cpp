@@ -214,7 +214,7 @@ void Localize(Json& value) {
     if (value.contains("Members")) Localize(value["Members"]);
 }
 
-enum class Stage { None, Looking, Found, Calling, Waiting, Invited, Joined, Failed };
+enum class Stage { None, Looking, Found, Calling, Waiting, Invited, Joined, Failed, HostOnly };
 
 struct Notice {
     std::mutex mu;
@@ -267,6 +267,8 @@ void NoteSummon(const std::string& api, const Json& body, const Json& reply, boo
         Notice& n = N();
         std::lock_guard lock(n.mu);
         if (n.stage == Stage::Waiting) n.stage = Stage::None;
+    } else if (reply.contains("LanternHostOnly")) {
+        Note(Stage::HostOnly);
     } else if (api == "get") {
         const auto list = reply.contains("SummonDataList") && reply["SummonDataList"].is_array() ? reply["SummonDataList"]
                                                                                               : Json::array();
@@ -468,6 +470,11 @@ Json HandleSummon(int slot, const std::string& api, const Json& body) {
         if (!B64Size(data, 0xE0)) return {{"ResKind", 0}};
         S().signs[slot] = {data, IntOf(body, "SummonType"), IntOf(body, "CharaId", slot)};
         return {{"ResKind", 0}};
+    }
+    if ((api == "get" || api == "request") && slot != S().own_slot.load()) {
+        static std::atomic<int> told{0};
+        if (told.fetch_add(1) < 8) Log("slot %d rang a Beckoning Bell, but only the room's host summons", slot);
+        return {{"ResKind", 0}, {"SummonDataList", Json::array()}, {"LanternHostOnly", true}};
     }
     if (api == "get") {
         std::set<long long> types;
@@ -1460,6 +1467,10 @@ bool CurrentNotice(std::string& text) {
         if (quiet > std::chrono::seconds(5)) return false;
         if (n.who.empty()) std::snprintf(line, sizeof line, "Connected");
         else std::snprintf(line, sizeof line, "Connected: %s", n.who.c_str());
+        break;
+    case Stage::HostOnly:
+        if (quiet > std::chrono::seconds(6)) return false;
+        std::snprintf(line, sizeof line, "Only the host can summon: ring the Small Resonant Bell to help");
         break;
     case Stage::Failed:
         if (quiet > std::chrono::seconds(6)) return false;

@@ -22,8 +22,8 @@ int main(int argc, char** argv) {
 #else
     for (int i = 0; i < argc; ++i) args.emplace_back(argv[i]);
 #endif
-    if (args.size() != 4 || (args[1] != "movie" && args[1] != "messages" && args[1] != "rebirth")) {
-        std::fputs("Usage: bb-engine-assets movie|messages|rebirth SOURCE DEST\n", stderr);
+    if (args.size() != 4 || (args[1] != "movie" && args[1] != "messages" && args[1] != "messages-roles" && args[1] != "rebirth")) {
+        std::fputs("Usage: bb-engine-assets movie|messages|messages-roles|rebirth SOURCE DEST\n", stderr);
         return 2;
     }
     std::error_code same;

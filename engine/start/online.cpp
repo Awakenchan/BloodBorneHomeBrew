@@ -190,7 +190,7 @@ bool ConfigureSeamless(const std::map<std::string, std::string>& settings, const
 
 bool ConfigureOnline(const std::map<std::string, std::string>& settings, const fs::path& data) {
     const auto get = [&](const char* key, const char* fallback = "") { return Setting(settings, key).value_or(fallback); };
-    if (get("seamless_enabled") == "1") return ConfigureSeamless(settings, data);
+    if (get("seamless_enabled") == "1" && get("online_enabled") == "1") return ConfigureSeamless(settings, data);
     for (const char* key : kRoomEnv) UnsetEnv(key);
     if (get("online_pool") == "huntersdream" && get("online_enabled") == "1" && get("online_connected", "1") == "1")
         return ConfigureHuntersDream(settings, data);
