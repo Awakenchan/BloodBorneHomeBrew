@@ -44,17 +44,82 @@ before any of them is used.
 | The flip pass (Gnmx) | `0x21d5f80` | its constant update engine at `0x1092e80` and `0x1093150` |
 | The frame timer | `0x2034770` | the one the frame-rate patches already change |
 
-GX's context methods are not found through a vtable in the image: they are called directly, and all
-nine from one function at `0x26ab6b0`, still to be read.
+GX's context and device methods are not found through a vtable in the image: they are called
+directly.
+
+## GX's command lists and pending state (2026-10-29)
+
+Found with the Ghidra project (`tools/re/ghidra.sh`, see `NATIVE_ENGINE_PLAN.md`) and checked by
+`gx_facts.py` (162 checks, `0 failed`).
+
+A deferred context records its calls as GX's own records, and the immediate context replays them
+through a table of 36 handlers at `0x52b9fb8`. Each handler reads one record, calls the same context
+method the game calls directly, keeps the value in the pending state and returns the record's size.
+`0x26ab6b0` is handler 28 (Dispatch), not a dispatcher. So hooking the context methods covers
+deferred work too: replay goes through them.
+
+The pending state is the second argument of every context method (the first is the context):
+
+| Handler | Method | Pending state |
+|---|---|---|
+| 0 | IASetInputLayout `0x2168c90` | `+0x0` |
+| 1 | IASetPrimitiveTopology `0x2168ca0` | `+0x8` |
+| 2 | IASetIndexBuffer `0x2168cb0` | `+0x10` buffer, `+0x18` format, `+0x1c` offset |
+| 3 | IASetVertexBuffers `0x2168cc0` | `+0x20` buffers, `+0x120` strides, `+0x1a0` offsets (32 slots) |
+| 4–27 | six shader stages, four setters each | per stage: 16 constant buffers, 128 shader resources, 14 samplers, the shader |
+| 28–35 | Dispatch, Draw, DrawIndexed, DrawInstanced, DrawIndexedInstanced, both indirect draws, Commit | |
+
+The stages' blocks start at `+0x598`, `+0xa90`, `+0xf88`, `+0x1480`, `+0x1978` and `+0x1e70`, in
+replay order. The last is the compute stage (it is set before Dispatch); which graphics stage is
+which is still to be confirmed from the shader creators.
+
+| Stage block | SetConstantBuffers | SetShaderResources | SetSamplers | SetShader |
+|---|---|---|---|---|
+| `+0x598` | `0x2168ce0` | `0x2168d00` | `0x2168d90` | `0x2168e00` |
+| `+0xa90` | `0x2168e10` | `0x2168e30` | `0x2168ec0` | `0x2168f30` |
+| `+0xf88` | `0x2168f40` | `0x2168f60` | `0x2168ff0` | `0x2169060` |
+| `+0x1480` | `0x2169070` | `0x2169090` | `0x2169120` | `0x2169190` |
+| `+0x1978` | `0x21692c0` | `0x21692e0` | `0x2169370` | `0x21693e0` |
+| `+0x1e70` (compute) | `0x2169440` | `0x2169460` | `0x21694f0` | `0x21695b0` |
+
+The output merger's state is read by its flush (`0x26d2230`): the blend state at `+0x4d0`, the
+depth-stencil state at `+0x4d8`, eight render targets at `+0x4e0`, the depth view at `+0x520`, the
+blend factor at `+0x568` and the stencil reference at `+0x584`. These setters are not in the replay
+table, so a command list does not record them.
+
+Every draw runs the same flushes before its packet: the output merger (`context+0xb558`), the
+shader stages (`0x26bba30` on `context+0xb518`, with an "indexed" flag), `0x26d3370` on
+`context+0xb528`, the command flush, and the resource bind `0x26bc2e0` on `context+0x50`; then the
+Gnm writers on the command buffer at `context+0x10`, then the post-draw.
+
+## GX's device creators
+
+All take a Direct3D 11-shaped description. CreateBuffer's is D3D11's (byte width, usage 0–3,
+bind flags, CPU access, misc flags, structure stride); usage 1 (immutable) needs the initial data.
+
+| Creator | Address | Object |
+|---|---|---|
+| CreateBuffer | `0x2165c10` | 0x58 bytes, vtable `0x535f3a0` |
+| CreateTexture2D | `0x2165f90` | description: width, height, mips, array size, format, samples, usage, bind, CPU, misc |
+| CreateTexture3D | `0x2166300` | width, height, depth, mips, format, usage, bind, CPU, misc |
+| CreateDepthStencilView | `0x2166610` | 0x60 bytes, vtable `0x535f420`; needs bind flag 0x40 |
+| CreateRenderTargetView | `0x21667a0` | 0x50 bytes, vtable `0x535f440`; bind flag 0x20 |
+| CreateShaderResourceView | `0x21669a0` | 0x50 bytes, vtable `0x535f460`; bind flag 0x8 |
+| CreateUnorderedAccessView | `0x2166b60` | 0x50 bytes, vtable `0x535f480`; bind flag 0x80 |
+| CreateGeometryShader | `0x2167030` | 0x150 bytes; its check `0x2173220` wants the `Shdr` magic at `+0x24` and type 3 at `+0x2c` |
+| CreateGeometryShaderWithStreamOutput | `0x2167140` | 0x150 bytes, through the same check |
+| Other shaders (five) | `0x2166d00` (0x128), `0x2166e10`, `0x2166f20`, `0x21672d0`, `0x21673e0` (0x120) | the binary is PSSL (`Shdr` at `+0x24`) |
+| CreateDeferredContext | `0x21676c0` | a 0xdae0-byte context |
+
+A view's resource keeps its dimension in a byte at `+0x38`, checked against the view's dimension.
 
 ## Still to find, with our own tools
 
-- The GX context's pending state: where the bound shaders, views, constant buffers, input layout,
-  vertex and index buffers and the blend, depth-stencil and rasterizer states sit. Read from what
-  the commit and the output-merger flush load.
-- GX's device: its texture, view, shader, state and query creators, found from CreateBuffer's
-  callers and the device at `0x216b0f0`.
-- Texture and view holders: size, the resource's memory, format and dimensions.
+- Which of the five other shader creators is which stage, and so which stage block is which. The
+  cheapest proof is at run time in stage 1: log which creator made the shader each SetShader gets.
+- The blend, depth-stencil, rasterizer and sampler state creators, and the rasterizer state and
+  viewports in the pending state (between `+0x528` and `+0x598`).
+- The texture holder: where the resource's memory, format and tiling mode sit.
 - Scaleform's renderer and its draws.
 
 ## Stages

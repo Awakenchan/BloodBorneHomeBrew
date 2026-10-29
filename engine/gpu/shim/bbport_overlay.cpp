@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include "../bbnet/room/room_service.h"
 #include "bbport_menu_i18n.h"
 #include "bbport_settings.h"
 #include "bbport_usage.h"
@@ -1846,6 +1847,26 @@ void CompileNote() {
     ImGui::End();
 }
 
+bool RelayNoteActive() {
+    const std::int64_t ms = BbRoom::ConnectedForMs();
+    return ms >= 0 && ms < 8000 && BbRoom::SponsoredRelay();
+}
+
+void RelayNote() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float pad = 24.0f * base_scale;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + pad),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.55f);
+    ImGui::Begin("##relay_note", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextUnformatted(BbSettings::MenuText("Connected to the Lantern co-op relay (Frankfurt), hosted by 1337 Hosting",
+                                                "Подключено к серверу совместной игры Lantern (Франкфурт), хостинг 1337 Hosting"));
+    ImGui::End();
+}
+
 void FpsCounter() {
     const auto& s = BbSettings::Get();
     char text[128];
@@ -2418,7 +2439,7 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() ||
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() ||
                            !BbEngine::OnlineFixes::PartyRows().empty() || BbFaceShot::JustTaken());
 }
 
@@ -2463,6 +2484,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (!menu_open && CompileNoteActive()) {
         CompileNote();
+    }
+    if (!menu_open && RelayNoteActive()) {
+        RelayNote();
     }
     if (prompt_active && !menu_open) {
         TextPrompt();

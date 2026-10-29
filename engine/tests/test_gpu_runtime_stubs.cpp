@@ -56,8 +56,8 @@ int runtime_memory_direct_phys(uintptr_t, uint64_t*, uintptr_t*) { std::abort();
 void runtime_wait_report(double) {}
 void runtime_sleep_stats(uint64_t* calls, uint64_t* ns) { *calls = 0; *ns = 0; }
 uint64_t runtime_heap_growths() { return 0; }
-void runtime_rwlock_census(uint64_t* live, uint64_t* found, uint64_t* steps) { *live = *found = *steps = 0; }
-void runtime_sema_census(uint64_t* live, uint64_t* found, uint64_t* steps) { *live = *found = *steps = 0; }
+void sys_rwlock_census(uint64_t* live, uint64_t* found, uint64_t* steps) { *live = *found = *steps = 0; }
+void sys_sema_census(uint64_t* live, uint64_t* found, uint64_t* steps) { *live = *found = *steps = 0; }
 void runtime_thread_census(uint64_t* made, uint64_t* finished, uint64_t* found, uint64_t* steps) {
     *made = *finished = *found = *steps = 0;
 }

@@ -1,6 +1,7 @@
 #define _CRT_RAND_S
 #include "runtime.h"
 #include "gpu/bbgpu.h"
+#include "sys/sys.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,14 +84,14 @@ void runtime_report(void) {
     printf("Runtime: static guards acquired=%zu, released=%zu\n", (size_t)guards_acquired, (size_t)guards_released);
     runtime_thread_report();
     runtime_mutex_report();
-    runtime_rwlock_report();
-    runtime_sema_report();
-    runtime_content_report();
+    sys_rwlock_report();
+    sys_sema_report();
+    sys_app_content_report();
     runtime_memory_report();
-    runtime_ajm_report();
-    runtime_audio_report();
-    runtime_pad_report();
-    runtime_savedata_report();
+    sys_ajm_report();
+    sys_audio_out_report();
+    sys_pad_report();
+    sys_save_data_report();
     runtime_file_report();
     printf("Runtime: memory operations=%zu\n", (size_t)memory_calls);
 }
@@ -212,34 +213,18 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!strcmp(name, "vNe1w4diLCs#p#J")) return (uintptr_t)guest_tls_get_addr;
     if (!strcmp(name, "959qrazPIrg#p#J")) return (uintptr_t)guest_procparam;
     if (!strcmp(name, "p5EcQeEeJAE#p#J")) return (uintptr_t)guest_set_heap_api;
+    uintptr_t own = sys_resolve(name);
+    if (own) return own;
     uintptr_t mutex = runtime_mutex_resolve(name);
     if (mutex) return mutex;
     uintptr_t thread = runtime_thread_resolve(name);
     if (thread) return thread;
-    uintptr_t content=runtime_content_resolve(name);
-    if (content) return content;
-    uintptr_t timer = runtime_time_resolve(name);
-    if (timer) return timer;
-    uintptr_t sema = runtime_sema_resolve(name);
-    if (sema) return sema;
-    uintptr_t rwlock = runtime_rwlock_resolve(name);
-    if (rwlock) return rwlock;
     uintptr_t memory = runtime_memory_resolve(name);
     if (memory) return memory;
     uintptr_t kernel = runtime_kernel_resolve(name);
     if (kernel) return kernel;
     uintptr_t services = runtime_services_resolve(name);
     if (services) return services;
-    uintptr_t ajm = runtime_ajm_resolve(name);
-    if (ajm) return ajm;
-    uintptr_t audio = runtime_audio_resolve(name);
-    if (audio) return audio;
-    uintptr_t pad = runtime_pad_resolve(name);
-    if (pad) return pad;
-    uintptr_t rtc = runtime_rtc_resolve(name);
-    if (rtc) return rtc;
-    uintptr_t save = runtime_savedata_resolve(name);
-    if (save) return save;
     uintptr_t file = runtime_file_resolve(name);
     if (file) return file;
     return bbgpu_resolve(name);

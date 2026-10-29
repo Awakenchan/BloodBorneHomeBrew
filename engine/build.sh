@@ -120,7 +120,7 @@ gpu_cache_sources | grep -v -E 'vk_(graphics|compute)_pipeline\.cpp$|vk_pipeline
 gpu_cache_sources | xargs cat | sha256sum | cut -c1-16 > out/gpu-cache.legacy.id
 # $ORIGIN/gpu: packaged copies keep the library next to the binary without patching it.
 gpu=(-Lout/gpu -lbbgpu -Wl,-rpath,'$ORIGIN/gpu' -Wl,-rpath,"$PWD/out/gpu" -rdynamic)
-runtime=(src/runtime*.c)
+runtime=(src/runtime*.c src/sys/*.c)
 link=(-no-pie)
 if [[ -n $windows ]]; then
     # out/gpu/bbgpu_link.txt (gpu/CMakeLists.txt): libbbgpu.a and its dependencies, one per line.
@@ -171,7 +171,7 @@ if [[ -n $windows ]] && [[ ! -f out/bb-start.exe || -n $(find start src/lantern.
     echo "Built $PWD/out/bb-start.exe"
 fi
 if [[ ${1:-} == --test ]]; then
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -o out/pad-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_pad.c tests/sys_test_host.c src/sys/*.c out/libatrac9.a -lm "${libraries[@]}" -o out/pad-test
     out/pad-test
     "$CC" -std=gnu11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test
     out/runtime-test
@@ -179,6 +179,8 @@ if [[ ${1:-} == --test ]]; then
     out/file-mods-test
     "$CC" -std=gnu11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_sema.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/sema-test
     out/sema-test
-    "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
+    "$CC" "${cstd[@]}" -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_content.c tests/sys_test_host.c src/sys/*.c out/libatrac9.a -lm "${libraries[@]}" -o out/content-test
     out/content-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_rtc.c tests/sys_test_host.c src/sys/*.c out/libatrac9.a -lm "${libraries[@]}" -o out/sys-rtc-test
+    out/sys-rtc-test
 fi

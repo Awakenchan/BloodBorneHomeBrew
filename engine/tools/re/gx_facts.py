@@ -3,6 +3,8 @@
 import os
 import sys
 
+from capstone.x86 import X86_OP_MEM, X86_REG_RIP
+
 from eboot import Eboot
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +42,45 @@ PPFX = {'bind framebuffer': 0xbb68f0, 'apply effects': 0xbb6980}
 FLIP_PASS = 0x21d5f80
 CUE = (0x1092e80, 0x1093150)
 FRAME_TIMER = 0x2034770
+REPLAY_TABLE = 0x52b9fb8
+STAGE_SLOTS = (('ConstantBuffers', 16), ('ShaderResources', 128), ('Samplers', 14), ('Shader', 1))
+STAGES = (0x598, 0xa90, 0xf88, 0x1480, 0x1978, 0x1e70)
+STAGE_SETTERS = (
+    (0x2168ce0, 0x2168d00, 0x2168d90, 0x2168e00),
+    (0x2168e10, 0x2168e30, 0x2168ec0, 0x2168f30),
+    (0x2168f40, 0x2168f60, 0x2168ff0, 0x2169060),
+    (0x2169070, 0x2169090, 0x2169120, 0x2169190),
+    (0x21692c0, 0x21692e0, 0x2169370, 0x21693e0),
+    (0x2169440, 0x2169460, 0x21694f0, 0x21695b0),
+)
+INPUT_ASSEMBLER = (
+    ('IASetInputLayout', 0x2168c90, 0x0),
+    ('IASetPrimitiveTopology', 0x2168ca0, 0x8),
+    ('IASetIndexBuffer', 0x2168cb0, 0x10),
+    ('IASetVertexBuffers', 0x2168cc0, 0x20),
+)
+OUTPUT_MERGER_STATE = {'blend': 0x4d0, 'depth stencil': 0x4d8, 'render targets': 0x4e0,
+                       'depth view': 0x520, 'blend factor': 0x568, 'stencil ref': 0x584}
+CREATORS = {
+    'CreateTexture2D': (0x2165f90, None),
+    'CreateTexture3D': (0x2166300, None),
+    'shader 0x128': (0x2166d00, 0x128),
+    'shader 0x120 a': (0x2166e10, 0x120),
+    'shader 0x120 b': (0x2166f20, 0x120),
+    'CreateGeometryShader': (0x2167030, 0x150),
+    'CreateGeometryShaderWithStreamOutput': (0x2167140, 0x150),
+    'shader 0x120 c': (0x21672d0, 0x120),
+    'shader 0x120 d': (0x21673e0, 0x120),
+    'CreateDeferredContext': (0x21676c0, 0xdae0),
+}
+VIEWS = {
+    'CreateDepthStencilView': (0x2166610, 0x40, 0x60, 0x535f420),
+    'CreateRenderTargetView': (0x21667a0, 0x20, 0x50, 0x535f440),
+    'CreateShaderResourceView': (0x21669a0, 0x8, 0x50, 0x535f460),
+    'CreateUnorderedAccessView': (0x2166b60, 0x80, 0x50, 0x535f480),
+}
+SHADER_MAGIC = (0x72646853, 0x24)
+GEOMETRY_SHADER_CHECK = (0x2173220, 0x2c, 3)
 
 
 def gnm_names():
@@ -60,6 +101,17 @@ def immediates(e, f):
                     out.add(int(tok, 16))
                 except ValueError:
                     pass
+            elif tok.isdigit():
+                out.add(int(tok))
+    return out
+
+
+def rip_targets(e, f):
+    out = set()
+    for i in e.disasm(f):
+        for op in i.operands:
+            if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP:
+                out.add(i.address + i.size + op.mem.disp)
     return out
 
 
@@ -112,6 +164,47 @@ def main(path):
         check(entries[slot] == f, f'  slot {slot} (ClearRenderTargetView) is 0x{f:x}')
     for name, f in {**YEBIS_GNM, **PPFX}.items():
         check(e.is_function(f), f'{name} at 0x{f:x}')
+
+    replay = [e.ptr(REPLAY_TABLE + 8 * i) for i in range(36)]
+    check(all(e.is_function(x) for x in replay), f'GX command-list replay table 0x{REPLAY_TABLE:x}: 36 handlers')
+
+    def handler_calls(h, f):
+        return f in calls(h) or any(i.mnemonic == 'jmp' and i.op_str == hex(f) for i in e.disasm(h))
+
+    for k, (name, f, offset) in enumerate(INPUT_ASSEMBLER):
+        check(handler_calls(replay[k], f), f'  replay {k} calls {name} 0x{f:x}')
+        if offset:
+            check(offset in immediates(e, replay[k]), f'    and keeps it at state+0x{offset:x}')
+    for s, (base, setters) in enumerate(zip(STAGES, STAGE_SETTERS)):
+        offset = base
+        for j, ((kind, slots), f) in enumerate(zip(STAGE_SLOTS, setters)):
+            k = 4 + 4 * s + j
+            check(handler_calls(replay[k], f), f'  replay {k} calls stage {s} Set{kind} 0x{f:x}')
+            check(offset in immediates(e, replay[k]), f'    stage {s} {kind} at state+0x{offset:x}')
+            offset += 8 * slots
+    for k, name in zip(range(28, 36), ('Dispatch', 'Draw', 'DrawIndexed', 'DrawInstanced', 'DrawIndexedInstanced',
+                                       'DrawInstancedIndirect', 'DrawIndexedInstancedIndirect', 'Commit')):
+        check(handler_calls(replay[k], CONTEXT[name][0]), f'  replay {k} calls {name}')
+    om = immediates(e, FLUSH_OUTPUT_MERGER)
+    for name, offset in OUTPUT_MERGER_STATE.items():
+        check(offset in om, f'output-merger flush reads {name} at state+0x{offset:x}')
+    for name, (f, size) in CREATORS.items():
+        check(e.is_function(f), f'{name} at 0x{f:x}')
+        if size:
+            check(size in immediates(e, f), f'  allocates 0x{size:x} bytes')
+    for name, (f, bind, size, vtable) in VIEWS.items():
+        imm = immediates(e, f)
+        check(e.is_function(f) and bind in imm, f'{name} at 0x{f:x} needs bind flag 0x{bind:x}')
+        check(size in imm, f'  allocates 0x{size:x} bytes')
+        check(vtable in rip_targets(e, f), f'  vtable 0x{vtable:x}')
+    magic, at = SHADER_MAGIC
+    f, type_at, gs = GEOMETRY_SHADER_CHECK
+    imm = immediates(e, f)
+    check(magic in imm and at in imm and type_at in imm and gs in imm,
+          f'geometry shader check 0x{f:x}: Shdr magic at +0x{at:x}, type {gs} at +0x{type_at:x}')
+    check(f in calls(CREATORS['CreateGeometryShaderWithStreamOutput'][0]) or
+          any(f in calls(c) for c in calls(CREATORS['CreateGeometryShaderWithStreamOutput'][0])),
+          '  stream-output creator goes through it')
 
     print(f"\n{len(fails)} failed")
     return 1 if fails else 0

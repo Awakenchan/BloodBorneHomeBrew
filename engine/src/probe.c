@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <cpuid.h>
 #include "runtime.h"
+#include "sys/sys.h"
 #include "gpu/bbgpu.h"
 #include "respawn_patch.h"
 #if !defined(__x86_64__) || !defined(__GNUC__)
@@ -802,14 +803,14 @@ int main(int argc, char **argv) {
             unsigned char *p=data+8+i*4;
             values[i]=(uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;
         }
-        runtime_content_configure(values);
+        sys_app_content_configure(values);
     }
     if (app0) {
         runtime_file_configure(app0, user_dir ? user_dir : "user");
         char sfo[4096], id[16]="";
         snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0);
         if (sfo_value(sfo,"INSTALL_DIR_SAVEDATA",id,sizeof(id),NULL) || sfo_value(sfo,"TITLE_ID",id,sizeof(id),NULL))
-            runtime_savedata_configure(id);
+            sys_save_data_configure(id);
     }
     bbgpu_register_kernel();
 #ifdef _WIN32

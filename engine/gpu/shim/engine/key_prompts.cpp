@@ -82,7 +82,7 @@ bool XboxIcons() {
     case BbSettings::PadIconsXbox: return true;
     case BbSettings::PadIconsPlayStation: return false;
     default: {
-        const int type = runtime_pad_type();
+        const int type = sys_pad_type();
         return type != SDL_GAMEPAD_TYPE_UNKNOWN && type != SDL_GAMEPAD_TYPE_PS3 &&
                type != SDL_GAMEPAD_TYPE_PS4 && type != SDL_GAMEPAD_TYPE_PS5;
     }
@@ -181,7 +181,7 @@ std::optional<Keycap::Spec> PadSpec(int icon) {
         return std::nullopt;
     }
     int button;
-    switch (runtime_pad_button(it->bit, icon == kTouchRight)) {
+    switch (sys_pad_button(it->bit, icon == kTouchRight)) {
     case SDL_GAMEPAD_BUTTON_SOUTH: button = PadA; break;
     case SDL_GAMEPAD_BUTTON_EAST: button = PadB; break;
     case SDL_GAMEPAD_BUTTON_WEST: button = PadX; break;

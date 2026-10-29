@@ -16,7 +16,7 @@ constexpr int kDefaultP2p = 3658;
 constexpr int kDefaultSignTimeout = 30;
 const char* const kThdEnv[] = {"BB_NET_BACKEND", "BB_THD_SERVER", "BB_THD_AUTH", "BB_THD_TOKEN", "BB_THD_ONLINE_ID",
                                "BB_THD_RULESET"};
-const char* const kSeamlessServer = "https://seamless-coop.lanternengine.workers.dev";
+const char* const kSeamlessServer = "https://185-244-28-175.sslip.io";
 const char* const kRoomEnv[] = {"BB_ROOM_SERVER", "BB_ROOM_NAME", "BB_ROOM_PLAYER", "BB_ROOM_HOST", "BB_ROOM_HTTP_PORT"};
 const char* const kOnlineEnv[] = {"BB_ONLINE", "BB_SHADNET_SERVER", "BB_SHADNET_WEBAPI", "BB_SHADNET_NPID",
                                   "BB_SHADNET_PASSWORD", "BB_SHADNET_TOKEN", "BB_UPNP", "BB_P2P_PORT",

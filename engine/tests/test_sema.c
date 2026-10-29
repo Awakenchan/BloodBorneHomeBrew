@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "sys/sys.h"
 #include <stdlib.h>
 
 void runtime_restart(void) { abort(); }
@@ -30,7 +31,7 @@ static void setup(void) {
     delete_sem=GET(Delete,"R1Jvn8bSCW8#p#J");
     cancel_sem=GET(Cancel,"4DM06U2BNEY#p#J");
     assert(create && poll_sem && signal_sem && wait_sem && delete_sem && cancel_sem);
-    assert(!runtime_resolve("188x57JYp0g#I#J",0));
+    assert(!runtime_resolve("AAAAAAAAAAA#p#J",0));
     assert(!runtime_resolve("188x57JYp0g#p#J",1));
 }
 static void lifecycle(void) {
@@ -59,7 +60,7 @@ static void lifecycle(void) {
     assert((uint32_t)poll_sem(old,1)==0x80020003);
     timeout=1000;
     assert((uint32_t)wait_sem(s.handle,1,&timeout)==0x8002003c && timeout==0);
-    assert(runtime_sema_waiters(s.handle)==0);
+    assert(sys_sema_waiters(s.handle)==0);
     assert(signal_sem(s.handle,1)==0 && poll_sem(s.handle,1)==0);
     assert(delete_sem(s.handle)==0);
 }
@@ -68,7 +69,7 @@ static void *waiter(void *p) { Task *t=p; t->result=wait_sem(t->id,t->need,&t->t
 static void enrolled(uint32_t id,unsigned count) {
     const struct timespec nap={0,1000000};
     for (int i=0;i<2000;++i) {
-        if (runtime_sema_waiters(id)==count) return;
+        if (sys_sema_waiters(id)==count) return;
         nanosleep(&nap,NULL);
     }
     assert(!"waiter enrollment timed out");
@@ -82,7 +83,7 @@ static void concurrency(void) {
     assert(pthread_create(&second,NULL,waiter,&b)==0); enrolled(id,2);
     assert(signal_sem(id,1)==0);
     assert(pthread_join(first,NULL)==0 && a.result==0 && a.timeout<=5000000);
-    assert(runtime_sema_waiters(id)==1 && (uint32_t)poll_sem(id,1)==0x80020010);
+    assert(sys_sema_waiters(id)==1 && (uint32_t)poll_sem(id,1)==0x80020010);
     assert(signal_sem(id,1)==0);
     assert(pthread_join(second,NULL)==0 && b.result==0);
     a=(Task){id,2,99,5000000}; b=(Task){id,1,99,5000000};
@@ -90,7 +91,7 @@ static void concurrency(void) {
     assert(pthread_create(&second,NULL,waiter,&b)==0); enrolled(id,2);
     assert(signal_sem(id,1)==0);
     assert(pthread_join(second,NULL)==0 && b.result==0);
-    assert(runtime_sema_waiters(id)==1);
+    assert(sys_sema_waiters(id)==1);
     assert(signal_sem(id,2)==0);
     assert(pthread_join(first,NULL)==0 && a.result==0);
     assert(delete_sem(id)==0);

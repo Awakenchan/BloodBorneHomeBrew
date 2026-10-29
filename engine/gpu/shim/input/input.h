@@ -48,8 +48,8 @@ int bbgpu_pc_input(BbPcPad* pad, const bool* keys, int nkeys, int gamepad_presen
 
 int bbgpu_menu_buttons(uint32_t* confirm, uint32_t* back);
 
-int runtime_pad_type(void);
-int runtime_pad_button(uint32_t ps_button, int right_side);
+int sys_pad_type(void);
+int sys_pad_button(uint32_t ps_button, int right_side);
 
 #ifdef __cplusplus
 }

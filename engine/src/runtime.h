@@ -43,9 +43,6 @@ void runtime_guest_call_sites(uint64_t out[3]);
 uint64_t runtime_heap_growths(void);
 static inline uint64_t runtime_wait_clock(void) { return host_monotonic_ns(); }
 const char *runtime_import_name(const char *name);
-uintptr_t runtime_rwlock_resolve(const char *name);
-void runtime_rwlock_report(void);
-void runtime_rwlock_census(uint64_t *live, uint64_t *found, uint64_t *steps);
 void runtime_set_libc_tls(const void *data, uint64_t filesz, uint64_t memsz);
 void runtime_set_module_tls(uint64_t module, const void *data, uint64_t filesz, uint64_t memsz);
 void runtime_set_procparam(void *param);
@@ -58,20 +55,11 @@ void runtime_thread_attach_main(void);
 int runtime_thread_has_record(void);
 int runtime_thread_is_loader(void);
 int32_t *runtime_errno(void);
-uintptr_t runtime_sema_resolve(const char *name);
-void runtime_sema_report(void);
-void runtime_sema_census(uint64_t *live, uint64_t *found, uint64_t *steps);
-unsigned runtime_sema_waiters(uint32_t id);
 enum { RUNTIME_BLOCK_MUTEX = 1, RUNTIME_BLOCK_SEMA = 2, RUNTIME_BLOCK_COND = 3 };
 int runtime_block_begin(int kind, uintptr_t object);
 void runtime_block_end(int slot);
 void runtime_blocked_report(void);
 void runtime_mutex_describe(uintptr_t mutex, char *out, size_t size);
-void runtime_sema_describe(uint32_t id, char *out, size_t size);
-uintptr_t runtime_time_resolve(const char *name);
-void runtime_content_configure(const uint32_t values[5]);
-uintptr_t runtime_content_resolve(const char *name);
-void runtime_content_report(void);
 typedef struct { const char *name; void *function; } RuntimeExport;
 #define RUNTIME_LOOKUP(table, nid) runtime_lookup(table, sizeof(table)/sizeof(*(table)), nid)
 const char *runtime_symbol(const char *nid);
@@ -97,16 +85,6 @@ int64_t runtime_file_getdents(int fd, char *buffer, uint64_t size, int64_t *base
 void runtime_thread_keys_cleanup(void);
 int32_t runtime_guest_errno(int host_errno);
 void *runtime_low_map(size_t size, int prot);
-uintptr_t runtime_ajm_resolve(const char *name);
-void runtime_ajm_report(void);
-uintptr_t runtime_audio_resolve(const char *name);
-void runtime_audio_report(void);
-uintptr_t runtime_pad_resolve(const char *name);
-void runtime_pad_report(void);
-uintptr_t runtime_rtc_resolve(const char *name);
 const char *runtime_file_user_dir(void);
-void runtime_savedata_configure(const char *title);
-uintptr_t runtime_savedata_resolve(const char *name);
-void runtime_savedata_report(void);
 void runtime_thread_attach_host(const char *name);
 #endif

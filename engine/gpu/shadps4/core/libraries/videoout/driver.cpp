@@ -34,8 +34,8 @@
 
 extern "C" void runtime_sleep_stats(uint64_t* calls, uint64_t* ns);
 extern "C" void runtime_wait_report(double frames);
-extern "C" void runtime_rwlock_census(uint64_t* live, uint64_t* found, uint64_t* steps);
-extern "C" void runtime_sema_census(uint64_t* live, uint64_t* found, uint64_t* steps);
+extern "C" void sys_rwlock_census(uint64_t* live, uint64_t* found, uint64_t* steps);
+extern "C" void sys_sema_census(uint64_t* live, uint64_t* found, uint64_t* steps);
 extern "C" void runtime_thread_census(uint64_t* made, uint64_t* finished, uint64_t* found,
                                       uint64_t* steps);
 extern "C" uint64_t runtime_memory_regions(void);
@@ -442,8 +442,8 @@ static void LogLoad(double seconds, u64 flips, double worst_ms, u64 slow) {
     now.protect_pages = BbStats::protect_pages.load(std::memory_order_relaxed);
     AmdGpu::OcclusionDumpCounts(now.zpass, now.zpass_in_order);
     u64 rwlocks = 0, semas = 0, made = 0, finished = 0;
-    runtime_rwlock_census(&rwlocks, &now.rw_found, &now.rw_steps);
-    runtime_sema_census(&semas, &now.sema_found, &now.sema_steps);
+    sys_rwlock_census(&rwlocks, &now.rw_found, &now.rw_steps);
+    sys_sema_census(&semas, &now.sema_found, &now.sema_steps);
     runtime_thread_census(&made, &finished, &now.thread_found, &now.thread_steps);
     const bool first = last.draws == 0 && last.cpu_us == 0;
     const double frames = static_cast<double>(std::max<u64>(flips, 1));

@@ -43,6 +43,8 @@ void SendPortrait(const std::vector<std::uint8_t>& packed);
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakePortraits();
 
 bool Active();
+std::int64_t ConnectedForMs();
+bool SponsoredRelay();
 bool IsHost();
 std::string PlayerName();
 void Start(int game_p2p_port);

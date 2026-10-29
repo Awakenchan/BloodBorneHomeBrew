@@ -948,6 +948,13 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
     }
 }
 
+std::atomic<std::int64_t> g_connected_at_ms{0};
+
+std::int64_t SteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 void LinkLoop() {
     int last_host = 0;
     for (;;) {
@@ -958,6 +965,7 @@ void LinkLoop() {
                 if (S().own_slot.load() && S().own_slot.load() != e.slot)
                     Log("came back as slot %d (was %d)", e.slot, S().own_slot.load());
                 S().own_slot = e.slot;
+                if (!g_connected_at_ms.load()) g_connected_at_ms = SteadyMs();
                 Log("in the room as slot %d%s", e.slot, S().host ? " (host)" : "");
                 break;
             case Event::Kind::Joined:
@@ -1135,6 +1143,16 @@ void HttpLoop() {
 
 bool Active() {
     static const bool on = Env("BB_NET_BACKEND") == "room";
+    return on;
+}
+
+std::int64_t ConnectedForMs() {
+    const std::int64_t at = g_connected_at_ms.load();
+    return at ? SteadyMs() - at : -1;
+}
+
+bool SponsoredRelay() {
+    static const bool on = Env("BB_ROOM_SERVER").find("185-244-28-175.sslip.io") != std::string::npos;
     return on;
 }
 
