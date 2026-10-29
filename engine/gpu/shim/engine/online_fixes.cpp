@@ -290,7 +290,7 @@ constexpr float kFallDrop = 20.0f;
 constexpr double kFallSettle = 1.0;
 constexpr int kVitalsFresh = 5000;
 constexpr float kSameWorld = 8.0f;
-constexpr float kRebuildNear = 12.0f;
+constexpr auto kRebuildDelay = std::chrono::milliseconds(750);
 constexpr auto kVitalsEvery = std::chrono::milliseconds(250);
 constexpr auto kVitalsHeartbeat = std::chrono::milliseconds(2000);
 
@@ -525,10 +525,21 @@ std::int64_t __attribute__((sysv_abi)) OnHostDead(std::uint64_t, const std::uint
 }
 
 
-void RebuildRemote(std::uint64_t world, std::uint64_t chr) {
-    const std::uint64_t transition = Global(kTransition);
-    Call(Fn(kReleaseChrSlot), Field<std::uint64_t>(transition, 0x16f8), Field<std::uint32_t>(chr, 8));
-    Call(Fn(kRemoveChr), world, chr);
+bool IsPlayer(std::uint64_t chr) {
+    bool found = false;
+    ForEachPlayer([&](std::uint64_t, std::uint64_t c) { found = found || c == chr; });
+    return chr && found;
+}
+
+void RebuildRemote(std::uint64_t world, std::uint64_t chr, const std::string& who) {
+    if (chr && IsPlayer(chr) && chr != LocalPlayer()) {
+        const std::uint64_t transition = Global(kTransition);
+        Call(Fn(kReleaseChrSlot), Field<std::uint64_t>(transition, 0x16f8), Field<std::uint32_t>(chr, 8));
+        Call(Fn(kRemoveChr), world, chr);
+        Say("seamless: %s got up again: its old body here removed", who.c_str());
+    } else {
+        Say("seamless: %s got up again: no old body of it here", who.c_str());
+    }
     const std::uint64_t man = Global(kMultiPlayMan);
     const std::uint64_t begin = Field<std::uint64_t>(man, 0x10), end = Field<std::uint64_t>(man, 0x18);
     if (!begin || end < begin || end - begin > 64 * 8) return;
@@ -538,8 +549,12 @@ void RebuildRemote(std::uint64_t world, std::uint64_t chr) {
         const std::uint64_t task = Field<std::uint64_t>(at, 0);
         const int mode = Field<std::int32_t>(task, kTaskMode, -1);
         const std::uint8_t flags = Field<std::uint8_t>(task, kTaskFlags);
-        if (!task || (mode != 1 && mode != 2) || Field<std::int32_t>(task, kTaskStep, -1) < kStepCreate || (flags & 2))
+        const int step = Field<std::int32_t>(task, kTaskStep, -1);
+        if (!task) continue;
+        if ((mode != 1 && mode != 2) || step < kStepCreate || (flags & 2)) {
+            Say("seamless:   task mode %d step %d flags %#x left alone", mode, step, unsigned(flags));
             continue;
+        }
         bool has_chr = false;
         for (int i = 0; i < count && i < 8 && !has_chr; ++i) {
             const std::uint64_t other = Field<std::uint64_t>(entries + std::uint64_t(i) * 0x38, 0);
@@ -548,8 +563,8 @@ void RebuildRemote(std::uint64_t world, std::uint64_t chr) {
         if (has_chr) continue;
         *reinterpret_cast<std::uint8_t*>(task + kTaskFlags) = std::uint8_t(flags | 1);
         *reinterpret_cast<std::int32_t*>(task + kTaskNext) = kStepCreate;
+        Say("seamless:   task mode %d step %d flags %#x has no body: built again", mode, step, unsigned(flags));
     }
-    Say("seamless: a party member got up again elsewhere; its body here is built again");
 }
 
 bool DeathRules(std::uint8_t* image, std::size_t size) {
@@ -646,17 +661,42 @@ void SendOwnVitals(std::uint64_t local) {
 }
 
 void RebuildRevived(std::uint64_t world, const std::vector<BbRoom::Vitals>& party) {
-    static std::map<int, std::pair<std::uint16_t, std::array<float, 3>>> seen;
-    std::map<int, std::pair<std::uint16_t, std::array<float, 3>>> next;
+    struct Member {
+        std::uint16_t revives = 0;
+        std::uint64_t body = 0;
+    };
+    struct Due {
+        std::chrono::steady_clock::time_point at;
+        std::uint64_t body;
+        std::string name;
+    };
+    static std::map<int, Member> members;
+    static std::vector<Due> due;
+    const auto now = std::chrono::steady_clock::now();
+    std::map<int, Member> next;
     for (const BbRoom::Vitals& v : party) {
-        const auto was = seen.find(v.slot);
-        if (was != seen.end() && v.revives != was->second.first) {
-            if (const std::uint64_t corpse = RemoteNear(was->second.second.data(), kRebuildNear))
-                RebuildRemote(world, corpse);
+        Member m;
+        const auto was = members.find(v.slot);
+        if (was != members.end()) m = was->second;
+        if (was != members.end() && v.revives != m.revives) {
+            due.push_back({now + kRebuildDelay, m.body, v.name});
+            m.body = 0;
         }
-        next[v.slot] = {v.revives, {v.pos[0], v.pos[1], v.pos[2]}};
+        m.revives = v.revives;
+        if (v.hp > 0) {
+            if (const std::uint64_t body = RemoteNear(v.pos, kSameWorld)) m.body = body;
+        }
+        next[v.slot] = m;
     }
-    seen.swap(next);
+    members.swap(next);
+    for (auto it = due.begin(); it != due.end();) {
+        if (now < it->at) {
+            ++it;
+            continue;
+        }
+        RebuildRemote(world, it->body, it->name);
+        it = due.erase(it);
+    }
 }
 
 void PublishRows(std::uint64_t local, const std::vector<BbRoom::Vitals>& party) {
