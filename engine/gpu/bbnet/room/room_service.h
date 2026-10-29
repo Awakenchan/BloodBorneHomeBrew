@@ -20,6 +20,8 @@ struct Vitals {
 
 void SendVitals(const Vitals& own);
 std::vector<Vitals> Party(int max_age_ms);
+void SendTravel(std::uint32_t lamp);
+bool TakeTravel(std::uint32_t& lamp);
 
 bool Active();
 bool IsHost();

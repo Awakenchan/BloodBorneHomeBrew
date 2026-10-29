@@ -136,6 +136,10 @@ int Host(int game_port, int http_port) {
     ::sendto(udp, "back!", 5, 0, reinterpret_cast<sockaddr*>(&from), len);
     std::printf("host: P2P ok\n");
     if (!SwapVitals("HostHunter", "GuestHunter")) return Fail("no vitals from the guest");
+    for (int i = 0; i < 10; ++i) {
+        BbRoom::SendTravel(2412951);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
     std::printf("HOST OK\n");
     return 0;
 }
@@ -177,6 +181,11 @@ int Guest(int game_port, int http_port, bool early) {
         const int n = ::recvfrom(udp, buffer, sizeof(buffer), 0, reinterpret_cast<sockaddr*>(&from), &len);
         if (n == 5 && std::string(buffer, 5) == "back!") {
             if (!SwapVitals("GuestHunter", "HostHunter")) return Fail("no vitals from the host");
+            std::uint32_t lamp = 0;
+            for (int k = 0; k < 40 && !BbRoom::TakeTravel(lamp); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (lamp != 2412951) return Fail("no travel from the host");
+            std::printf("guest: the host travels to lamp %u\n", lamp);
             std::printf("GUEST OK\n");
             return 0;
         }

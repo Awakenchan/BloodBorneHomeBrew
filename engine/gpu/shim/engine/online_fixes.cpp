@@ -291,6 +291,49 @@ constexpr double kFallSettle = 1.0;
 constexpr int kVitalsFresh = 5000;
 constexpr float kSameWorld = 8.0f;
 constexpr auto kRebuildDelay = std::chrono::milliseconds(750);
+constexpr auto kCardLinger = std::chrono::seconds(30);
+constexpr auto kShowFor = std::chrono::seconds(30);
+constexpr std::size_t kLampWarp = 0x13cdf30;
+constexpr std::uint8_t kLampWarpEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
+                                           0x53, 0x48, 0x83, 0xec, 0x38, 0x89, 0xfb};
+constexpr std::size_t kLampGate = 0x12f831c;
+constexpr std::uint8_t kLampGateBytes[] = {0x85, 0xc9, 0x0f, 0x9f, 0xc1, 0x08, 0xc1};
+constexpr std::uint8_t kLampGateOpen[] = {0x31, 0xc9, 0x90, 0x90, 0x90, 0x90, 0x90};
+constexpr std::size_t kSendHomeCall = 0x138a51c;
+constexpr std::uint8_t kSendHomeCallBytes[] = {0xe8, 0x0f, 0x39, 0x04, 0x00};
+constexpr std::size_t kLuaDispatch = 0x1339870;
+constexpr std::uint8_t kLuaDispatchEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
+                                              0x48, 0x81, 0xec, 0xd8, 0x05, 0x00, 0x00, 0x49, 0x89, 0xf4, 0x48, 0x89, 0xfb};
+constexpr std::size_t kLuaEventMan = 0x553b0c8;
+constexpr std::size_t kNowLoading = 0x556286b;
+constexpr char kHostBell[] = "OnEvent_Call_SOS";
+constexpr char kGuestBell[] = "OnEvent_SendSoulSign_NormalCoop";
+constexpr auto kSettle = std::chrono::seconds(3);
+constexpr auto kRingEvery = std::chrono::seconds(10);
+constexpr auto kRejoinFor = std::chrono::seconds(120);
+constexpr auto kDreamWait = std::chrono::minutes(15);
+constexpr std::uint32_t kDreamArea = 21;
+
+bool DreamLamp(std::uint32_t lamp) {
+    return lamp / 100000 == kDreamArea;
+}
+
+struct Follow {
+    std::uint32_t lamp = 0;
+    bool replayed = false;
+    bool replaying = false;
+    bool left = false;
+    std::chrono::steady_clock::time_point at, settled, rang;
+};
+Follow g_follow;
+struct Lead {
+    bool on = false;
+    bool dream = false;
+    int expected = 0;
+    std::chrono::steady_clock::time_point at, settled, rang;
+};
+Lead g_lead;
+std::atomic<bool> g_lamp_travel{false};
 constexpr auto kVitalsEvery = std::chrono::milliseconds(250);
 constexpr auto kVitalsHeartbeat = std::chrono::milliseconds(2000);
 
@@ -476,6 +519,19 @@ std::int64_t __attribute__((sysv_abi)) OnDeathLoad(std::uint64_t, const std::uin
     const int role = Role();
     const bool own = from == Fn(kOwnDeathCall + sizeof kOwnDeathCallBytes) && (role == kRoleHost || role == kRoleClient);
     const bool phantom = from == Fn(kPhantomDeathCall + sizeof kPhantomDeathCallBytes) && role == kRoleClient;
+    if (from == Fn(kSendHomeCall + sizeof kSendHomeCallBytes) && g_lamp_travel.load()) {
+        std::uint32_t lamp = 0;
+        if (BbRoom::TakeTravel(lamp)) g_follow.lamp = lamp;
+        if (g_follow.lamp && !g_follow.replayed) {
+            g_follow.replayed = true;
+            g_follow.at = std::chrono::steady_clock::now();
+            Say("seamless: the host's room closed for its travel: following to lamp %u instead of going home", g_follow.lamp);
+            Call(Fn(kLampWarp), g_follow.lamp);
+            const_cast<std::uint64_t*>(saved)[-1] = 0;
+            return 1;
+        }
+        return 0;
+    }
     if (!own && !phantom) return 0;
     g_pending = {};
     g_pending.on = true;
@@ -525,6 +581,32 @@ std::int64_t __attribute__((sysv_abi)) OnHostDead(std::uint64_t, const std::uint
 }
 
 
+std::map<std::uint64_t, std::chrono::steady_clock::time_point> g_rebuilding;
+
+void ShowRebuilt() {
+    if (g_rebuilding.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = g_rebuilding.begin(); it != g_rebuilding.end();) {
+        const std::uint64_t task = it->first;
+        std::uint64_t body = 0;
+        ForEachPlayer([&](std::uint64_t, std::uint64_t chr) {
+            if (!body && chr != LocalPlayer() && (Call(Fn(kIdEquals), chr + 0x3d8, task + kTaskPeer) & 0xff)) body = chr;
+        });
+        if (!body) {
+            it = now - it->second > kShowFor ? g_rebuilding.erase(it) : std::next(it);
+            continue;
+        }
+        const std::uint64_t table = Field<std::uint64_t>(body, 0);
+        const std::uint64_t presenting = Field<std::uint64_t>(table, 0x1b8), show = Field<std::uint64_t>(table, 0x610);
+        if (presenting && show && !(Call(presenting, body) & 0xff)) {
+            *reinterpret_cast<std::uint8_t*>(body + 0x1e2) |= 0x10;
+            Call(show, body, 1);
+            Say("seamless: the rebuilt body is shown again");
+        }
+        it = g_rebuilding.erase(it);
+    }
+}
+
 bool IsPlayer(std::uint64_t chr) {
     bool found = false;
     ForEachPlayer([&](std::uint64_t, std::uint64_t c) { found = found || c == chr; });
@@ -563,8 +645,114 @@ void RebuildRemote(std::uint64_t world, std::uint64_t chr, const std::string& wh
         if (has_chr) continue;
         *reinterpret_cast<std::uint8_t*>(task + kTaskFlags) = std::uint8_t(flags | 1);
         *reinterpret_cast<std::int32_t*>(task + kTaskNext) = kStepCreate;
+        g_rebuilding[task] = std::chrono::steady_clock::now();
         Say("seamless:   task mode %d step %d flags %#x has no body: built again", mode, step, unsigned(flags));
     }
+}
+
+std::int64_t __attribute__((sysv_abi)) OnLampWarp(std::uint64_t, const std::uint64_t* saved) {
+    if (g_follow.replaying) return 0;
+    const bool hosting = Role() == kRoleHost;
+    if (!hosting && !(g_lead.on && g_lead.dream)) return 0;
+    const std::uint32_t lamp = static_cast<std::uint32_t>(saved[5]);
+    const int expected = hosting ? static_cast<int>(InWorld().size()) : g_lead.expected;
+    BbRoom::SendTravel(lamp);
+    g_lead = {};
+    g_lead.on = expected > 0;
+    g_lead.dream = DreamLamp(lamp);
+    g_lead.at = std::chrono::steady_clock::now();
+    g_lead.expected = expected;
+    Say("seamless: host travels to lamp %u%s: %d party member(s) follow", lamp, g_lead.dream ? " (the Hunter's Dream)" : "",
+        expected);
+    return 0;
+}
+
+bool Loading() {
+    return Field<std::uint8_t>(reinterpret_cast<std::uint64_t>(g_image), kNowLoading) != 0;
+}
+
+bool RingBell(const char* event) {
+    const std::uint64_t ctx = Field<std::uint64_t>(Global(kLuaEventMan), 8);
+    if (!ctx) return false;
+    return (Call(Fn(kLuaDispatch), ctx, event) & 0xff) != 0;
+}
+
+bool Settled(std::chrono::steady_clock::time_point& since, std::chrono::steady_clock::time_point now) {
+    const std::uint64_t local = LocalPlayer();
+    if (!local || Loading() || Hp(local) <= 0) {
+        since = {};
+        return false;
+    }
+    if (since == std::chrono::steady_clock::time_point{}) since = now;
+    return now - since >= kSettle;
+}
+
+void TravelTick() {
+    if (!g_lamp_travel.load()) return;
+    const auto now = std::chrono::steady_clock::now();
+    const int role = Role();
+    std::uint32_t lamp = 0;
+    const bool following = role == kRoleClient || g_follow.replayed;
+    if (following && !Loading() && LocalPlayer() && BbRoom::TakeTravel(lamp)) {
+        g_follow = {};
+        g_follow.lamp = lamp;
+        g_follow.replayed = true;
+        g_follow.at = now;
+        Say("seamless: following the host to lamp %u", lamp);
+        g_follow.replaying = true;
+        Call(Fn(kLampWarp), lamp);
+        g_follow.replaying = false;
+        return;
+    }
+    if (g_follow.replayed) {
+        if (role != kRoleClient) g_follow.left = true;
+        const bool dream = DreamLamp(g_follow.lamp);
+        if (g_follow.left && role == kRoleClient) {
+            Say("seamless: back in the host's world");
+            g_follow = {};
+        } else if (now - g_follow.at > (dream ? kDreamWait : kRejoinFor)) {
+            Say("seamless: the host was not found again after its travel; ring your bell to rejoin");
+            g_follow = {};
+        } else if (!dream && role == 0 && Settled(g_follow.settled, now) && now - g_follow.rang >= kRingEvery) {
+            g_follow.rang = now;
+            Say("seamless: arrived at the host's lamp: ringing the Small Resonant Bell (%s)",
+                RingBell(kGuestBell) ? "rung" : "not rung");
+        }
+    }
+    if (g_lead.on) {
+        const int back = static_cast<int>(InWorld().size());
+        if (now - g_lead.at > (g_lead.dream ? kDreamWait : kRejoinFor)) {
+            Say("seamless: %d of %d party member(s) back after the travel; ring the Beckoning Bell for the rest", back,
+                g_lead.expected);
+            g_lead = {};
+        } else if (role == kRoleHost && back >= g_lead.expected && now - g_lead.at > kSettle * 2) {
+            Say("seamless: the whole party is back after the travel");
+            g_lead = {};
+        } else if (!g_lead.dream && (role == 0 || role == kRoleHost) && Settled(g_lead.settled, now) &&
+                   now - g_lead.rang >= kRingEvery) {
+            g_lead.rang = now;
+            Say("seamless: arrived: ringing the Beckoning Bell for the party (%s)", RingBell(kHostBell) ? "rung" : "not rung");
+        }
+    }
+}
+
+bool LampTravel(std::uint8_t* image, std::size_t size) {
+    if (!g_death_rules.load() || !Matches(image, size, kLampGate, kLampGateBytes, sizeof kLampGateBytes) ||
+        !Matches(image, size, kSendHomeCall, kSendHomeCallBytes, sizeof kSendHomeCallBytes) ||
+        !Matches(image, size, kLuaDispatch, kLuaDispatchEntry, sizeof kLuaDispatchEntry)) {
+        Say("seamless: lamp travel with the party left off: the game's code there is not 1.09's");
+        return false;
+    }
+    Hook hook;
+    if (!Prepare(hook, image, size, kLampWarp, kLampWarpEntry, OnLampWarp)) {
+        Say("seamless: lamp travel with the party left off: no room for the lamp hook");
+        return false;
+    }
+    Commit(std::span(&hook, 1));
+    WriteCode(image + kLampGate, kLampGateOpen, sizeof kLampGateOpen);
+    g_lamp_travel = true;
+    Say("seamless: lamp travel with the party: the host's lamp takes everyone along, the bells ring by themselves");
+    return true;
 }
 
 bool DeathRules(std::uint8_t* image, std::size_t size) {
@@ -631,6 +819,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
         any = BellRules(image, size) || any;
         any = FourPlayers(image, size) || any;
         any = DeathRules(image, size) || any;
+        any = LampTravel(image, size) || any;
     }
     const char* timeout = std::getenv("BB_SIGN_TIMEOUT");
     const long seconds = timeout ? std::strtol(timeout, nullptr, 10) : 0;
@@ -703,14 +892,20 @@ void PublishRows(std::uint64_t local, const std::vector<BbRoom::Vitals>& party) 
     float own[3] = {};
     const bool placed = local && Position(local, own);
     const float view = g_camera_known.load() ? g_camera_yaw.load() : Facing(local);
+    static std::map<int, std::chrono::steady_clock::time_point> seen;
+    const auto now = std::chrono::steady_clock::now();
     std::vector<PartyRow> rows;
     for (const BbRoom::Vitals& v : party) {
+        const bool here = placed && RemoteNear(v.pos, kSameWorld);
+        if (here) seen[v.slot] = now;
+        const auto was = seen.find(v.slot);
+        if (!here && (was == seen.end() || now - was->second > kCardLinger)) continue;
         PartyRow row;
         row.name = v.name;
         row.health = v.hp_max > 0 ? std::clamp(float(v.hp) / float(v.hp_max), 0.0f, 1.0f) : 0.0f;
         row.stamina = v.stamina_max > 0 ? std::clamp(float(v.stamina) / float(v.stamina_max), 0.0f, 1.0f) : 0.0f;
         row.down = v.hp <= 0;
-        if (placed && RemoteNear(v.pos, kSameWorld)) {
+        if (here) {
             const float dx = v.pos[0] - own[0], dz = v.pos[2] - own[2];
             row.distance = std::sqrt(Distance2(v.pos, own));
             row.bearing = std::atan2(dx, dz) - view;
@@ -724,6 +919,7 @@ void PublishRows(std::uint64_t local, const std::vector<BbRoom::Vitals>& party) 
 void Tick() {
     if (!g_image || !BbRoom::Active()) return;
     if (g_death_rules.load()) PendingTick();
+    TravelTick();
     const int role = Role();
     const std::uint64_t world = Global(kWorldChrMan);
     const std::uint64_t local = Field<std::uint64_t>(world, 0x60);
@@ -735,7 +931,10 @@ void Tick() {
     if (Hp(local) > 0) g_alive_draw = Field<float>(local, 0x208, 1.0f);
     SendOwnVitals(local);
     const std::vector<BbRoom::Vitals> party = BbRoom::Party(kVitalsFresh);
-    if (g_death_rules.load() && (role == kRoleHost || role == kRoleClient)) RebuildRevived(world, party);
+    if (g_death_rules.load() && (role == kRoleHost || role == kRoleClient)) {
+        RebuildRevived(world, party);
+        ShowRebuilt();
+    }
     PublishRows(local, party);
 }
 

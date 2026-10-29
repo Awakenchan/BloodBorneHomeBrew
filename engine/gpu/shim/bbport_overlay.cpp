@@ -21,6 +21,8 @@
 #include "engine/cheats.h"
 #include "engine/graphics.h"
 #include "engine/online_fixes.h"
+#include "hud_gauge.h"
+#include "imgui_internal.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -1910,7 +1912,44 @@ void GameBar(ImDrawList* draw, ImVec2 at, ImVec2 size, float fill, ImU32 light, 
                         IM_COL32(200, 190, 170, int(220 * dim)));
 }
 
+ImTextureData* GaugeTexture() {
+    static ImTextureData* texture = nullptr;
+    if (texture) return texture;
+    BbHudGauge::Start();
+    const BbHudGauge::Art* art = BbHudGauge::Ready();
+    if (!art) return nullptr;
+    texture = IM_NEW(ImTextureData)();
+    texture->Create(ImTextureFormat_RGBA32, art->width, art->height);
+    std::memcpy(texture->GetPixels(), art->pixels.data(), art->pixels.size() * 4);
+    ImGui::RegisterUserTexture(texture);
+    return texture;
+}
+
+void GaugePiece(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, float fill,
+                ImU32 tint) {
+    const float w = float(texture->Width), h = float(texture->Height);
+    const ImVec2 uv0(float(piece.x) / w, float(piece.y) / h);
+    const ImVec2 uv1(float(piece.x + piece.w * fill) / w, float(piece.y + piece.h) / h);
+    draw->AddImage(texture->GetTexRef(), a, ImVec2(a.x + (b.x - a.x) * fill, b.y), uv0, uv1, tint);
+}
+
+void TexturedBar(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& fill_piece, ImVec2 at, ImVec2 size,
+                 float fill, float dim, float k) {
+    const BbHudGauge::Art* art = BbHudGauge::Ready();
+    const ImU32 tint = IM_COL32(255, 255, 255, int(255 * dim));
+    const float inset_x = size.y * 0.35f, inset_y = size.y * 0.25f;
+    GaugePiece(draw, texture, art->frame, ImVec2(at.x - inset_x, at.y - inset_y), ImVec2(at.x + size.x + inset_x, at.y + size.y + inset_y),
+               1.0f, tint);
+    if (fill > 0.0f) {
+        GaugePiece(draw, texture, fill_piece, at, ImVec2(at.x + size.x, at.y + size.y), fill, tint);
+        const float edge = at.x + size.x * fill;
+        draw->AddRectFilled(ImVec2(edge - k, at.y), ImVec2(edge + k, at.y + size.y), IM_COL32(230, 226, 214, int(230 * dim)));
+    }
+}
+
 void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
+    ImTextureData* gauge = GaugeTexture();
+    const BbHudGauge::Art* art = gauge ? BbHudGauge::Ready() : nullptr;
     static const ImU32 accents[] = {IM_COL32(196, 160, 92, 255), IM_COL32(92, 160, 170, 255),
                                     IM_COL32(176, 78, 64, 255), IM_COL32(140, 110, 180, 255)};
     const float k = base_scale;
@@ -1965,11 +2004,13 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
                                     IM_COL32(220, 214, 200, 230));
         }
         const float hp_y = top + 34.0f * k, hp_h = 7.0f * k;
-        GameBar(draw, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, IM_COL32(196, 46, 40, 255),
-                IM_COL32(112, 16, 16, 255), dim, k);
+        if (art) TexturedBar(draw, gauge, art->health, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, dim, k);
+        else GameBar(draw, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, IM_COL32(196, 46, 40, 255),
+                     IM_COL32(112, 16, 16, 255), dim, k);
         const float sp_y = hp_y + hp_h + 4.0f * k, sp_h = 5.0f * k;
-        GameBar(draw, ImVec2(text_x, sp_y), ImVec2(bar_w * 0.8f, sp_h), row.stamina, IM_COL32(112, 172, 88, 255),
-                IM_COL32(46, 98, 42, 255), dim, k);
+        if (art) TexturedBar(draw, gauge, art->stamina, ImVec2(text_x, sp_y), ImVec2(bar_w * 0.8f, sp_h), row.stamina, dim, k);
+        else GameBar(draw, ImVec2(text_x, sp_y), ImVec2(bar_w * 0.8f, sp_h), row.stamina, IM_COL32(112, 172, 88, 255),
+                     IM_COL32(46, 98, 42, 255), dim, k);
         top += card_h + gap;
     }
 }

@@ -45,7 +45,7 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7 };
 constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4;
 constexpr std::size_t kBatchBytes = 16000;
 
@@ -130,6 +130,8 @@ struct State {
 
     std::mutex vitals_mu;
     std::map<int, std::pair<Vitals, Clock::time_point>> vitals;
+    std::uint32_t travel = 0;
+    Clock::time_point travel_at;
 };
 
 State& S() {
@@ -591,6 +593,16 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         }
         return;
     }
+    if (kind == kTravel) {
+        if (data.size() != 5 || sender != S().link.HostSlot()) return;
+        std::uint32_t lamp = 0;
+        std::memcpy(&lamp, data.data() + 1, 4);
+        Log("the host travels to lamp %u: following", lamp);
+        std::lock_guard lock(S().vitals_mu);
+        S().travel = lamp;
+        S().travel_at = Clock::now();
+        return;
+    }
     if (kind == kVitals) {
         if (data.size() < kVitalsFixed) return;
         const std::size_t name_size = data[1];
@@ -878,6 +890,26 @@ std::vector<Vitals> Party(int max_age_ms) {
         if (v.age_ms <= max_age_ms) out.push_back(std::move(v));
     }
     return out;
+}
+
+void SendTravel(std::uint32_t lamp) {
+    if (!S().started.load() || !S().link.Connected()) return;
+    std::uint8_t frame[5] = {kTravel};
+    std::memcpy(frame + 1, &lamp, 4);
+    S().link.Send(0, frame, sizeof frame);
+    Log("travelling to lamp %u: the party follows", lamp);
+}
+
+bool TakeTravel(std::uint32_t& lamp) {
+    std::lock_guard lock(S().vitals_mu);
+    if (!S().travel) return false;
+    if (Clock::now() - S().travel_at > std::chrono::seconds(10)) {
+        S().travel = 0;
+        return false;
+    }
+    lamp = S().travel;
+    S().travel = 0;
+    return true;
 }
 
 std::string PlayerName() {
