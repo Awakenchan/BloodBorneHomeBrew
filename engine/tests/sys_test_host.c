@@ -18,3 +18,11 @@ WEAK int64_t runtime_file_open(const char *path, int flags, int mode) { (void)pa
 WEAK int64_t runtime_file_read(int fd, void *buffer, uint64_t size) { (void)fd; (void)buffer; (void)size; return -1; }
 WEAK int64_t runtime_file_close(int fd) { (void)fd; return 0; }
 WEAK const char *runtime_file_user_dir(void) { return "no-such-user-dir"; }
+WEAK int runtime_file_mount(const char *guest, const char *host) { (void)guest; (void)host; return 0; }
+WEAK void runtime_file_unmount(const char *guest) { (void)guest; }
+WEAK int runtime_block_begin(int kind, uintptr_t object) { (void)kind; (void)object; return 0; }
+WEAK void runtime_block_end(int slot) { (void)slot; }
+WEAK void runtime_wait_note(int kind, uint64_t ns) { (void)kind; (void)ns; }
+#ifdef _WIN32
+WEAK int runtime_win_remove_tree(const char *path) { (void)path; return 0; }
+#endif

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "sys.h"
 #include "host_sync.h"
 #include "third_party/LibAtrac9/C/src/libatrac9.h"
