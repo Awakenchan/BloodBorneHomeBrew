@@ -1510,5 +1510,11 @@
   "{version} shows the launcher's version; {area}, {boss}, {level}, {echoes} and {insight} show the game's": "{version} — версія лаунчера; {area}, {boss}, {level}, {echoes} і {insight} — дані гри",
   "Show where you are": "Показувати, де ви",
   "The area you're in, or the boss you're fighting": "Локація, у якій ви є, або бос, з яким ви б'єтеся",
-  "Show your level, Blood Echoes and Insight": "Показувати рівень, Відлуння крові та Осяяння"
+  "Show your level, Blood Echoes and Insight": "Показувати рівень, Відлуння крові та Осяяння",
+  "Plate name": "Ім'я на табличці",
+  "Your name on the plate above your hunter and in the party list (up to 16 characters, spaces and symbols allowed)": "Ваше ім'я на табличці над мисливцем і в списку загону (до 16 символів, пробіли й знаки дозволені)",
+  "Name plates": "Таблички з іменем",
+  "What the plate above each hunter shows in co-op": "Що показує табличка над кожним мисливцем у спільній грі",
+  "Name only": "Лише ім'я",
+  "Role and name": "Роль та ім'я"
 }

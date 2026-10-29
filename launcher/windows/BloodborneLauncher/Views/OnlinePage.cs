@@ -35,14 +35,16 @@ namespace BloodborneLauncher.Views
                 () => Ini.Get("seamless_enabled") == "1", v => Ini.Set("seamless_enabled", v ? "1" : "0"));
             _role = ComboRow(SymbolRegular.Crown24, L.T("Role"), L.T("One player hosts, the others join the host's world"),
                 Choices.SeamlessRoles, () => Ini.Get("seamless_role", "guest"), v => { Ini.Set("seamless_role", v); ShowRoom(); });
-            IniText(SymbolRegular.Person24, L.T("Your name"), L.T("Shown to the others (up to 16 characters, no spaces)"), "Hunter", "seamless_player", 220);
+            IniText(SymbolRegular.Person24, L.T("Plate name"), L.T("Your name on the plate above your hunter and in the party list (up to 16 characters, spaces and symbols allowed)"), "Hunter", "seamless_player", 220);
+            ComboRow(SymbolRegular.Tag24, L.T("Name plates"), L.T("What the plate above each hunter shows in co-op"),
+                Choices.NamePlates, () => Ini.Get("name_plates", "name"), v => Ini.Set("name_plates", v));
             var invite = new StackPanel { Orientation = Orientation.Horizontal };
-            invite.Children.Add(SmallButton(L.T("Copy invite code"), SymbolRegular.Copy24, (_, _) => CopyInvite()));
-            var paste = SmallButton(L.T("Paste invite code"), SymbolRegular.ClipboardPaste24, (_, _) => PasteInvite());
-            paste.Margin = new Thickness(8, 0, 0, 0);
-            invite.Children.Add(paste);
+            _copy = SmallButton(L.T("Copy invite code"), SymbolRegular.Copy24, (_, _) => CopyInvite());
+            invite.Children.Add(_copy);
+            _paste = SmallButton(L.T("Paste invite code"), SymbolRegular.ClipboardPaste24, (_, _) => PasteInvite());
+            invite.Children.Add(_paste);
             Add(Card(SymbolRegular.Link24, L.T("Invite code"), null, invite, out _roomHint));
-            Add(Card(SymbolRegular.ArrowSync24, L.T("New room"),
+            _newRoom = Add(Card(SymbolRegular.ArrowSync24, L.T("New room"),
                 L.T("Makes a new room with a new invite code; the old code stops working"),
                 SmallButton(L.T("New room"), SymbolRegular.ArrowSync24, (_, _) => NewRoom()), out _));
             EnsureHostRoom();
@@ -72,6 +74,9 @@ namespace BloodborneLauncher.Views
 
         private readonly System.Windows.Controls.TextBlock _roomHint;
         private readonly FrameworkElement _role;
+        private readonly Button _copy;
+        private readonly Button _paste;
+        private readonly SettingRow _newRoom;
         private const string InvitePrefix = "LANTERN-ROOM:";
 
         private static string RandomText(int length)
@@ -100,6 +105,9 @@ namespace BloodborneLauncher.Views
         {
             if (_roomHint is null) return;
             var host = Ini.Get("seamless_role", "guest") == "host";
+            _copy.Visibility = host ? Visibility.Visible : Visibility.Collapsed;
+            _paste.Visibility = host ? Visibility.Collapsed : Visibility.Visible;
+            _newRoom.Visibility = host ? Visibility.Visible : Visibility.Collapsed;
             SetHint(_roomHint, host
                 ? L.T("You host your own room: copy the code and send it to friends")
                 : Ini.Get("seamless_room").Length > 0

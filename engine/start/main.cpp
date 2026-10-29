@@ -429,7 +429,8 @@ int Main(std::vector<std::wstring> arguments) {
             Setting(settings, "pc_controls") != "0" || Setting(settings, "widescreen") != "0") {
             try {
                 const fs::path menus = PrepareMenuAssets(merged, out / "eboot.elf", data / "engine-assets",
-                                                         out / "bb-engine-assets.exe", is_on("rebirth"));
+                                                         out / "bb-engine-assets.exe", is_on("rebirth"),
+                                                         Setting(settings, "name_plates") == "role");
                 SetEnv("BB_PC_MENU_ASSETS", Utf8(menus));
                 Log("Engine: native PC menus prepared locally: %s", Utf8(menus).c_str());
                 if (is_on("rebirth"))

@@ -1867,6 +1867,33 @@ void RelayNote() {
     ImGui::End();
 }
 
+bool SummonNoteActive() {
+    std::string text;
+    return BbRoom::CurrentNotice(text);
+}
+
+void SummonNote() {
+    std::string text;
+    if (!BbRoom::CurrentNotice(text)) return;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float k = base_scale;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float px = ImGui::GetFontSize() * 1.35f;
+    const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text.c_str());
+    const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float y = viewport->WorkPos.y + viewport->WorkSize.y * 0.72f;
+    const float half = std::max(size.x * 0.5f + 80.0f * k, 360.0f * k);
+    const ImVec2 a(cx - half, y), b(cx + half, y + size.y + 24.0f * k);
+    draw->AddRectFilledMultiColor(a, ImVec2(cx, b.y), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 190), IM_COL32(0, 0, 0, 190),
+                                  IM_COL32(0, 0, 0, 0));
+    draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, IM_COL32(0, 0, 0, 190), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
+                                  IM_COL32(0, 0, 0, 190));
+    draw->AddLine(a, ImVec2(b.x, a.y), IM_COL32(200, 190, 170, 140), 1.0f * k);
+    draw->AddLine(ImVec2(a.x, b.y), b, IM_COL32(200, 190, 170, 140), 1.0f * k);
+    draw->AddText(font, px, ImVec2(cx - size.x * 0.5f, y + 12.0f * k), IM_COL32(226, 216, 192, 255), text.c_str());
+}
+
 void FpsCounter() {
     const auto& s = BbSettings::Get();
     char text[128];
@@ -2439,7 +2466,7 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() ||
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() ||
                            !BbEngine::OnlineFixes::PartyRows().empty() || BbFaceShot::JustTaken());
 }
 
@@ -2487,6 +2514,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (!menu_open && RelayNoteActive()) {
         RelayNote();
+    }
+    if (!menu_open) {
+        SummonNote();
     }
     if (prompt_active && !menu_open) {
         TextPrompt();

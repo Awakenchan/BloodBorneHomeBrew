@@ -43,6 +43,14 @@ constexpr std::uint8_t kPacerEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41
 constexpr char kDreamLayout[] = "/app0/dvdroot_ps4/map/mapstudio/m21_00_00_00.msb.dcx";
 constexpr char kDreamLayoutFile[] = "dvdroot_ps4/map/mapstudio/m21_00_00_00.msb.dcx";
 
+bool Seamless() {
+    static const bool on = [] {
+        const char* v = std::getenv("BB_NET_BACKEND");
+        return v && std::strcmp(v, "room") == 0;
+    }();
+    return on;
+}
+
 std::int64_t __attribute__((sysv_abi)) OnStep(std::uint64_t, const std::uint64_t* saved) {
     menu_steps_notify(saved);
     return 0;
@@ -52,7 +60,7 @@ std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_
     FrameRate::Tick();
     Loading::Tick(saved[5]);
     ChangeAppearance::Tick();
-    BbFaceShot::Tick(ChangeAppearance::PreviewShown());
+    BbFaceShot::Tick(ChangeAppearance::PreviewShown() && Seamless());
     Rebirth::Tick();
     Options::Tick();
     BbInput::Tick();

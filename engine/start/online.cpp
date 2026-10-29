@@ -152,9 +152,12 @@ bool ConfigureSeamless(const std::map<std::string, std::string>& settings, const
     const std::string room = get(host ? "seamless_host_room" : "seamless_room");
     std::string player;
     for (const char c : get("seamless_player")) {
-        if (std::isalnum(std::uint8_t(c)) || c == '-' || c == '_') player.push_back(c);
+        const auto u = std::uint8_t(c);
+        if (u >= 0x20 && u < 0x7f && c != '"' && c != '\\' &&!(c == ' ' && (player.empty() || player.back() == ' ')))
+            player.push_back(c);
         if (player.size() == 16) break;
     }
+    while (!player.empty() && player.back() == ' ') player.pop_back();
     if (player.empty()) player = "Hunter";
     if (room.empty())
         throw Error(host ? "Open the launcher's Online page once to make your room" : "Paste the host's invite code on the launcher's Online page");

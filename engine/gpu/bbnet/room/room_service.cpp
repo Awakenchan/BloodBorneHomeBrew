@@ -214,8 +214,80 @@ void Localize(Json& value) {
     if (value.contains("Members")) Localize(value["Members"]);
 }
 
+enum class Stage { None, Looking, Found, Calling, Waiting, Invited, Joined, Failed };
+
+struct Notice {
+    std::mutex mu;
+    Stage stage = Stage::None;
+    std::string who;
+    int count = 0;
+    Clock::time_point since, seen;
+};
+
+Notice& N() {
+    static Notice n;
+    return n;
+}
+
+std::string NameOf(int slot) {
+    std::lock_guard lock(S().vitals_mu);
+    const auto it = S().vitals.find(slot);
+    return it == S().vitals.end() || it->second.first.name.empty() ? std::string("a hunter") : it->second.first.name;
+}
+
+void Note(Stage stage, const std::string& who = {}, int count = 0) {
+    Notice& n = N();
+    std::lock_guard lock(n.mu);
+    const auto now = Clock::now();
+    if (n.stage != stage || n.who != who) n.since = now;
+    n.stage = stage;
+    n.who = who;
+    n.count = count;
+    n.seen = now;
+}
+
+void NoteEvent(const Json& ev) {
+    const std::string name = StrOf(ev, "Name");
+    if (name == "guest_invite") {
+        const std::string host = StrOf(ev, "HostOnlineId");
+        Note(Stage::Invited, host.empty() ? std::string("the host") : host);
+    } else if (name == "room_member_joined") {
+        Note(Stage::Joined, NameOf(static_cast<int>(IntOf(ev, "Slot"))));
+    }
+}
+
+void NoteSummon(const std::string& api, const Json& body, const Json& reply, bool ok) {
+    if (!ok) {
+        Note(Stage::Failed);
+        return;
+    }
+    if (api == "create") {
+        Note(Stage::Waiting);
+    } else if (api == "delete") {
+        Notice& n = N();
+        std::lock_guard lock(n.mu);
+        if (n.stage == Stage::Waiting) n.stage = Stage::None;
+    } else if (api == "get") {
+        const auto list = reply.contains("SummonDataList") && reply["SummonDataList"].is_array() ? reply["SummonDataList"]
+                                                                                              : Json::array();
+        if (list.empty()) {
+            Notice& n = N();
+            std::unique_lock lock(n.mu);
+            const bool busy = n.stage == Stage::Calling && Clock::now() - n.since < std::chrono::seconds(20);
+            lock.unlock();
+            if (!busy) Note(Stage::Looking);
+        } else {
+            const std::string first = NameOf(static_cast<int>(IntOf(list[0], "UserId") - 1000));
+            Note(Stage::Found, first, static_cast<int>(list.size()));
+        }
+    } else if (api == "request") {
+        Note(Stage::Calling, NameOf(static_cast<int>(IntOf(body, "TargetUserId") - 1000)));
+    }
+}
+
 void Deliver(int slot, Json event) {
     if (slot == S().own_slot.load()) {
+        NoteEvent(event);
         Localize(event);
         {
             std::lock_guard lock(S().mu);
@@ -938,6 +1010,7 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         if (sender != S().link.HostSlot()) return;
         Json value = Json::parse(data.begin() + 1, data.end(), nullptr, false);
         if (!value.is_object()) return;
+        NoteEvent(value);
         Localize(value);
         {
             std::lock_guard lock(S().mu);
@@ -1045,7 +1118,9 @@ std::string GameApiAnswer(const std::string& path, const Json& body) {
     if (path.rfind("/summon_messenger/", 0) == 0 || path.rfind("/channel/", 0) == 0) {
         Json reply;
         std::string error;
-        if (!Rpc({{"p", path}, {"b", body}}, reply, error, 8000)) return "";
+        const bool ok = Rpc({{"p", path}, {"b", body}}, reply, error, 8000);
+        if (path.rfind("/summon_messenger/", 0) == 0) NoteSummon(path.substr(18), body, reply, ok);
+        if (!ok) return "";
         return reply.dump();
     }
     Json reply = {{"ResKind", 0}};
@@ -1213,12 +1288,12 @@ bool TakeTravel(std::uint32_t& lamp) {
     return true;
 }
 
-void SendProgress(const std::vector<std::uint32_t>& flags) {
+void SendProgress(const std::vector<std::uint32_t>& flags, int target) {
     if (flags.empty() || !S().started.load() || !S().link.Connected()) return;
     std::vector<std::uint8_t> frame(1 + 4 * flags.size());
     frame[0] = kProgress;
     std::memcpy(frame.data() + 1, flags.data(), 4 * flags.size());
-    S().link.Send(0, frame.data(), frame.size());
+    S().link.Send(target, frame.data(), frame.size());
 }
 
 std::vector<std::uint32_t> TakeProgress() {
@@ -1248,14 +1323,14 @@ void PutDungeonForm(std::uint64_t channel, const std::vector<std::uint8_t>& data
     Log("dungeon %llu: its layout is on the room's board", static_cast<unsigned long long>(channel));
 }
 
-void SendDungeon(const Dungeon& d) {
+void SendDungeon(const Dungeon& d, int target) {
     if (!S().started.load() || !S().link.Connected()) return;
     std::vector<std::uint8_t> frame(1 + 8 + 4 * 43 + 4 * d.flags.size());
     frame[0] = kDungeon;
     std::memcpy(frame.data() + 1, &d.channel, 8);
     std::memcpy(frame.data() + 9, d.record.data(), 4 * 43);
     if (!d.flags.empty()) std::memcpy(frame.data() + 9 + 4 * 43, d.flags.data(), 4 * d.flags.size());
-    S().link.Send(0, frame.data(), frame.size());
+    S().link.Send(target, frame.data(), frame.size());
 }
 
 bool TakeDungeon(Dungeon& out) {
@@ -1334,7 +1409,65 @@ bool Call(const std::string& path, const Json& body, Json& reply, std::string& e
         reply = {{"ResKind", 0}};
         return true;
     }
-    return Rpc({{"p", path}, {"b", body}}, reply, error, std::max(timeout_ms, 3000));
+    const bool ok = Rpc({{"p", path}, {"b", body}}, reply, error, std::max(timeout_ms, 3000));
+    if (path == "/mp/matching2/join_room") {
+        const bool joined = ok && IntOf(reply, "ResKind", 1) == 0;
+        Notice& n = N();
+        std::unique_lock lock(n.mu);
+        const std::string who = n.who;
+        lock.unlock();
+        Note(joined ? Stage::Joined : Stage::Failed, joined ? who : std::string());
+    }
+    return ok;
+}
+
+bool CurrentNotice(std::string& text) {
+    Notice& n = N();
+    std::lock_guard lock(n.mu);
+    const auto now = Clock::now();
+    const long secs = static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(now - n.since).count());
+    const auto quiet = now - n.seen;
+    char line[160];
+    switch (n.stage) {
+    case Stage::None:
+        return false;
+    case Stage::Looking:
+        if (quiet > std::chrono::seconds(15)) return false;
+        std::snprintf(line, sizeof line, "Looking for hunters in the room... %ld s", secs);
+        break;
+    case Stage::Found:
+        if (quiet > std::chrono::seconds(15)) return false;
+        if (n.count > 1) std::snprintf(line, sizeof line, "Found %s and %d more: summoning", n.who.c_str(), n.count - 1);
+        else std::snprintf(line, sizeof line, "Found %s: summoning", n.who.c_str());
+        break;
+    case Stage::Calling:
+        if (quiet > std::chrono::seconds(30)) return false;
+        std::snprintf(line, sizeof line, "Calling %s... %ld s", n.who.c_str(), secs);
+        break;
+    case Stage::Waiting:
+        if (quiet > std::chrono::minutes(10)) return false;
+        std::snprintf(line, sizeof line, "Your sign is up: waiting for the host... %ld s", secs);
+        break;
+    case Stage::Invited:
+        if (quiet > std::chrono::seconds(30)) {
+            std::snprintf(line, sizeof line, "%s's summon did not go through: still looking", n.who.c_str());
+            if (quiet > std::chrono::seconds(36)) return false;
+            break;
+        }
+        std::snprintf(line, sizeof line, "%s is summoning you: connecting... %ld s", n.who.c_str(), secs);
+        break;
+    case Stage::Joined:
+        if (quiet > std::chrono::seconds(5)) return false;
+        if (n.who.empty()) std::snprintf(line, sizeof line, "Connected");
+        else std::snprintf(line, sizeof line, "Connected: %s", n.who.c_str());
+        break;
+    case Stage::Failed:
+        if (quiet > std::chrono::seconds(6)) return false;
+        std::snprintf(line, sizeof line, "Could not connect: still looking");
+        break;
+    }
+    text = line;
+    return true;
 }
 
 } // namespace BbRoom

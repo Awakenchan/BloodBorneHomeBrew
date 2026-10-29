@@ -1510,5 +1510,11 @@
   "{version} shows the launcher's version; {area}, {boss}, {level}, {echoes} and {insight} show the game's": "{version} 顯示啟動器版本；{area}、{boss}、{level}、{echoes} 和 {insight} 顯示遊戲資訊",
   "Show where you are": "顯示你在哪裡",
   "The area you're in, or the boss you're fighting": "你所在的區域，或正在挑戰的頭目",
-  "Show your level, Blood Echoes and Insight": "顯示等級、血之回響和洞察"
+  "Show your level, Blood Echoes and Insight": "顯示等級、血之回響和洞察",
+  "Plate name": "名牌名稱",
+  "Your name on the plate above your hunter and in the party list (up to 16 characters, spaces and symbols allowed)": "顯示在你的獵人頭頂名牌和隊伍列表中的名字（最多 16 個字元，可用空格和符號）",
+  "Name plates": "名牌",
+  "What the plate above each hunter shows in co-op": "合作時每位獵人頭頂名牌顯示的內容",
+  "Name only": "僅名字",
+  "Role and name": "身分和名字"
 }

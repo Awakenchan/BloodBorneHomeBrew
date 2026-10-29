@@ -2,6 +2,7 @@
 #include "change_appearance.h"
 #include "engine_state.h"
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 
 namespace BbEngine::ChangeAppearance {
@@ -30,6 +31,10 @@ std::atomic<bool> g_preview{false};
 std::uint64_t g_descriptor = 0;
 std::uint8_t g_update_flag = 1;
 unsigned g_opened = 0;
+const bool g_hold_title = [] {
+    const char* v = std::getenv("BB_HOLD_TITLE_STEP");
+    return v && std::strcmp(v, "1") == 0;
+}();
 
 std::uint64_t Image(std::size_t at) { return g_image + at; }
 std::uint64_t Follow(std::uint64_t at) {
@@ -93,7 +98,7 @@ void Tick() {
     if (const std::uint64_t step = menu_steps_take(g_watch); menu_step_is(step, kListStepType, kListStepName)) {
         if (!world) {
             if (!g_title_step) {
-                menu_step_hold(step);
+                if (g_hold_title) menu_step_hold(step);
                 g_title_step = step;
             }
         } else if (g_editor && !g_step && !g_descriptor && OpenWindow()) {
@@ -102,10 +107,12 @@ void Tick() {
             if (g_opened++ < 4) host_log("change appearance: the editor's window opened (ChrMake_BG, the hunter's preview)");
         }
     }
-    if (g_title_step && (world || *menu_step_count(g_title_step) == 1)) {
+    if (g_title_step && g_hold_title && (world || *menu_step_count(g_title_step) == 1)) {
         menu_step_release(g_title_step);
         g_title_step = 0;
     }
+    if (g_title_step && !g_hold_title && (world || !menu_step_is(g_title_step, kListStepType, kListStepName)))
+        g_title_step = 0;
     if (g_descriptor && !world) {
         CloseWindow();
         host_log("change appearance: the editor's window closed on leaving the world");

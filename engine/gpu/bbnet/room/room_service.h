@@ -25,7 +25,7 @@ void SendVitals(const Vitals& own);
 std::vector<Vitals> Party(int max_age_ms);
 void SendTravel(std::uint32_t lamp);
 bool TakeTravel(std::uint32_t& lamp);
-void SendProgress(const std::vector<std::uint32_t>& flags);
+void SendProgress(const std::vector<std::uint32_t>& flags, int target = 0);
 std::vector<std::uint32_t> TakeProgress();
 
 struct Dungeon {
@@ -34,7 +34,7 @@ struct Dungeon {
     std::vector<std::uint32_t> flags;
 };
 void PutDungeonForm(std::uint64_t channel, const std::vector<std::uint8_t>& form);
-void SendDungeon(const Dungeon& d);
+void SendDungeon(const Dungeon& d, int target = 0);
 bool TakeDungeon(Dungeon& out);
 void SendChalices(const std::vector<std::uint32_t>& goods);
 bool TakeChalices(std::vector<std::uint32_t>& out);
@@ -45,6 +45,7 @@ std::vector<std::pair<int, std::vector<std::uint8_t>>> TakePortraits();
 bool Active();
 std::int64_t ConnectedForMs();
 bool SponsoredRelay();
+bool CurrentNotice(std::string& text);
 bool IsHost();
 std::string PlayerName();
 void Start(int game_p2p_port);

@@ -383,7 +383,7 @@ std::vector<std::pair<std::string, fs::path>> PrepareEffectFixes(const fs::path&
 }
 
 fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::path& cache, const fs::path& tool,
-                           bool rebirth) {
+                           bool rebirth, bool plate_roles) {
     VerifyExecutable(elf);
     const fs::path root = cache / "pc-menus";
     std::vector<std::pair<std::string, std::string>> sources{{"dvdroot_ps4/menu/optionsetting.gfx", "movie"}};
@@ -395,7 +395,7 @@ fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::
             if (fs::is_regular_file(language.path() / "menu.msgbnd.dcx", error))
                 messages.push_back("dvdroot_ps4/msg/" + Utf8(language.path().filename()) + "/menu.msgbnd.dcx");
     std::sort(messages.begin(), messages.end());
-    for (const std::string& m : messages) sources.emplace_back(m, "messages");
+    for (const std::string& m : messages) sources.emplace_back(m, plate_roles ? "messages-roles" : "messages");
     if (sources.size() < 2 || sources.size() > 24)
         throw Error("Native options require valid menu bundles for every installed language");
     if (rebirth) sources.emplace_back("dvdroot_ps4/script/talk/m24_02_00_00.talkesdbnd.dcx", "rebirth");
@@ -414,7 +414,8 @@ fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::
         std::optional<std::string> current;
         const auto prior = previous.contains("files") && previous["files"].contains(relative) ? previous["files"][relative]
                                                                                              : nlohmann::json::object();
-        if (previous.value("generator", "") == generator && prior.value("input", "") == digest) {
+        if (previous.value("generator", "") == generator && prior.value("input", "") == digest &&
+            prior.value("kind", "") == kind) {
             try {
                 const std::string now = Sha256Hex(ReadFile(destination));
                 if (now == prior.value("output", "")) current = now;
@@ -438,7 +439,7 @@ fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::
                 throw Error("cannot write " + Utf8(destination));
             }
         }
-        rows[relative] = {{"input", digest}, {"output", *current}};
+        rows[relative] = {{"input", digest}, {"output", *current}, {"kind", kind}};
     }
     fs::create_directories(root);
     WriteText(manifest_path, nlohmann::ordered_json{{"generator", generator}, {"files", rows}}.dump(2));
