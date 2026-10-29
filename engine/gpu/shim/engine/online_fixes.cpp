@@ -295,6 +295,11 @@ constexpr auto kVitalsEvery = std::chrono::milliseconds(250);
 constexpr auto kVitalsHeartbeat = std::chrono::milliseconds(2000);
 
 std::uint16_t g_revives = 0;
+std::atomic<float> g_alive_draw{1.0f};
+constexpr std::size_t kBodyRevive = 0x1900710;
+constexpr std::uint8_t kBodyReviveEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x56, 0x53, 0x48, 0x89, 0xfb};
+constexpr std::size_t kTeamResolve = 0x18c2a00;
+constexpr std::uint8_t kTeamResolveEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x56, 0x53, 0x49, 0x89, 0xfe};
 std::atomic<float> g_camera_yaw{0.0f};
 std::atomic<bool> g_camera_known{false};
 std::mutex g_rows_mu;
@@ -424,6 +429,18 @@ void MoveBodyToSafeSpot(std::uint64_t chr, const float spot[3], const float faci
     Call(Field<std::uint64_t>(Field<std::uint64_t>(chr, 0), 0x5f8), chr, pos, rot, 1);
 }
 
+void RestorePhantomBody(std::uint64_t player) {
+    const std::int32_t type = Field<std::int32_t>(player, 0x78, -1);
+    const std::int32_t team = Field<std::int32_t>(player, 0x88, -1);
+    Call(Fn(kBodyRevive), player);
+    if (type >= 0) *reinterpret_cast<std::int32_t*>(player + 0x78) = type;
+    if (Field<std::int32_t>(player, 0x88, -1) != team) Call(Fn(kTeamResolve), player);
+    const float alive = g_alive_draw.load();
+    if (Field<float>(player, 0x208) < alive) *reinterpret_cast<float*>(player + 0x208) = alive;
+    Say("seamless: guest body back to its phantom form (type %d, team %d -> %d, draw %.2f)", type, team,
+        Field<std::int32_t>(player, 0x88, -1), double(Field<float>(player, 0x208)));
+}
+
 bool ReviveHere(const char* who) {
     const std::uint64_t player = LocalPlayer();
     if (!player) return false;
@@ -433,6 +450,7 @@ bool ReviveHere(const char* who) {
         return false;
     }
     WakeHitBodies(player);
+    if (Role() == kRoleClient) RestorePhantomBody(player);
     if (const std::uint64_t transition = Global(kTransition)) {
         *reinterpret_cast<std::uint8_t*>(transition + 0x1522) = 0;
         *reinterpret_cast<std::uint8_t*>(transition + 0x1523) = 0;
@@ -542,6 +560,8 @@ bool DeathRules(std::uint8_t* image, std::size_t size) {
         !Matches(image, size, kPhantomDeathCall, kPhantomDeathCallBytes, sizeof kPhantomDeathCallBytes) ||
         !Matches(image, size, kRevive, kReviveEntry, sizeof kReviveEntry) ||
         !Matches(image, size, kWarp, kWarpEntry, sizeof kWarpEntry) ||
+        !Matches(image, size, kBodyRevive, kBodyReviveEntry, sizeof kBodyReviveEntry) ||
+        !Matches(image, size, kTeamResolve, kTeamResolveEntry, sizeof kTeamResolveEntry) ||
         !Matches(image, size, kSetFlag, kSetFlagEntry, sizeof kSetFlagEntry) ||
         !Matches(image, size, kSetHitFilter, kSetHitFilterEntry, sizeof kSetHitFilterEntry) ||
         !Matches(image, size, kReleaseChrSlot, kReleaseChrSlotEntry, sizeof kReleaseChrSlotEntry) ||
@@ -672,6 +692,7 @@ void Tick() {
         g_rows.clear();
         return;
     }
+    if (Hp(local) > 0) g_alive_draw = Field<float>(local, 0x208, 1.0f);
     SendOwnVitals(local);
     const std::vector<BbRoom::Vitals> party = BbRoom::Party(kVitalsFresh);
     if (g_death_rules.load() && (role == kRoleHost || role == kRoleClient)) RebuildRevived(world, party);

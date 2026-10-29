@@ -1890,6 +1890,26 @@ void FpsCounter() {
     ImGui::PopStyleColor(2);
 }
 
+void GameBar(ImDrawList* draw, ImVec2 at, ImVec2 size, float fill, ImU32 light, ImU32 dark, float dim, float k) {
+    const auto faded = [dim](ImU32 c) {
+        const ImU32 a = ImU32(float((c >> IM_COL32_A_SHIFT) & 0xFF) * dim);
+        return (c & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+    };
+    const ImVec2 end(at.x + size.x, at.y + size.y);
+    draw->AddRectFilled(ImVec2(at.x - k, at.y - k), ImVec2(end.x + k, end.y + k), IM_COL32(0, 0, 0, 170));
+    draw->AddRectFilled(at, end, IM_COL32(24, 14, 12, 210));
+    if (fill > 0.0f) {
+        const ImVec2 fill_end(at.x + size.x * fill, end.y);
+        draw->AddRectFilledMultiColor(at, fill_end, faded(light), faded(light), faded(dark), faded(dark));
+        draw->AddLine(ImVec2(at.x, at.y + 0.5f * k), ImVec2(fill_end.x, at.y + 0.5f * k), faded(IM_COL32(255, 220, 200, 70)),
+                      k);
+    }
+    draw->AddRect(ImVec2(at.x - k, at.y - k), ImVec2(end.x + k, end.y + k), IM_COL32(168, 156, 136, int(200 * dim)), 0.0f,
+                  0, k);
+    draw->AddRectFilled(ImVec2(end.x, at.y - 2.0f * k), ImVec2(end.x + 2.0f * k, end.y + 2.0f * k),
+                        IM_COL32(200, 190, 170, int(220 * dim)));
+}
+
 void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
     static const ImU32 accents[] = {IM_COL32(196, 160, 92, 255), IM_COL32(92, 160, 170, 255),
                                     IM_COL32(176, 78, 64, 255), IM_COL32(140, 110, 180, 255)};
@@ -1898,7 +1918,7 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
     ImDrawList* draw = ImGui::GetBackgroundDrawList();
     const float left = viewport->WorkPos.x + 40.0f * k;
     const float card_w = 330.0f * k, card_h = 62.0f * k, gap = 8.0f * k;
-    float top = viewport->WorkPos.y + 175.0f * k;
+    float top = viewport->WorkPos.y + 240.0f * k;
     ImFont* font = ImGui::GetFont();
     const float name_size = ImGui::GetFontSize() * 1.05f;
     const float small_size = ImGui::GetFontSize() * 0.8f;
@@ -1944,15 +1964,12 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
                                     ImVec2(c.x - d.x * back - p.x * wide, c.y - d.y * back - p.y * wide),
                                     IM_COL32(220, 214, 200, 230));
         }
-        const float hp_y = top + 36.0f * k, hp_h = 4.0f * k;
-        draw->AddRectFilled(ImVec2(text_x, hp_y), ImVec2(text_x + bar_w, hp_y + hp_h), IM_COL32(0, 0, 0, 150));
-        draw->AddRectFilledMultiColor(ImVec2(text_x, hp_y), ImVec2(text_x + bar_w * row.health, hp_y + hp_h),
-                                      IM_COL32(150, 44, 30, int(255 * dim)), IM_COL32(210, 96, 52, int(255 * dim)),
-                                      IM_COL32(210, 96, 52, int(255 * dim)), IM_COL32(150, 44, 30, int(255 * dim)));
-        const float sp_y = hp_y + hp_h + 3.0f * k, sp_h = 2.5f * k;
-        draw->AddRectFilled(ImVec2(text_x, sp_y), ImVec2(text_x + bar_w, sp_y + sp_h), IM_COL32(0, 0, 0, 130));
-        draw->AddRectFilled(ImVec2(text_x, sp_y), ImVec2(text_x + bar_w * row.stamina, sp_y + sp_h),
-                            IM_COL32(104, 150, 92, int(230 * dim)));
+        const float hp_y = top + 34.0f * k, hp_h = 7.0f * k;
+        GameBar(draw, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, IM_COL32(196, 46, 40, 255),
+                IM_COL32(112, 16, 16, 255), dim, k);
+        const float sp_y = hp_y + hp_h + 4.0f * k, sp_h = 5.0f * k;
+        GameBar(draw, ImVec2(text_x, sp_y), ImVec2(bar_w * 0.8f, sp_h), row.stamina, IM_COL32(112, 172, 88, 255),
+                IM_COL32(46, 98, 42, 255), dim, k);
         top += card_h + gap;
     }
 }
