@@ -4,6 +4,9 @@
 #include "bbport_platform.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
+#include <map>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -234,6 +237,286 @@ bool FourPlayers(std::uint8_t* image, std::size_t size) {
     return true;
 }
 
+constexpr std::size_t kDeathLoad = 0x13cde30;
+constexpr std::uint8_t kDeathLoadEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
+                                            0x41, 0x55, 0x41, 0x54, 0x53, 0x50};
+constexpr std::size_t kHostDead = 0x1381870;
+constexpr std::uint8_t kHostDeadEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x50};
+constexpr std::size_t kOwnDeathCall = 0x1381ede;
+constexpr std::uint8_t kOwnDeathCallBytes[] = {0xe8, 0x4d, 0xbf, 0x04, 0x00};
+constexpr std::size_t kPhantomDeathCall = 0x1382663;
+constexpr std::uint8_t kPhantomDeathCallBytes[] = {0xe8, 0xc8, 0xb7, 0x04, 0x00};
+constexpr std::size_t kRevive = 0x13cbad0;
+constexpr std::uint8_t kReviveEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41,
+                                         0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x48};
+constexpr std::size_t kSetFlag = 0x132e5a0;
+constexpr std::uint8_t kSetFlagEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x56, 0x53};
+constexpr std::size_t kSetHitFilter = 0x1812400;
+constexpr std::uint8_t kSetHitFilterEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56};
+constexpr std::size_t kReleaseChrSlot = 0x15bc080;
+constexpr std::uint8_t kReleaseChrSlotEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x54, 0x53};
+constexpr std::size_t kRemoveChr = 0x19186e0;
+constexpr std::uint8_t kRemoveChrEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x50};
+constexpr std::size_t kIdEquals = 0xca1c70;
+constexpr std::uint8_t kIdEqualsEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55};
+const Site kDeathSites[] = {
+    {0x13cbd0f, {0xe8, 0x8c, 0x4a, 0xb0, 0x00}, {0x31, 0xc0, 0x90, 0x90, 0x90}},
+    {0x18c4d7d, {0xe8, 0x2e, 0x00, 0x59, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
+};
+
+constexpr std::size_t kSessionMan = 0x5540290;
+constexpr std::size_t kWorldChrMan = 0x553e878;
+constexpr std::size_t kMultiPlayMan = 0x5540230;
+constexpr std::size_t kTransition = 0x5556678;
+constexpr std::size_t kEventMan = 0x553b108;
+constexpr int kRoleHost = 3, kRoleClient = 6;
+constexpr std::uint32_t kLocalPlayer = 10000;
+constexpr std::uint32_t kDeathScriptFlag = 4000;
+constexpr std::uint32_t kDeadHitLayer = 0x36, kAliveHitLayer = 0x08;
+constexpr std::size_t kTaskStep = 0x50, kTaskNext = 0x54, kTaskPeer = 0xc8, kTaskMode = 0xe8, kTaskFlags = 0xed;
+constexpr int kStepCreate = 4;
+constexpr double kRemoteDeadRebuild = 20.0;
+constexpr double kRemoteAfterFight = 4.0;
+constexpr std::size_t kWarp = 0x13cb4f0;
+constexpr std::uint8_t kWarpEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41,
+                                       0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x28};
+constexpr std::size_t kGauge = 0x5562878;
+constexpr std::size_t kBossId = 0x1658, kBossTarget = 0x165c, kBossStride = 0x14;
+constexpr int kBossSlots = 3;
+constexpr float kFallDrop = 20.0f;
+constexpr double kFallSettle = 1.0;
+
+std::atomic<bool> g_death_rules{false};
+
+template <typename T> T Field(std::uint64_t base, std::size_t at, T fallback = T{}) {
+    T value{};
+    return base && Peek(base + at, &value) ? value : fallback;
+}
+
+std::uint64_t Global(std::size_t at) {
+    return Field<std::uint64_t>(reinterpret_cast<std::uint64_t>(g_image), at);
+}
+
+std::uint64_t Fn(std::size_t at) {
+    return reinterpret_cast<std::uint64_t>(g_image + at);
+}
+
+int Role() {
+    return Field<std::int32_t>(Global(kSessionMan), 0x124, -1);
+}
+
+std::int32_t Hp(std::uint64_t chr) {
+    return Field<std::int32_t>(Field<std::uint64_t>(Field<std::uint64_t>(chr, 0x3b0), 0x20), 0xf8, -1);
+}
+
+std::uint64_t LocalPlayer() {
+    return Field<std::uint64_t>(Global(kWorldChrMan), 0x60);
+}
+
+void WakeHitBodies(std::uint64_t chr) {
+    const std::uint64_t bodies = Field<std::uint64_t>(Field<std::uint64_t>(chr, 0x58), 0x20);
+    const std::uint32_t filter = Field<std::uint32_t>(bodies, 0xa8);
+    if (bodies && (filter & 0x3f) == kDeadHitLayer) Call(Fn(kSetHitFilter), bodies, (filter & ~0x3fu) | kAliveHitLayer);
+}
+
+void RearmDeathScript() {
+    const std::uint64_t request = Field<std::uint64_t>(Global(kEventMan), 0x10);
+    if (request && Field<std::int32_t>(request, 8) > 0) *reinterpret_cast<std::int32_t*>(request + 8) = 0;
+    Call(Fn(kSetFlag), 0, kDeathScriptFlag, 0);
+}
+
+bool BossUp() {
+    const std::uint64_t gauge = Global(kGauge);
+    if (gauge < 0x10000) return false;
+    for (int i = 0; i < kBossSlots; ++i) {
+        if (Field<std::int32_t>(gauge, kBossTarget + i * kBossStride, -1) != -1 &&
+            Field<std::int32_t>(gauge, kBossId + i * kBossStride, -1) > 0)
+            return true;
+    }
+    return false;
+}
+
+template <typename F> void ForEachPlayer(F&& f) {
+    const std::uint64_t world = Global(kWorldChrMan);
+    const int count = Field<std::int32_t>(world, 0x30);
+    const std::uint64_t entries = Field<std::uint64_t>(world, 0x38);
+    if (!world || !entries || count <= 0 || count > 8) return;
+    for (int i = 0; i < count; ++i) {
+        if (const std::uint64_t chr = Field<std::uint64_t>(entries + std::uint64_t(i) * 0x38, 0)) f(world, chr);
+    }
+}
+
+bool AnyoneElseUp(std::uint64_t local) {
+    bool up = false;
+    ForEachPlayer([&](std::uint64_t, std::uint64_t chr) { up = up || (chr != local && Hp(chr) > 0); });
+    return up;
+}
+
+bool Position(std::uint64_t chr, float out[3]) {
+    const std::uint64_t physics =
+        Field<std::uint64_t>(Field<std::uint64_t>(Field<std::uint64_t>(Field<std::uint64_t>(chr, 0x58), 8), 0x3b0), 0x68);
+    return physics && Peek(physics + 0x1e0, reinterpret_cast<float(*)[3]>(out));
+}
+
+bool SafeSpot(std::uint64_t chr, float pos[3], float rot[3]) {
+    const std::uint64_t spot = Field<std::uint64_t>(chr, 0x400);
+    return spot && Peek(spot + 0x30, reinterpret_cast<float(*)[3]>(pos)) && Peek(spot + 0x3c, reinterpret_cast<float(*)[3]>(rot));
+}
+
+void MoveBodyToSafeSpot(std::uint64_t chr, const float spot[3], const float facing[3]) {
+    alignas(16) float pos[4] = {spot[0], spot[1], spot[2], 1.0f};
+    alignas(16) float rot[4] = {facing[0], facing[1], facing[2], 0.0f};
+    if (const std::uint64_t transition = Global(kTransition)) {
+        std::memcpy(reinterpret_cast<void*>(transition + 0x1450), pos, sizeof pos);
+        std::memcpy(reinterpret_cast<void*>(transition + 0x1460), rot, sizeof rot);
+    }
+    Call(Fn(kWarp), kLocalPlayer, pos, rot, -1);
+    Call(Field<std::uint64_t>(Field<std::uint64_t>(chr, 0), 0x5f8), chr, pos, rot, 1);
+}
+
+bool ReviveHere(const char* who) {
+    const std::uint64_t player = LocalPlayer();
+    if (!player) return false;
+    Call(Fn(kRevive), kLocalPlayer, 0);
+    if (Hp(player) <= 0) {
+        Say("seamless: %s death: the game could not stand this hunter up again; the death load runs", who);
+        return false;
+    }
+    WakeHitBodies(player);
+    if (const std::uint64_t transition = Global(kTransition)) {
+        *reinterpret_cast<std::uint8_t*>(transition + 0x1522) = 0;
+        *reinterpret_cast<std::uint8_t*>(transition + 0x1523) = 0;
+    }
+    RearmDeathScript();
+    Say("seamless: %s death: up again on the last safe ground, still in the party (HP %d)", who, Hp(player));
+    return true;
+}
+
+struct PendingRevive {
+    bool on = false;
+    bool host = false;
+    bool waited = false;
+    bool moved = false;
+    std::uint64_t player = 0;
+    std::chrono::steady_clock::time_point moved_at;
+};
+PendingRevive g_pending;
+
+std::int64_t __attribute__((sysv_abi)) OnDeathLoad(std::uint64_t, const std::uint64_t* saved) {
+    const std::uint64_t from = saved[6];
+    const int role = Role();
+    const bool own = from == Fn(kOwnDeathCall + sizeof kOwnDeathCallBytes) && (role == kRoleHost || role == kRoleClient);
+    const bool phantom = from == Fn(kPhantomDeathCall + sizeof kPhantomDeathCallBytes) && role == kRoleClient;
+    if (!own && !phantom) return 0;
+    g_pending = {};
+    g_pending.on = true;
+    g_pending.host = role == kRoleHost;
+    g_pending.player = LocalPlayer();
+    Say("seamless: %s death: no death load, the hunter stays in the party", g_pending.host ? "host" : "guest");
+    const_cast<std::uint64_t*>(saved)[-1] = 0;
+    return 1;
+}
+
+void PendingTick() {
+    if (!g_pending.on) return;
+    const char* who = g_pending.host ? "host" : "guest";
+    const std::uint64_t player = LocalPlayer();
+    if (!player || player != g_pending.player || Hp(player) > 0) {
+        g_pending.on = false;
+        return;
+    }
+    const int role = Role();
+    const bool party = role == kRoleHost || role == kRoleClient;
+    if (party && BossUp() && AnyoneElseUp(player)) {
+        if (!g_pending.waited) Say("seamless: %s down in a boss fight: waiting for the boss to die or the party to fall", who);
+        g_pending.waited = true;
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    float at[3], spot[3], facing[3];
+    if (!g_pending.moved && Position(player, at) && SafeSpot(player, spot, facing) && std::isfinite(spot[1]) &&
+        (!std::isfinite(at[1]) || at[1] < spot[1] - kFallDrop)) {
+        MoveBodyToSafeSpot(player, spot, facing);
+        g_pending.moved = true;
+        g_pending.moved_at = now;
+        Say("seamless: %s fell %.0f m: the body is put on its last safe ground before it gets up", who,
+            std::isfinite(at[1]) ? double(spot[1] - at[1]) : 0.0);
+        return;
+    }
+    if (g_pending.moved && now - g_pending.moved_at < std::chrono::duration<double>(kFallSettle)) return;
+    g_pending.on = false;
+    if (g_pending.waited) Say("seamless: %s gets up in the arena (%s)", who, BossUp() ? "the whole party fell" : "the boss is dead");
+    if (!ReviveHere(who)) Call(Fn(kDeathLoad));
+}
+
+std::int64_t __attribute__((sysv_abi)) OnHostDead(std::uint64_t, const std::uint64_t*) {
+    if (Role() != kRoleClient) return 0;
+    Say("seamless: the host died; this guest stays in its world");
+    return 1;
+}
+
+std::map<std::uint64_t, std::chrono::steady_clock::time_point> g_down_since;
+std::chrono::steady_clock::time_point g_last_fight;
+
+void RebuildRemote(std::uint64_t world, std::uint64_t chr) {
+    const std::uint64_t transition = Global(kTransition);
+    Call(Fn(kReleaseChrSlot), Field<std::uint64_t>(transition, 0x16f8), Field<std::uint32_t>(chr, 8));
+    Call(Fn(kRemoveChr), world, chr);
+    const std::uint64_t man = Global(kMultiPlayMan);
+    const std::uint64_t begin = Field<std::uint64_t>(man, 0x10), end = Field<std::uint64_t>(man, 0x18);
+    if (!begin || end < begin || end - begin > 64 * 8) return;
+    const int count = Field<std::int32_t>(world, 0x30);
+    const std::uint64_t entries = Field<std::uint64_t>(world, 0x38);
+    for (std::uint64_t at = begin; at < end; at += 8) {
+        const std::uint64_t task = Field<std::uint64_t>(at, 0);
+        const int mode = Field<std::int32_t>(task, kTaskMode, -1);
+        const std::uint8_t flags = Field<std::uint8_t>(task, kTaskFlags);
+        if (!task || (mode != 1 && mode != 2) || Field<std::int32_t>(task, kTaskStep, -1) < kStepCreate || (flags & 2))
+            continue;
+        bool has_chr = false;
+        for (int i = 0; i < count && i < 8 && !has_chr; ++i) {
+            const std::uint64_t other = Field<std::uint64_t>(entries + std::uint64_t(i) * 0x38, 0);
+            has_chr = other && Call(Fn(kIdEquals), other + 0x3d8, task + kTaskPeer) & 0xff;
+        }
+        if (has_chr) continue;
+        *reinterpret_cast<std::uint8_t*>(task + kTaskFlags) = std::uint8_t(flags | 1);
+        *reinterpret_cast<std::int32_t*>(task + kTaskNext) = kStepCreate;
+    }
+    Say("seamless: a party member got up again elsewhere; its body here is built again");
+}
+
+bool DeathRules(std::uint8_t* image, std::size_t size) {
+    const bool sites = std::all_of(std::begin(kDeathSites), std::end(kDeathSites), [&](const Site& site) {
+        return Matches(image, size, site.at, site.original.begin(), site.original.size());
+    });
+    if (!sites || !Matches(image, size, kOwnDeathCall, kOwnDeathCallBytes, sizeof kOwnDeathCallBytes) ||
+        !Matches(image, size, kPhantomDeathCall, kPhantomDeathCallBytes, sizeof kPhantomDeathCallBytes) ||
+        !Matches(image, size, kRevive, kReviveEntry, sizeof kReviveEntry) ||
+        !Matches(image, size, kWarp, kWarpEntry, sizeof kWarpEntry) ||
+        !Matches(image, size, kSetFlag, kSetFlagEntry, sizeof kSetFlagEntry) ||
+        !Matches(image, size, kSetHitFilter, kSetHitFilterEntry, sizeof kSetHitFilterEntry) ||
+        !Matches(image, size, kReleaseChrSlot, kReleaseChrSlotEntry, sizeof kReleaseChrSlotEntry) ||
+        !Matches(image, size, kRemoveChr, kRemoveChrEntry, sizeof kRemoveChrEntry) ||
+        !Matches(image, size, kIdEquals, kIdEqualsEntry, sizeof kIdEqualsEntry)) {
+        Say("seamless: deaths keep the party left off: the game's code there is not 1.09's");
+        return false;
+    }
+    g_image = image;
+    Hook hooks[2];
+    if (!Prepare(hooks[0], image, size, kDeathLoad, kDeathLoadEntry, OnDeathLoad) ||
+        !Prepare(hooks[1], image, size, kHostDead, kHostDeadEntry, OnHostDead)) {
+        Discard(hooks[0]);
+        Discard(hooks[1]);
+        Say("seamless: deaths keep the party left off: the game's code there is not 1.09's");
+        return false;
+    }
+    Commit(std::span(hooks, 2));
+    for (const Site& site : kDeathSites) WriteCode(image + site.at, site.patched.begin(), site.patched.size());
+    g_death_rules = true;
+    Say("seamless: deaths keep the party: a fallen hunter gets up on its last safe ground, nobody is sent home");
+    return true;
+}
+
 bool SetSignTimeout(std::uint8_t* image, std::size_t size, long seconds) {
     const std::size_t end = kAgeCheck + sizeof kAgeCheckHead + 4;
     if (!Matches(image, size, kAgeCheck, kAgeCheckHead, sizeof kAgeCheckHead)) {
@@ -259,12 +542,50 @@ bool Install(std::uint8_t* image, std::size_t size) {
     const char* online = std::getenv("BB_ONLINE");
     if (!online || std::strcmp(online, "1") != 0) return false;
     bool any = FixCharacterId(image, size);
-    if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "room") == 0)
+    if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "room") == 0) {
         any = BellRules(image, size) || any;
         any = FourPlayers(image, size) || any;
+        any = DeathRules(image, size) || any;
+    }
     const char* timeout = std::getenv("BB_SIGN_TIMEOUT");
     const long seconds = timeout ? std::strtol(timeout, nullptr, 10) : 0;
     if (seconds > 0 && seconds != 180) any = SetSignTimeout(image, size, seconds) || any;
     return any;
+}
+
+void Tick() {
+    if (!g_death_rules.load()) return;
+    PendingTick();
+    const int role = Role();
+    if (role != kRoleHost && role != kRoleClient) {
+        g_down_since.clear();
+        return;
+    }
+    const std::uint64_t world = Global(kWorldChrMan);
+    const std::uint64_t local = Field<std::uint64_t>(world, 0x60);
+    const int count = Field<std::int32_t>(world, 0x30);
+    const std::uint64_t entries = Field<std::uint64_t>(world, 0x38);
+    if (!world || !entries || count <= 0 || count > 8) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (BossUp() && (Hp(local) > 0 || AnyoneElseUp(local))) g_last_fight = now;
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> down;
+    for (int i = 0; i < count; ++i) {
+        const std::uint64_t chr = Field<std::uint64_t>(entries + std::uint64_t(i) * 0x38, 0);
+        if (!chr || chr == local) continue;
+        const auto seen = g_down_since.find(chr);
+        const std::int32_t hp = Hp(chr);
+        if (hp != 0 && (seen == g_down_since.end() || hp < 0)) continue;
+        const auto since = seen == g_down_since.end() ? now : seen->second;
+        const bool fought = g_last_fight > since;
+        const auto wait = std::chrono::duration<double>(fought ? kRemoteAfterFight : kRemoteDeadRebuild);
+        if (hp == 0 && now - (fought ? g_last_fight : since) < wait) {
+            down[chr] = since;
+            continue;
+        }
+        RebuildRemote(world, chr);
+        g_down_since.clear();
+        return;
+    }
+    g_down_since.swap(down);
 }
 }

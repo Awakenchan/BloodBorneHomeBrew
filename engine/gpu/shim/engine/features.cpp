@@ -59,6 +59,7 @@ std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_
     Cheats::Tick();
     TrophySync::Tick();
     GameStatus::Tick();
+    OnlineFixes::Tick();
     return 0;
 }
 
