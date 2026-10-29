@@ -97,6 +97,8 @@ bool SwapVitals(const char* own, const char* other) {
     return false;
 }
 
+constexpr std::uint64_t kEnteredDungeon = 0x8000000012345678ull;
+
 Json FixedSearch() {
     return {{"HolyGrailTypeId", 0}, {"RitualLevel", 1}, {"SubFeatureFlag", 0}, {"FormDataVersion", 0}, {"Status", 1},
             {"FixedOrGeneralList", Json::array({{{"FixedOrGeneral", 2}}})}, {"GetCount", 1}};
@@ -148,6 +150,7 @@ int Host(int game_port, int http_port) {
     if (!found.is_object() || found["ChannelList"].size() != 1) return Fail("no fixed dungeon on the board");
     const auto channel = static_cast<std::uint64_t>(found["ChannelList"][0].value("ChannelId", 0LL));
     BbRoom::PutDungeonForm(channel, std::vector<std::uint8_t>(0x7c, 0x5a));
+    BbRoom::PutDungeonForm(kEnteredDungeon, std::vector<std::uint8_t>(0x7c, 0x33));
     std::printf("host: fixed dungeon %llu, its layout on the board\n", static_cast<unsigned long long>(channel));
     BbRoom::Dungeon dungeon;
     dungeon.channel = channel;
@@ -228,6 +231,18 @@ int Guest(int game_port, int http_port, bool early) {
                 details["ChannelList"][0].value("FormData", "").size() != 168)
                 return Fail("the host's dungeon layout did not reach the guest");
             std::printf("guest: the host's dungeon %lld with its layout\n", channel);
+            Json entered;
+            for (int k = 0; k < 20; ++k) {
+                entered = Game(http_port, "/channel/get_details_info",
+                               {{"ChannelIdList", Json::array({{{"ChannelId", kEnteredDungeon}}})}});
+                if (entered.is_object() && entered["ChannelList"].size() == 1) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
+            if (!entered.is_object() || entered["ChannelList"].size() != 1 ||
+                entered["ChannelList"][0].value("ChannelId", std::uint64_t(0)) != kEnteredDungeon ||
+                entered["ChannelList"][0].value("FormData", "").size() != 168)
+                return Fail("a dungeon the host entered without a ritual did not reach the guest");
+            std::printf("guest: the host's entered dungeon with its layout too\n");
             BbRoom::Dungeon dungeon;
             for (int k = 0; k < 40 && !BbRoom::TakeDungeon(dungeon); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(200));
             if (static_cast<long long>(dungeon.channel) != channel || dungeon.record[3] != 0x1d0a5a00u || dungeon.flags.size() != 2)

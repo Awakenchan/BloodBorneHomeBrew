@@ -458,6 +458,14 @@ std::string Stamp() {
     return text;
 }
 
+std::string WordOf(const std::string& key) {
+    static const char kWord[] = "abcdefghijkmnpqrstuvwxyz23456789";
+    std::string word;
+    std::uint64_t w = Fnv(key + "#word");
+    for (int i = 0; i < 8; ++i, w >>= 5) word.push_back(kWord[w % 32]);
+    return word;
+}
+
 Channel& MakeChannelLocked(const std::string& key, int slot, const Json& body) {
     std::uint64_t id = Fnv(key) & ((1ull << 52) - 1);
     if (!id) id = 1;
@@ -474,9 +482,7 @@ Channel& MakeChannelLocked(const std::string& key, int slot, const Json& body) {
     c.key = key;
     c.owner = slot;
     c.made = Clock::now();
-    static const char kWord[] = "abcdefghijkmnpqrstuvwxyz23456789";
-    std::uint64_t w = Fnv(key + "#word");
-    for (int i = 0; i < 8; ++i, w >>= 5) c.word.push_back(kWord[w % 32]);
+    c.word = WordOf(key);
     for (const char* field : {"HolyGrailTypeId", "RitualLevel", "FixedOrGeneral", "SubFeatureFlag"})
         c.fields[field] = IntOf(body, field);
     c.fields["WishMaterialList"] = body.contains("WishMaterialList") && body["WishMaterialList"].is_array()
@@ -490,7 +496,7 @@ Json EntryOf(const Channel& c, int asker) {
     Json e = c.fields;
     const auto own = c.ritual.find(asker);
     const bool ritual = own != c.ritual.end() && Clock::now() - own->second < kRitualOwn;
-    e["ChannelId"] = static_cast<long long>(c.id);
+    e["ChannelId"] = c.id;
     e["DiscernmentWord"] = c.word;
     e["Status"] = 1;
     e["ShareLevel"] = ritual ? 0 : (c.share ? c.share : 1);
@@ -536,7 +542,7 @@ Json HandleChannel(int slot, const std::string& api, const Json& body) {
         Channel& c = MakeChannelLocked(fixed ? FixedKey(body) : "form:" + std::to_string(Fnv(form)), slot, body);
         if (!form.empty() && form.size() <= kLongestForm) c.form = form;
         c.ritual[slot] = Clock::now();
-        return {{"ResKind", 0}, {"ChannelId", static_cast<long long>(c.id)}, {"DiscernmentWord", c.word}};
+        return {{"ResKind", 0}, {"ChannelId", c.id}, {"DiscernmentWord", c.word}};
     }
     if (api == "search") {
         Json list = Json::array();
@@ -1157,8 +1163,19 @@ void PutDungeonForm(std::uint64_t channel, const std::vector<std::uint8_t>& data
     const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(form.data()), data.data(), static_cast<int>(data.size()));
     form.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
     std::lock_guard lock(S().host_mu);
-    const auto it = S().channels.find(channel);
-    if (it == S().channels.end() || it->second.form == form) return;
+    auto it = S().channels.find(channel);
+    if (it == S().channels.end()) {
+        Channel c;
+        c.id = channel;
+        c.key = "entered:" + std::to_string(channel);
+        c.word = WordOf(c.key);
+        c.owner = S().own_slot.load();
+        c.made = Clock::now();
+        for (const char* field : {"HolyGrailTypeId", "RitualLevel", "FixedOrGeneral", "SubFeatureFlag"}) c.fields[field] = 0;
+        c.fields["WishMaterialList"] = Json::array();
+        it = S().channels.emplace(channel, std::move(c)).first;
+    }
+    if (it->second.form == form) return;
     it->second.form = form;
     Log("dungeon %llu: its layout is on the room's board", static_cast<unsigned long long>(channel));
 }

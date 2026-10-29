@@ -404,6 +404,7 @@ constexpr int kRecordWords = 43;
 constexpr int kFormWords = 0x7c / 4;
 constexpr std::uint32_t kDungeonMaps = 0x1d000000u;
 constexpr std::uint32_t kDungeonArea = 29;
+constexpr std::uint64_t kNoDungeon = 1ull << 63;
 constexpr int kChaliceWait = 9900;
 constexpr std::uint32_t kChaliceGoods[] = {6109, 6209, 6219, 6309, 6319, 6409, 6429, 6509, 6529, 6539};
 constexpr auto kDungeonEvery = std::chrono::seconds(2);
@@ -1253,7 +1254,7 @@ void ChaliceHostTick(int role, std::chrono::steady_clock::time_point now) {
     const int slot = CurrentSlot();
     if (slot < 0) return;
     const std::uint64_t channel = SlotChannel(slot);
-    if (!channel || (channel >> 63)) return;
+    if (!channel || channel == kNoDungeon) return;
     BbRoom::PutDungeonForm(channel, DungeonForm(slot));
     if (told != channel) {
         told = channel;

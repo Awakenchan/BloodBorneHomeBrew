@@ -119,6 +119,15 @@ namespace BloodborneLauncher.Views
                 L.T("screen's entries and the Altar of Despair's rebirth. Off: only the game's own menus, as on PS4; the launcher and the ") +
                 L.T("overlay (Insert or L3 + R3) still change every setting. Takes effect at the next start"),
                 () => Ini.Get("pc_menus", "1") != "0", v => Ini.Set("pc_menus", v ? "1" : "0"));
+            ToggleRow(SymbolRegular.PersonEdit24, L.T("Hunter's Dream Mirror"),
+                L.T("The Dream's mirror opens the appearance editor (the unused \"Put on Disguise\"). Takes effect at the next start"),
+                () => Ini.Get("change_appearance", "0") != "0", v => Ini.Set("change_appearance", v ? "1" : "0"));
+            ToggleRow(SymbolRegular.ArrowCounterclockwise24, L.T("Rebirth at the Altar"),
+                L.T("The Altar of Despair offers Rebirth: your stats go back to your origin's, the Blood Echoes are refunded, and it can be undone. Takes effect at the next start"),
+                () => Ini.Get("rebirth", "0") != "0", v => Ini.Set("rebirth", v ? "1" : "0"));
+            ToggleRow(SymbolRegular.Video24, L.T("PC Camera Controls"),
+                L.T("Camera field of view, distance and height in the game's System menu. Takes effect at the next start"),
+                () => Ini.Get("camera_controls", "0") != "0", v => Ini.Set("camera_controls", v ? "1" : "0"));
 
             // The Old Hunters on base-game dumps: the folder of the dumped add-ons (BB_DLC_DIR).
             _resetDlc = IconButton(SymbolRegular.Dismiss24, L.T("No DLC folder"), (_, _) =>
