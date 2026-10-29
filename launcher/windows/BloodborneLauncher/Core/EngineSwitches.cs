@@ -97,9 +97,6 @@ namespace BloodborneLauncher.Core
             Flag("BB_UPSCALER_NO_BLUR", Graphics, L.T("No motion blur smear with upscalers"),
                 L.T("With an upscaler at an output other than 1920x1080 the game's motion blur is left out: the upscaler would ") +
                 L.T("smear it over the whole picture. Off (default): the blur stays. The Motion blur setting is not changed")),
-            Flag(AmdFsrDriver.Switch, Graphics, L.T("FSR 4 from the AMD driver"),
-                L.T("FSR 4 runs through the FSR provider that comes with your AMD driver, in the version the driver has (FSR 4.1.2 on ") +
-                L.T("Adrenalin 26.10.1 and newer). Being tested on RX 9000 cards. When the driver has none, FSR 4.1.1 runs as before")),
 
             Pick("BB_PIPELINE_THREADS", Performance, L.T("Shader compile threads"),
                 L.T("How many threads compile new shaders in the background. More finish a new area's shaders sooner but take CPU ") +

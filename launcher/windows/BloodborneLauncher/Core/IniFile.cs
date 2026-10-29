@@ -12,7 +12,7 @@ namespace BloodborneLauncher.Core
     {
         public static readonly (string Key, string Value)[] Defaults =
         {
-            ("upscaler", "fsr4"),
+            ("upscaler", OperatingSystem.IsWindows() ? "fsr" : "fsr4"),
             ("preset", "4"),
             ("sharpen", "1"),
             ("sharpness", "0.50"),

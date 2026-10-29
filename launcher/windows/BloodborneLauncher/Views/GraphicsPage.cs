@@ -21,18 +21,11 @@ namespace BloodborneLauncher.Views
                 SmallButton(L.T("Recommend…"), SymbolRegular.Sparkle24, (_, _) => MainWindow.Instance!.OfferBestSettings(firstRun: false)), out _));
 
             Group(L.T("Upscaler"));
-            // FSR 4.1.1 runs through fsr4vk (in the package) or an fsr4_411 set built from the player's
-            // own AMD DLL: offered when either is there. Without both the setting becomes FSR 4, the
-            // model it would fall back to (#22).
-            var fsr411 = Fsr4VkFound() || Directory.Exists(Fsr411Dir());
-            if (!fsr411 && Ini.Get("upscaler") == "fsr411") Ini.Set("upscaler", "fsr4");
+            var fsr411 = Fsr4VkFound() && !Amd();
+            if (Ini.Get("upscaler") is "fsr3" or "fsr4" || (!fsr411 && Ini.Get("upscaler") == "fsr411")) Ini.Set("upscaler", "fsr");
             IniCombo(SymbolRegular.Sparkle24, L.T("Upscaler"), null,
                 fsr411 ? Choices.Upscalers : Choices.Upscalers.Where(c => c.Value != "fsr411").ToArray(), "upscaler", changed: UpdateUpscaler);
             _upscalerHint = (TextBlock)((SettingRow)Body.Children[^1]).Tag;
-            if (AmdFsrDriver.ProviderPath() is { } amdFsr)
-                Add(Card(SymbolRegular.Sparkle24, L.T("FSR 4 from your AMD driver"),
-                    L.F($"Your AMD driver has its own FSR 4 provider (driver {AmdFsrDriver.DriverVersion(amdFsr)}). Turn on \"FSR 4 from the AMD driver\" in Engine switches to use the driver's FSR 4 version: FSR 4.1.2 on Adrenalin 26.10.1 and newer. Being tested on RX 9000 cards"),
-                    null, out _));
 
             IniCombo(SymbolRegular.ZoomIn24, L.T("Quality preset"), L.T("How far below the output resolution the game renders"),
                 Choices.Presets, "preset", changed: UpdateUpscaler);
@@ -152,14 +145,14 @@ namespace BloodborneLauncher.Views
             var value = Ini.Get("upscaler");
             string? hint = value switch
             {
-                "fsr4" => Directory.Exists(Path.Combine(Paths.EngineDir, "fsr4_shaders"))
-                    ? L.T("Assets found. GPUs without the needed shader features fall back to FSR 3.1")
-                    : L.T("fsr4_shaders is missing from the port folder: the game falls back to FSR 3.1"),
-                "fsr411" when Fsr4VkFound() =>
-                    L.T("Through fsr4vk (included, experimental): runs on any GPU with the needed Vulkan features. Prefer FSR 4 if it looks wrong"),
-                "fsr411" => Fsr411Problem() is { } problem
-                    ? L.F($"{problem}: the game falls back to FSR 4")
-                    : L.T("Assets for the chosen resolution and preset found"),
+                "fsr" when !FsrSdkFound() =>
+                    L.T("fsr_sdk is missing from the engine folder: the game falls back to FSR 3.1"),
+                "fsr" when Amd() =>
+                    L.T("AMD FSR SDK 2.4: FSR 4.1.2 on Radeon RX 6000 and newer and on supported Ryzen APUs, FSR 3.1.6 on older Radeons. The SDK picks the model"),
+                "fsr" =>
+                    L.T("AMD FSR SDK 2.4: FSR 3.1.6 on this GPU (AMD's FSR 4 runs on Radeon only). FSR 4.1.1 (fsr4vk, experimental) is the other choice here"),
+                "fsr411" =>
+                    L.T("Through fsr4vk (included, experimental): FSR 4.1.1 on NVIDIA and Intel GPUs with the needed Vulkan features. Choose FSR if it looks wrong"),
                 "dlss" => DlssFound()
                     ? L.T("Needs an NVIDIA GeForce RTX GPU; others fall back to FSR 3.1") +
                       (Ini.Get("preset", "0") == "0" ? L.T(". With Native AA this is DLAA: DLSS as anti-aliasing at full resolution") : "")
@@ -210,37 +203,10 @@ namespace BloodborneLauncher.Views
         private static bool Fsr4VkFound() =>
             File.Exists(Path.Combine(Paths.EngineDir, "fsr4vk", "amd_fidelityfx_upscaler_vk.dll"));
 
-        private static string Fsr411Dir()
-        {
-            var env = Environment.GetEnvironmentVariable("BB_FSR411_DIR");
-            if (!string.IsNullOrEmpty(env)) return env;
-            var local = Path.Combine(Paths.EngineDir, "fsr4_411");
-            return Directory.Exists(local) ? local : Path.Combine(Paths.DataDir, "fsr4_411");
-        }
+        private static bool FsrSdkFound() =>
+            File.Exists(Path.Combine(Paths.EngineDir, "fsr_sdk", "amd_fidelityfx_loader_vk.dll")) &&
+            File.Exists(Path.Combine(Paths.EngineDir, "fsr_sdk", "amd_fidelityfx_upscaler_vk.dll"));
 
-        /// <summary>The FSR 4.1.1 model files the chosen output and preset need (fsr4_411\).</summary>
-        private static string? Fsr411Problem()
-        {
-            var (w, h) = Choices.OutputSize(Ini.Get("output_res", "1920x1080"));
-            var model = (w > 1920 || h > 1080 ? "t2160" : "t1080") + (Ini.Get("preset", "4") == "4" ? "_m1" : "_m0");
-            var passes = new List<string> { "spd", "prepass", "pass0_post" };
-            for (var i = 1; i <= 12; i++)
-            {
-                passes.Add($"pass{i}");
-                passes.Add($"pass{i}_post");
-            }
-            passes.Add("postpass");
-            passes.Add("rcas");
-
-            var dir = Path.Combine(Fsr411Dir(), model);
-            foreach (var name in passes)
-            {
-                var file = new FileInfo(Path.Combine(dir, name + ".spv"));
-                if (!file.Exists || file.Length < 20 || file.Length % 4 != 0)
-                    return L.F($"Missing or damaged fsr4_411\\{model}\\{name}.spv");
-            }
-            var init = new FileInfo(Path.Combine(dir, "initializer.bin"));
-            return init.Exists && init.Length == 131072 ? null : L.F($"Missing or damaged fsr4_411\\{model}\\initializer.bin");
-        }
+        private static bool Amd() => Hardware.Detect().Vendor == "AMD";
     }
 }

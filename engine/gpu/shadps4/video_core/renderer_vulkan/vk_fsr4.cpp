@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_fsr4.h"
 #include "video_core/renderer_vulkan/vk_fsr4vk.h"
+#include "video_core/renderer_vulkan/vk_fsr_sdk.h"
 #include "bbport_toggles.h"
 
 #include <algorithm>
@@ -105,6 +106,8 @@ struct Fsr4Upscaler::Impl {
     // bbport: FSR 4.1.1 through the fsr4vk provider DLL where the replay cannot run (Windows).
     std::unique_ptr<Fsr4Vk> fsr4vk;
     std::string fsr4vk_described;
+    std::unique_ptr<FsrSdk> sdk;
+    std::string sdk_described;
     // bbport: the model is built on a worker thread (Build): creating it compiles its 16 compute
     // pipelines, which took one NVIDIA driver 23 s the first time - on the draw recording thread
     // that froze the game. While `preparing`, only the worker touches the backend and context
@@ -160,7 +163,34 @@ struct Fsr4Upscaler::Impl {
         return false;
     }
 
+    FsrSdk& Sdk() {
+        if (!sdk) {
+            sdk = std::make_unique<FsrSdk>(instance, scheduler);
+        }
+        return *sdk;
+    }
+
+    bool RecordSdk(const Frame& f) {
+        if (!Sdk().Record(f)) {
+            const char* reason = sdk->Problem();
+            Fail(std::string{"AMD FSR SDK: "} + (reason ? reason : "dispatch failed"), sdk->Fatal());
+            return false;
+        }
+        if (const std::string d = sdk->Describe(); d != sdk_described) {
+            sdk_described = d;
+            std::printf("Upscaler: %s\n", d.c_str());
+        }
+        problem.clear();
+        return true;
+    }
+
     void Prewarm(int preset, u32 ow, u32 oh) {
+        if (BbSettings::Get().upscaler == BbSettings::UpscalerFsr) {
+            if (instance.IsFsrSdkAvailable()) {
+                Sdk().Prewarm(ow, oh, BbSettings::Get().fsr4_auto_exposure);
+            }
+            return;
+        }
         if (fatal || preparing || prep.joinable() || context_ok || !ow || !oh ||
             !instance.IsFsr4Int8Supported() || BbSettings::Get().upscaler == BbSettings::UpscalerFsr411) {
             return;
@@ -398,6 +428,9 @@ struct Fsr4Upscaler::Impl {
     }
 
     bool Record(const Frame& f) {
+        if (BbSettings::Get().upscaler == BbSettings::UpscalerFsr) {
+            return RecordSdk(f);
+        }
         if (BbSettings::Get().upscaler == BbSettings::UpscalerFsr411) {
             return Record411(f);
         }
@@ -521,7 +554,7 @@ void Fsr4Upscaler::Prewarm(int preset, u32 output_width, u32 output_height) {
 }
 
 bool Fsr4Upscaler::Preparing() const noexcept {
-    return impl->preparing;
+    return impl->preparing || (impl->sdk && impl->sdk->Preparing());
 }
 
 const char* Fsr4Upscaler::Problem() const noexcept {

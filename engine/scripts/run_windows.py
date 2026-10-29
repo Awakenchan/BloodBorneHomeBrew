@@ -254,6 +254,8 @@ def main():
         os.environ['BB_FSR411_DIR'] = str(data / 'fsr4_411')
     if 'BB_FSR4VK_DIR' not in os.environ and (ROOT / 'fsr4vk' / 'amd_fidelityfx_upscaler_vk.dll').is_file():
         os.environ['BB_FSR4VK_DIR'] = str(ROOT / 'fsr4vk')
+    if 'BB_FSR_SDK_DIR' not in os.environ and (ROOT / 'fsr_sdk' / 'amd_fidelityfx_loader_vk.dll').is_file():
+        os.environ['BB_FSR_SDK_DIR'] = str(ROOT / 'fsr_sdk')
     remembered = out / 'game_dir.txt'
     if not game and remembered.is_file():
         game = remembered.read_text(encoding='utf-8').strip()

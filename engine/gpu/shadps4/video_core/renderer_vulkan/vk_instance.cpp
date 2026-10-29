@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_streamline.h"
 #include "video_core/renderer_vulkan/vk_fsr4vk.h"
+#include "video_core/renderer_vulkan/vk_fsr_sdk.h"
 #include "video_core/renderer_vulkan/vk_occlusion.h"
 #include "video_core/renderer_vulkan/vk_optiscaler.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -632,6 +633,14 @@ bool Instance::CreateDevice() {
     } else if (Fsr4Vk::FilesPresent()) {
         std::printf("Upscaler: fsr4vk found, but this GPU lacks a Vulkan feature it needs: no FSR 4.1.1\n");
     }
+    fsr_sdk = FsrSdk::FilesPresent() && features.shaderStorageImageWriteWithoutFormat &&
+              vk13_features.synchronization2;
+    if (fsr_sdk) {
+        std::printf("Upscaler: AMD FSR SDK 2.4 found (%s)\n", FsrSdk::DirectoryUtf8().c_str());
+    } else if (FsrSdk::FilesPresent()) {
+        std::printf("Upscaler: AMD FSR SDK found, but this GPU lacks a Vulkan feature it needs\n");
+    }
+    const bool fsr_shared = fsr4vk || fsr_sdk;
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
             .queueCreateInfoCount = queue_info_count,
@@ -664,8 +673,9 @@ bool Instance::CreateDevice() {
                 .shaderImageGatherExtended = features.shaderImageGatherExtended,
                 .shaderStorageImageExtendedFormats = features.shaderStorageImageExtendedFormats,
                 .shaderStorageImageMultisample = features.shaderStorageImageMultisample,
-                // bbport: fsr4vk (vk_fsr4vk.cpp) only.
-                .shaderStorageImageReadWithoutFormat = fsr4vk,
+                // bbport: fsr4vk (vk_fsr4vk.cpp) and the AMD FSR SDK (vk_fsr_sdk.cpp).
+                .shaderStorageImageReadWithoutFormat =
+                    fsr4vk || (fsr_sdk && features.shaderStorageImageReadWithoutFormat),
                 // bbport: required by the FSR 3 accumulate shaders (vk_temporal_upscaler).
                 .shaderStorageImageWriteWithoutFormat =
                     features.shaderStorageImageWriteWithoutFormat,
@@ -689,9 +699,10 @@ bool Instance::CreateDevice() {
             .shaderSharedInt64Atomics = vk12_features.shaderSharedInt64Atomics,
             .shaderFloat16 = vk12_features.shaderFloat16,
             .shaderInt8 = vk12_features.shaderInt8,
-            // bbport: fsr4vk (vk_fsr4vk.cpp) only.
-            .descriptorBindingVariableDescriptorCount = fsr4vk,
-            .runtimeDescriptorArray = fsr4vk,
+            // bbport: fsr4vk (vk_fsr4vk.cpp) and the AMD FSR SDK (vk_fsr_sdk.cpp).
+            .descriptorBindingVariableDescriptorCount =
+                fsr4vk || (fsr_shared && vk12_features.descriptorBindingVariableDescriptorCount),
+            .runtimeDescriptorArray = fsr4vk || (fsr_shared && vk12_features.runtimeDescriptorArray),
             .scalarBlockLayout = vk12_features.scalarBlockLayout,
             .uniformBufferStandardLayout = vk12_features.uniformBufferStandardLayout,
             .separateDepthStencilLayouts = vk12_features.separateDepthStencilLayouts,

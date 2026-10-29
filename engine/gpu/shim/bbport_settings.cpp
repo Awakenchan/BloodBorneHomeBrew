@@ -498,13 +498,18 @@ void Load() {
                             v.optiscaler_sync_submit};
 }
 
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss) {
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk) {
     auto& v = Get();
     v.fsr4_supported = fsr4;
     v.fsr411_supported = fsr4 && fsr411;
     v.dlss_supported = dlss;
+    v.fsr_sdk_supported = fsr_sdk;
     const int requested = v.upscaler;
-    if (requested == UpscalerDlss && !dlss) {
+    if (requested == UpscalerFsr && !fsr_sdk) {
+        v.fsr4_problem = "FSR needs the AMD FSR SDK files (engine/fsr_sdk); using FSR 3.1";
+        std::printf("Upscaler: fsr unavailable (AMD FSR SDK files missing or GPU unsupported); falling back to FSR 3.1 before the first frame\n");
+        v.upscaler = UpscalerFsr3;
+    } else if (requested == UpscalerDlss && !dlss) {
         v.fsr4_problem = "DLSS needs an NVIDIA RTX GPU, its driver's NGX and nvngx_dlss; using FSR 3.1";
         std::printf("Upscaler: dlss unavailable; falling back to FSR 3.1 before the first frame\n");
         v.upscaler = UpscalerFsr3;
@@ -778,7 +783,7 @@ const char* DlssPresetText(int preset) {
 
 const char* UpscalerName(int upscaler) {
     static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa",
-                                                                  "dlss"};
+                                                                  "dlss", "fsr"};
     return names[std::clamp(upscaler, 0, UpscalerCount - 1)];
 }
 

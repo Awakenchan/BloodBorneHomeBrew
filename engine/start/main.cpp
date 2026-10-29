@@ -328,6 +328,8 @@ int Main(std::vector<std::wstring> arguments) {
         SetEnv("BB_FSR411_DIR", Utf8(data / "fsr4_411"));
     if (!Env("BB_FSR4VK_DIR") && fs::is_regular_file(folders.engine / "fsr4vk" / "amd_fidelityfx_upscaler_vk.dll", error))
         SetEnv("BB_FSR4VK_DIR", Utf8(folders.engine / "fsr4vk"));
+    if (!Env("BB_FSR_SDK_DIR") && fs::is_regular_file(folders.engine / "fsr_sdk" / "amd_fidelityfx_loader_vk.dll", error))
+        SetEnv("BB_FSR_SDK_DIR", Utf8(folders.engine / "fsr_sdk"));
     const fs::path remembered = out / "game_dir.txt";
     if ((!game || game->empty()) && fs::is_regular_file(remembered, error)) game = Trim(ReadText(remembered));
     const fs::path game_dir = game && !game->empty() ? Path(*game) : folders.package.parent_path() / "CUSA03173";

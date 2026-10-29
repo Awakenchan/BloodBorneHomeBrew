@@ -288,7 +288,7 @@ namespace BloodborneLauncher.Core
 
             var tier = GpuTier;
             var dlss = Paths.DlssRuntime != null;
-            Ini(L.T("Upscaler"), "upscaler", Rtx && dlss ? "dlss" : Rdna4 ? "fsr4" : "fsr3", Choices.Upscalers);
+            Ini(L.T("Upscaler"), "upscaler", Rtx && dlss ? "dlss" : OperatingSystem.IsWindows() ? "fsr" : Rdna4 ? "fsr4" : "fsr3", Choices.Upscalers);
 
             // The output: the display's own size, by name where it is one of the choices, else
             // "Display (auto)"; 1920 x 1080 when the display is unknown.

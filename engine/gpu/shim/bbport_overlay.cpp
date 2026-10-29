@@ -674,7 +674,8 @@ void UpscalerSection() {
     if (const char* label = Item("Upscaler", "Апскейлер")) {
         const char* upscalers[] = {
             BbSettings::MenuText("Off", "Выкл"), "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1 (INT8)",
-            BbSettings::MenuText("TAA (native anti-aliasing)", "TAA (нативное сглаживание)"), "DLSS (NVIDIA)"};
+            BbSettings::MenuText("TAA (native anti-aliasing)", "TAA (нативное сглаживание)"), "DLSS (NVIDIA)",
+            "FSR (AMD FSR SDK)"};
         static const char* later[] = {"XeSS"};
         const int upscaler = s.upscaler;
         if (ImGui::BeginCombo(label, upscalers[upscaler])) {
@@ -682,6 +683,7 @@ void UpscalerSection() {
                 const bool supported = i == BbSettings::UpscalerFsr4     ? s.fsr4_supported.load()
                                        : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load()
                                        : i == BbSettings::UpscalerDlss   ? s.dlss_supported.load()
+                                       : i == BbSettings::UpscalerFsr    ? s.fsr_sdk_supported.load()
                                                                          : true;
                 ImGui::BeginDisabled(!supported);
                 if (ImGui::Selectable(upscalers[i], i == upscaler)) {
@@ -703,7 +705,15 @@ void UpscalerSection() {
             }
             ImGui::EndCombo();
         }
-        if (s.upscaler == BbSettings::UpscalerFsr411) {
+        if (s.upscaler == BbSettings::UpscalerFsr) {
+            Hint(BbSettings::MenuText(
+                "AMD's own FSR from the FSR SDK 2.4: FSR 4.1.2 on Radeon RX 6000 and newer and on "
+                "Ryzen APUs that AMD supports (FP8 on RX 9000, INT8 on RX 6000/7000, a lighter INT8 "
+                "model on some APUs), FSR 3.1.6 on other GPUs. The SDK picks the model by itself.",
+                "Собственный FSR от AMD из FSR SDK 2.4: FSR 4.1.2 на Radeon RX 6000 и новее и на "
+                "поддерживаемых AMD процессорах Ryzen (FP8 на RX 9000, INT8 на RX 6000/7000, облегчённая "
+                "модель INT8 на некоторых APU), FSR 3.1.6 на остальных видеокартах. Модель SDK выбирает сам."));
+        } else if (s.upscaler == BbSettings::UpscalerFsr411) {
             Hint(BbSettings::MenuText(
                 "FSR 4.1.1 in INT8 mode: the model from AMD's 4.1.1 DLL, reproduced in Vulkan "
                 "(output matches the DLL). One model for Native through Performance and another "

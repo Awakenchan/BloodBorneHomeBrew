@@ -248,7 +248,7 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     BbSettings::ConfigureUpscalerSupport(instance.IsFsr4Int8Supported(),
                                          (instance.IsFsr411Supported() && fsr411_assets) ||
                                              instance.IsFsr4VkSupported(),
-                                         dlss && dlss->Available());
+                                         dlss && dlss->Available(), instance.IsFsrSdkAvailable());
     fsr4 = std::make_unique<Fsr4Upscaler>(instance, scheduler);
     // Available unless BB_UPSCALER=none; on/off and the parameters are the menu's settings.
     const char* env = std::getenv("BB_UPSCALER");
@@ -280,7 +280,8 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     }
     // FSR 4's model, built in the background from the start (its first build compiles for
     // tens of seconds on some drivers), so it is usually ready when the game's first frame is.
-    if (enabled && BbSettings::Get().upscaler == BbSettings::UpscalerFsr4) {
+    if (enabled && (BbSettings::Get().upscaler == BbSettings::UpscalerFsr4 ||
+                    BbSettings::Get().upscaler == BbSettings::UpscalerFsr)) {
         fsr4->Prewarm(BbSettings::ModelPreset(BbSettings::RenderPreset()), target_width, target_height);
     }
     // Scene depth copied into the output-size UI depth by a blit (depth aspect).
@@ -2624,9 +2625,9 @@ bool TemporalUpscaler::UseFsr4() const {
     if (selected == BbSettings::UpscalerDlss) {
         return dlss && dlss->Available() && !fsr4_failed;
     }
-    const bool supported = selected == BbSettings::UpscalerFsr411
-                               ? instance.IsFsr411Available() // the replay or fsr4vk
-                               : instance.IsFsr4Int8Supported();
+    const bool supported = selected == BbSettings::UpscalerFsr      ? instance.IsFsrSdkAvailable()
+                           : selected == BbSettings::UpscalerFsr411 ? instance.IsFsr411Available() // the replay or fsr4vk
+                                                                    : instance.IsFsr4Int8Supported();
     return BbSettings::IsFsr4(selected) && supported && !fsr4_failed && !fsr4_building;
 }
 
@@ -2680,6 +2681,12 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         // Its model is being built: FSR 3.1 meanwhile (EnsureResources makes its context next
         // frame), and FSR 4 again when the build is done (the per-frame settings above).
         fsr4_building = true;
+        reset = true;
+    } else if (!ok && !use_dlss && fsr4->Fatal() &&
+               settings.upscaler == BbSettings::UpscalerFsr411 && instance.IsFsrSdkAvailable()) {
+        std::printf("Upscaler: FSR 4.1.1 (fsr4vk) failed; falling back to FSR (AMD FSR SDK)\n");
+        BbSettings::Get().upscaler = BbSettings::UpscalerFsr;
+        fsr4->ClearFailure();
         reset = true;
     } else if (!ok && !use_dlss && fsr4->Fatal() &&
                settings.upscaler == BbSettings::UpscalerFsr411 && instance.IsFsr4Int8Supported()) {

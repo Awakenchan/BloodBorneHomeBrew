@@ -17,7 +17,6 @@
 #include <type_traits>
 
 #include "video_core/renderer_vulkan/vk_fsr4vk.h"
-#include "video_core/renderer_vulkan/vk_amd_ffx_driver.h"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -224,7 +223,6 @@ struct Fsr4Vk::Impl {
     const Instance& instance;
     Scheduler& scheduler;
     HMODULE module{};
-    bool from_driver{};
     CreateContext create{};
     DestroyContext destroy{};
     Configure configure{};
@@ -297,29 +295,8 @@ struct Fsr4Vk::Impl {
     }
 
     bool Load() {
-        if (module || from_driver) {
+        if (module) {
             return true;
-        }
-        if (const char* on = std::getenv("LANTERN_FSR_AMD_DRIVER"); on && on[0] == '1') {
-            AmdFfxDriver::Functions driver;
-            std::string why;
-            BackendVk backend{{BackendVkType, nullptr},
-                              VkDevice(instance.GetDevice()),
-                              VkPhysicalDevice(instance.GetPhysicalDevice()),
-                              VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr};
-            if (AmdFfxDriver::Load(CreateUpscaleType, &backend.header, driver, why)) {
-                create = reinterpret_cast<CreateContext>(driver.create);
-                destroy = reinterpret_cast<DestroyContext>(driver.destroy);
-                configure = reinterpret_cast<Configure>(driver.configure);
-                query = reinterpret_cast<Query>(driver.query);
-                dispatch = reinterpret_cast<Dispatch>(driver.dispatch);
-                from_driver = true;
-                std::printf("Upscaler: FSR %s from the AMD driver (%s)\n", driver.version_name.c_str(),
-                            driver.path.c_str());
-                return true;
-            }
-            std::printf("Upscaler: FSR 4 from the AMD driver not used: %s; FSR 4.1.1 (fsr4vk) instead\n",
-                        why.c_str());
         }
         const auto path = Fsr4Vk::Directory() / LibraryName;
         module = LoadLibraryW(path.c_str());
@@ -383,10 +360,7 @@ struct Fsr4Vk::Impl {
         version.header.next = &backend.header;
         backend.header.next = &api.header;
         api.header.next = nullptr;
-        if (from_driver) {
-            desc.header.next = &backend.header;
-            backend.header.next = nullptr;
-        } else if (query(nullptr, &features_query.header) == ReturnOk && features_query.version >= 1) {
+        if (query(nullptr, &features_query.header) == ReturnOk && features_query.version >= 1) {
             api.header.next = &features.header;
         }
         u32 result = create(&context, &desc.header, nullptr);
@@ -420,7 +394,6 @@ struct Fsr4Vk::Impl {
                                 : "";
         shown.erase(0, shown.find_first_not_of(' '));
         provider_name = shown.empty() ? "fsr4vk" : "FSR " + shown;
-        if (from_driver) provider_name += " (AMD driver)";
         if ((ow | oh) & 1) {
             std::printf("Upscaler: fsr4vk leaves the last row or column of an odd output size "
                         "unwritten (a known 4.1.1 limitation)\n");

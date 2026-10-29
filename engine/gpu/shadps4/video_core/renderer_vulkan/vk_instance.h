@@ -336,6 +336,10 @@ public:
         return fsr4vk;
     }
 
+    bool IsFsrSdkAvailable() const {
+        return fsr_sdk;
+    }
+
     /// bbport: FSR 4.1.1 can run, by the replay (IsFsr411Supported) or through fsr4vk.
     bool IsFsr411Available() const {
         return IsFsr4Int8Supported() && (mixed_float_dot_product || fsr4vk);
@@ -676,6 +680,7 @@ private:
     bool shader_clock{};
     bool compute_shader_derivatives{};
     bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
+    bool fsr_sdk{};
     bool fsr4vk{};                  // bbport: the device features of the fsr4vk provider are enabled
     bool dlss_extensions{};         // bbport: VK_NVX_binary_import + VK_NVX_image_view_handle
     bool full_screen_exclusive{};   // bbport: VK_EXT_full_screen_exclusive (Windows)

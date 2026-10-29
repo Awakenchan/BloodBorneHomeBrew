@@ -1,5 +1,78 @@
 # Temporal upscaling and frame generation — frame analysis and plan
 
+## FSR through AMD's FSR SDK 2.4 (upscaler=fsr, 2026-10-29)
+
+`upscaler=fsr` / `BB_UPSCALER=fsr` runs AMD's own signed Vulkan upscaler from the FSR SDK 2.4.0
+(`vk_fsr_sdk.cpp`). It is the single FSR entry of the Windows launcher and the default of the
+shipped `lantern.ini`; saved `fsr3` and `fsr4` become `fsr` when the Graphics page opens, and so
+does `fsr411` on AMD GPUs.
+
+**What runs where.** The SDK chooses the version and the model by itself; the engine creates the
+context without a version override, so the newest version the GPU supports is taken:
+
+| GPU | What the SDK runs |
+|---|---|
+| Radeon RX 9000 (RDNA 4) | FSR 4.1.2, FP8 model |
+| Radeon RX 6000 / 7000 (RDNA 2 / 3), Ryzen AI Max 300/400 | FSR 4.1.2, INT8 model |
+| Ryzen AI 300/400, Z2 A, Z2 Extreme | FSR 4.1.2, lightweight INT8 model |
+| Radeon RX 5000 (RDNA 1) and older, NVIDIA, Intel | FSR 3.1.6 |
+
+The log names what was chosen: `Upscaler: AMD FSR SDK upscaler versions for this GPU: ...` (every
+version the SDK offers on this device) and `Upscaler: FSR <version> (AMD FSR SDK 2.4), output WxH`
+(the one in use). On AMD drivers that ship their own FSR provider (Adrenalin 26.10.1 and newer) the
+SDK loader itself takes the driver's newer version when there is one, so the engine no longer looks
+for the driver's `amdvkffx64.dll` (`vk_amd_ffx_driver.cpp`, the `LANTERN_FSR_AMD_DRIVER` switch and
+the launcher's "FSR 4 from the AMD driver" card are gone).
+
+**Files.** `engine/fsr_sdk/amd_fidelityfx_loader_vk.dll` (1.0.2.4555) and
+`amd_fidelityfx_upscaler_vk.dll` (4.1.2.4555), unchanged from the SDK's `Kits/FidelityFX/signedbin`
+at tag v2.4.0, signed by AMD; `SOURCE.txt` records the commit and hashes. `BB_FSR_SDK_DIR`
+overrides the folder (`bb-start` sets it to `enginesr_sdk`); `BB_FSR_SDK=0` hides the files. The
+frame generation DLL of the SDK is not shipped (frame generation stays the built-in FSR 3.1 one and
+DLSS FG).
+
+**License.** The DLLs come under AMD's binary redistribution license
+(`fsr_sdk/LICENSE-AMD-FSR-SDK.md`): binary redistribution is allowed, its copyright notice,
+permission notice and disclaimers must ship with them, and reverse engineering, decompilation and
+disassembly are not permitted. The engine loads them at run time as separate programs, as it does
+NVIDIA's DLSS and Streamline, and contains none of their code. The ABI structures in
+`vk_fsr_sdk.cpp` follow the SDK's public MIT headers (`ffx_api.h`, `ffx_api_vk.h`,
+`ffx_upscale.h`).
+
+**Integration.** The same inputs as the other frame upscalers (`Fsr4Upscaler::Frame`): HDR scene
+colour RGBA16F, depth D32S8 read through its depth aspect (standard depth, near = 0), motion vectors
+in render pixels, the jitter offset, auto exposure from the menu. The context is created with the
+SDK's version descriptor (`FFX_UPSCALER_VERSION` 4.1.2) and the current Vulkan backend descriptor
+(`FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK`), on a worker thread: FSR 3.1 is shown until it is
+ready (`BB_FSR_SDK_ASYNC=0` creates it on the render thread). The SDK picks the model by the
+render/output ratio, so the presets' render sizes stay the engine's own and the "Sharper motion
+(FSR 4)" switch does not apply. At most three frames are in flight for its descriptors.
+Device features it may use are requested only when the files are present:
+`shaderStorageImageReadWithoutFormat`, runtime descriptor arrays and variable descriptor counts
+(each only where the GPU has it); FP8 cooperative matrices, INT8 dot products, FP16/INT8 storage
+and subgroup size control are enabled already for the other upscalers.
+
+**Fallbacks.** No SDK files, a non-Windows build or a GPU without
+`shaderStorageImageWriteWithoutFormat`/`synchronization2`: `fsr` becomes the built-in FSR 3.1
+before the first frame, and the menu says why. A failed context or dispatch: FSR 3.1 for the rest of
+the session (choosing FSR again in the menu retries). FSR 4.1.1 through fsr4vk that fails falls
+back to `fsr` when the SDK is there.
+
+**fsr4vk stays experimental for NVIDIA and Intel.** The SDK gives them only FSR 3.1.6, so the
+launcher keeps "FSR 4.1.1 (fsr4vk, experimental)" there; on AMD the entry is hidden (the SDK's own
+FSR 4.1.2 is better and needs no driver fix). FSR 1 (`host_passes/fsr_pass.cpp`) is unchanged.
+
+**Linux.** The SDK is Windows-only. The Linux launcher keeps FSR 3.1, the built-in FSR 4 v07 model
+(`fsr4_shaders`) and the FSR 4.1.1 replay (`fsr4_411`), and maps `fsr` to `fsr4`. The Windows
+release no longer ships `enginesr4_shaders` (33 MB); the folder stays in `package-template` for
+the Linux package.
+
+**Not verified yet.** Built only; not run on hardware in this change. To check per GPU family
+before a release: RX 9000 (FP8), RX 6000/7000 (INT8, the first tester has an RX 6650 XT), an RDNA 1
+card (expects 3.1.6), a Ryzen APU (lightweight INT8), NVIDIA and Intel (3.1.6), each with
+the Vulkan validation layer on (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`), plus a package with `fsr_sdk` removed (expects the
+FSR 3.1 fallback and the launcher hint).
+
 ## Native TAA and missing FSR 4 assets (2026-10-01)
 
 `upscaler=taa` / `BB_UPSCALER=taa` is a separate native-resolution temporal AA
