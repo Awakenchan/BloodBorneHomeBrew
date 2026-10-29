@@ -15,6 +15,7 @@
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
 #include "bbport_timeline.h"
+#include "face_shot.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -127,6 +128,63 @@ static vk::Rect2D FitImage(s32 frame_width, s32 frame_height, s32 swapchain_widt
 }
 
 // bbport: screenshot capture and ImGui overlays removed; the port presents directly.
+
+static void GrabFace(const Instance& instance, Scheduler& scheduler, vk::Image image, u32 width, u32 height,
+                     vk::Format format) {
+    float rect[4];
+    if (!BbFaceShot::Due(rect) || !width || !height) {
+        return;
+    }
+    const u32 x = u32(rect[0] * float(width)), y = u32(rect[1] * float(height));
+    const u32 w = std::min(width - x, u32((rect[2] - rect[0]) * float(width)));
+    const u32 h = std::min(height - y, u32((rect[3] - rect[1]) * float(height)));
+    if (!w || !h) {
+        return;
+    }
+    const VkBufferCreateInfo buffer_ci{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = VkDeviceSize(w) * h * 4,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    };
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+    };
+    VkBuffer buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation, &info) != VK_SUCCESS) {
+        return;
+    }
+    scheduler.EndRendering();
+    const vk::CommandBuffer cmdbuf = scheduler.CommandBuffer();
+    const vk::MemoryBarrier2 before{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &before});
+    const vk::BufferImageCopy region{
+        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .imageOffset = {s32(x), s32(y), 0},
+        .imageExtent = {w, h, 1},
+    };
+    cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eGeneral, buffer, region);
+    const vk::MemoryBarrier2 after{
+        .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
+    const bool bgra = format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb;
+    scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info, w, h, bgra] {
+        vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+        BbFaceShot::Deliver(static_cast<const std::uint8_t*>(info.pMappedData), w, h, w * 4, bgra);
+        vmaDestroyBuffer(allocator, buffer, allocation);
+    });
+}
 
 Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_)
     : window{window_}, liverpool{liverpool_},
@@ -820,6 +878,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         }));
         draw_scheduler.DeferOperation([device, image_view] { device.destroyImageView(image_view); });
         image_size = vk::Extent2D{display.width, display.height};
+        GrabFace(instance, draw_scheduler, display.image, display.width, display.height, display.format);
         draw_scheduler.Record([image = display.image](vk::CommandBuffer cmdbuf) {
             const vk::ImageMemoryBarrier2 to_read{
                 .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
@@ -844,6 +903,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
             runtime.FlushBarriers();
             upscaler.DumpPresented(image.GetImage(), image_size.width, image_size.height,
                                    view_info.format);
+        }
+        if (BbFaceShot::Pending()) {
+            runtime.Transit(&image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eTransfer,
+                            vk::AccessFlagBits2::eTransferRead);
+            runtime.FlushBarriers();
+            GrabFace(instance, draw_scheduler, image.GetImage(), image_size.width, image_size.height, view_info.format);
         }
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
                         vk::PipelineStageFlagBits2::eFragmentShader,

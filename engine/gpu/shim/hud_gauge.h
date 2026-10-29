@@ -10,7 +10,7 @@ struct Piece {
 struct Art {
     int width = 0, height = 0;
     std::vector<std::uint32_t> pixels;
-    Piece frame, health, trail, stamina;
+    Piece frame, health, trail, stamina, portrait, filigree, rust, teal, header;
 };
 
 void Start();

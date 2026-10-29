@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
@@ -22,6 +23,7 @@
 #include "engine/graphics.h"
 #include "engine/online_fixes.h"
 #include "hud_gauge.h"
+#include "face_shot.h"
 #include "imgui_internal.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
@@ -75,6 +77,29 @@ extern "C" const unsigned char bb_font_cjk[];
 extern "C" const unsigned char bb_font_cjk_end[];
 #endif
 
+#ifdef _WIN32
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+alignas(16) static const unsigned char bb_font_name[] = {
+#embed BB_NAME_FONT_PATH
+};
+#pragma GCC diagnostic pop
+static const unsigned char* const bb_font_name_end = bb_font_name + sizeof(bb_font_name);
+#else
+asm(".section .rodata\n"
+    ".balign 16\n"
+    ".hidden bb_font_name\n"
+    ".global bb_font_name\n"
+    "bb_font_name:\n"
+    ".incbin \"" BB_NAME_FONT_PATH "\"\n"
+    ".hidden bb_font_name_end\n"
+    ".global bb_font_name_end\n"
+    "bb_font_name_end:\n"
+    ".previous\n");
+extern "C" const unsigned char bb_font_name[];
+extern "C" const unsigned char bb_font_name_end[];
+#endif
+
 extern "C" void runtime_restart(void);
 
 namespace Vulkan {
@@ -92,6 +117,7 @@ std::atomic<bool> menu_open{false};
 bool l3_down = false, r3_down = false;
 bool dirty = false;
 float base_scale = 1.0f;
+ImFont* name_font = nullptr;
 
 std::mutex prompt_mutex;
 std::atomic<bool> prompt_active{false};
@@ -1912,6 +1938,8 @@ void GameBar(ImDrawList* draw, ImVec2 at, ImVec2 size, float fill, ImU32 light, 
                         IM_COL32(200, 190, 170, int(220 * dim)));
 }
 
+constexpr float kOrnamentArm = 64.0f / 153.0f, kOrnamentScroll = 43.0f / 153.0f;
+
 ImTextureData* GaugeTexture() {
     static ImTextureData* texture = nullptr;
     if (texture) return texture;
@@ -1947,6 +1975,84 @@ void TexturedBar(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Pie
     }
 }
 
+void Ornament(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, bool upright,
+              ImU32 tint) {
+    const float w = float(texture->Width), h = float(texture->Height);
+    const float arm = float(piece.w) * kOrnamentArm, scroll = float(piece.w) * kOrnamentScroll;
+    const float total = arm * 2.0f + scroll;
+    const float length = upright ? b.y - a.y : b.x - a.x;
+    const float v0 = float(piece.y) / h, v1 = float(piece.y + piece.h) / h;
+    struct Part {
+        float from, size, u0, u1;
+    };
+    const float u = float(piece.x);
+    const Part parts[] = {{0.0f, arm, u, u + arm}, {arm, scroll, u + arm, u + arm + scroll}, {arm + scroll, arm, u + arm, u}};
+    for (const Part& part : parts) {
+        const float s0 = part.from / total * length, s1 = (part.from + part.size) / total * length;
+        const ImVec2 uv0(part.u0 / w, v0), uv1(part.u1 / w, v1);
+        if (!upright) {
+            draw->AddImage(texture->GetTexRef(), ImVec2(a.x + s0, a.y), ImVec2(a.x + s1, b.y), uv0, uv1, tint);
+        } else {
+            draw->AddImageQuad(texture->GetTexRef(), ImVec2(a.x, a.y + s0), ImVec2(a.x, a.y + s1), ImVec2(b.x, a.y + s1),
+                               ImVec2(b.x, a.y + s0), ImVec2(uv0.x, uv0.y), ImVec2(uv1.x, uv0.y), ImVec2(uv1.x, uv1.y),
+                               ImVec2(uv0.x, uv1.y), tint);
+        }
+    }
+}
+
+ImTextureData* PortraitTexture(const std::string& key, const std::vector<std::uint32_t>& rgba, std::uint32_t version) {
+    struct Entry {
+        ImTextureData* texture = nullptr;
+        std::uint32_t version = 0;
+    };
+    static std::map<std::string, Entry> cache;
+    Entry& e = cache[key];
+    if (rgba.size() != std::size_t(BbFaceShot::kSize) * BbFaceShot::kSize) return e.texture;
+    if (!e.texture) {
+        e.texture = IM_NEW(ImTextureData)();
+        e.texture->Create(ImTextureFormat_RGBA32, BbFaceShot::kSize, BbFaceShot::kSize);
+        std::memcpy(e.texture->GetPixels(), rgba.data(), rgba.size() * 4);
+        ImGui::RegisterUserTexture(e.texture);
+        e.version = version;
+    } else if (e.version != version && e.texture->Status == ImTextureStatus_OK) {
+        std::memcpy(e.texture->GetPixels(), rgba.data(), rgba.size() * 4);
+        const ImTextureRect all{0, 0, std::uint16_t(BbFaceShot::kSize), std::uint16_t(BbFaceShot::kSize)};
+        e.texture->Updates.push_back(all);
+        e.texture->UpdateRect = all;
+        e.texture->SetStatus(ImTextureStatus_WantUpdates);
+        e.version = version;
+    }
+    return e.texture;
+}
+
+ImTextureData* PortraitOf(const std::string& name) {
+    static std::map<std::string, std::pair<std::vector<std::uint32_t>, std::uint32_t>> pixels;
+    auto& [rgba, version] = pixels[name];
+    if (!BbFaceShot::Get(name, rgba, version)) return nullptr;
+    return PortraitTexture("party:" + name, rgba, version);
+}
+
+void PortraitToast() {
+    static std::vector<std::uint32_t> rgba;
+    static std::uint32_t version = 0;
+    if (!BbFaceShot::JustTaken() || !BbFaceShot::OwnRgba(rgba, version)) return;
+    ImTextureData* texture = PortraitTexture("own", rgba, version);
+    if (!texture) return;
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const float size = 96.0f * k;
+    const ImVec2 a(viewport->WorkPos.x + viewport->WorkSize.x - size - 40.0f * k, viewport->WorkPos.y + 120.0f * k);
+    draw->AddRectFilled(ImVec2(a.x - 4.0f * k, a.y - 4.0f * k), ImVec2(a.x + size + 4.0f * k, a.y + size + 4.0f * k),
+                        IM_COL32(0, 0, 0, 200));
+    draw->AddImage(texture->GetTexRef(), a, ImVec2(a.x + size, a.y + size));
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const char* text = BbSettings::MenuText("Portrait saved", "Портрет сохранён");
+    const float px = ImGui::GetFontSize() * 1.1f;
+    const ImVec2 t = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
+    draw->AddText(font, px, ImVec2(a.x + (size - t.x) * 0.5f, a.y + size + 8.0f * k), IM_COL32(226, 216, 192, 255), text);
+}
+
 void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
     ImTextureData* gauge = GaugeTexture();
     const BbHudGauge::Art* art = gauge ? BbHudGauge::Ready() : nullptr;
@@ -1956,45 +2062,92 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImDrawList* draw = ImGui::GetBackgroundDrawList();
     const float left = viewport->WorkPos.x + 40.0f * k;
-    const float card_w = 330.0f * k, card_h = 62.0f * k, gap = 8.0f * k;
+    const float frame_h = 50.0f * k;
+    const float frame_w = art ? frame_h * float(art->portrait.w) / float(art->portrait.h) : frame_h;
+    const float card_w = 320.0f * k, card_h = frame_h + 10.0f * k, gap = 6.0f * k;
+    const ImU32 fallen = IM_COL32(176, 52, 44, 255);
     float top = viewport->WorkPos.y + 240.0f * k;
-    ImFont* font = ImGui::GetFont();
-    const float name_size = ImGui::GetFontSize() * 1.05f;
-    const float small_size = ImGui::GetFontSize() * 0.8f;
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float name_size = ImGui::GetFontSize() * 1.3f;
+    const float where_size = ImGui::GetFontSize() * 1.0f;
+    const ImU32 parchment = IM_COL32(226, 216, 192, 255);
+    const float ornament_ratio = art ? float(art->header.h) / (float(art->header.w) * (2.0f * kOrnamentArm + kOrnamentScroll)) : 0.0f;
+    if (art && !rows.empty()) {
+        const float header_w = 200.0f * k, header_h = header_w * ornament_ratio;
+        Ornament(draw, gauge, art->header, ImVec2(left, top - header_h - 4.0f * k), ImVec2(left + header_w, top - 4.0f * k),
+                 false, IM_COL32(255, 255, 255, 220));
+    }
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const auto& row = rows[i];
-        const ImU32 accent = accents[i % std::size(accents)];
+        const ImU32 accent = row.down ? fallen : accents[i % std::size(accents)];
         const float dim = row.down ? 0.45f : 1.0f;
         const ImVec2 a(left, top), b(left + card_w, top + card_h);
-        draw->AddRectFilledMultiColor(a, b, IM_COL32(8, 12, 22, 150), IM_COL32(8, 12, 22, 0), IM_COL32(8, 12, 22, 0),
-                                      IM_COL32(8, 12, 22, 150));
-        draw->AddRectFilled(a, ImVec2(left + 2.0f * k, top + card_h), accent);
-        const ImVec2 badge(left + 32.0f * k, top + card_h * 0.5f);
-        const float radius = 20.0f * k;
-        draw->AddCircleFilled(badge, radius, IM_COL32(18, 22, 34, 220), 32);
-        draw->AddCircle(badge, radius, accent, 32, 1.5f * k);
+        draw->AddRectFilledMultiColor(a, b, IM_COL32(4, 4, 6, 170), IM_COL32(4, 4, 6, 0), IM_COL32(4, 4, 6, 0),
+                                      IM_COL32(4, 4, 6, 170));
+        if (art) {
+            const float thick = 8.0f * k;
+            const ImU32 bright = IM_COL32(((accent >> IM_COL32_R_SHIFT) & 0xFF) / 2 + 128, ((accent >> IM_COL32_G_SHIFT) & 0xFF) / 2 + 128,
+                                          ((accent >> IM_COL32_B_SHIFT) & 0xFF) / 2 + 128, 255);
+            Ornament(draw, gauge, art->header, ImVec2(left - thick - 3.0f * k, top), ImVec2(left - 3.0f * k, top + card_h), true,
+                     bright);
+        } else {
+            draw->AddRectFilled(a, ImVec2(left + 1.5f * k, top + card_h), accent);
+        }
+        const ImVec2 box(left + 8.0f * k, top + 5.0f * k);
+        const ImVec2 box_end(box.x + frame_w, box.y + frame_h);
         char initial[8] = {row.name.empty() ? '?' : char(std::toupper(static_cast<unsigned char>(row.name[0]))), 0};
-        const ImVec2 initial_size = font->CalcTextSizeA(name_size * 1.1f, FLT_MAX, 0.0f, initial);
-        draw->AddText(font, name_size * 1.1f, ImVec2(badge.x - initial_size.x * 0.5f, badge.y - initial_size.y * 0.5f),
-                      IM_COL32(230, 222, 205, int(255 * dim)), initial);
-        const float text_x = left + 64.0f * k;
-        const float bar_w = 240.0f * k;
-        draw->AddText(font, name_size, ImVec2(text_x, top + 8.0f * k), IM_COL32(232, 224, 206, int(255 * dim)),
-                      row.name.c_str());
+        const float initial_px = name_size * 1.5f;
+        const ImVec2 initial_size = font->CalcTextSizeA(initial_px, FLT_MAX, 0.0f, initial);
+        const ImVec2 initial_at(box.x + (frame_w - initial_size.x) * 0.5f, box.y + (frame_h - initial_size.y) * 0.5f);
+        const float inset = 4.0f * k;
+        const ImVec2 inner(box.x + inset, box.y + inset), inner_end(box_end.x - inset, box_end.y - inset);
+        ImTextureData* face = PortraitOf(row.name);
+        if (art) {
+            GaugePiece(draw, gauge, art->portrait, box, box_end, 1.0f, IM_COL32(255, 255, 255, row.down ? 150 : 255));
+            if (!face)
+                GaugePiece(draw, gauge, i == 0 ? art->rust : art->teal, inner, inner_end, 1.0f,
+                           row.down ? IM_COL32(150, 60, 50, 255) : IM_COL32(255, 255, 255, 230));
+        } else {
+            draw->AddRectFilled(box, box_end, IM_COL32(18, 20, 26, 230));
+        }
+        if (face) {
+            const float crop = 0.5f * (1.0f - (inner_end.x - inner.x) / (inner_end.y - inner.y));
+            draw->AddImage(face->GetTexRef(), inner, inner_end, ImVec2(crop, 0.0f), ImVec2(1.0f - crop, 1.0f),
+                           row.down ? IM_COL32(170, 70, 60, 200) : IM_COL32(255, 255, 255, 255));
+        } else {
+            draw->AddText(font, initial_px, ImVec2(initial_at.x + k, initial_at.y + k), IM_COL32(0, 0, 0, 200), initial);
+            draw->AddText(font, initial_px, initial_at,
+                          row.down ? IM_COL32(170, 70, 60, 255)
+                                   : (parchment & ~IM_COL32_A_MASK) | (ImU32(255 * dim) << IM_COL32_A_SHIFT),
+                          initial);
+        }
+        if (art) {
+            const float fil_h = frame_w * float(art->filigree.h) / float(art->filigree.w);
+            GaugePiece(draw, gauge, art->filigree, ImVec2(box.x, box.y - fil_h * 0.6f), ImVec2(box_end.x, box.y + fil_h * 0.4f),
+                       1.0f, IM_COL32(255, 255, 255, row.down ? 150 : 255));
+        } else {
+            draw->AddRect(box, box_end, accent, 0.0f, 0, 1.5f * k);
+        }
+        const float text_x = box_end.x + 12.0f * k;
+        const float bar_w = card_w - (text_x - left) - 24.0f * k;
+        draw->AddText(font, name_size, ImVec2(text_x + k, top + 7.0f * k), IM_COL32(0, 0, 0, int(200 * dim)), row.name.c_str());
+        draw->AddText(font, name_size, ImVec2(text_x, top + 6.0f * k),
+                      (parchment & ~IM_COL32_A_MASK) | (ImU32(255 * dim) << IM_COL32_A_SHIFT), row.name.c_str());
         char where[32] = "";
         if (row.down) {
-            std::snprintf(where, sizeof where, "%s", BbSettings::MenuText("down", "повержен"));
+            std::snprintf(where, sizeof where, "%s", BbSettings::MenuText("dead", "мёртв"));
         } else if (row.distance >= 0.0f) {
             std::snprintf(where, sizeof where, "%.0f m", row.distance);
         }
         const float arrow_room = row.distance >= 0.0f && !row.down ? 16.0f * k : 0.0f;
         if (where[0]) {
-            const ImVec2 size = font->CalcTextSizeA(small_size, FLT_MAX, 0.0f, where);
-            draw->AddText(font, small_size, ImVec2(text_x + bar_w - arrow_room - size.x, top + 11.0f * k),
-                          row.down ? IM_COL32(200, 90, 70, 255) : IM_COL32(200, 196, 186, 220), where);
+            const ImVec2 size = font->CalcTextSizeA(where_size, FLT_MAX, 0.0f, where);
+            const ImVec2 at(text_x + bar_w - arrow_room - size.x, top + 7.0f * k);
+            draw->AddText(font, where_size, ImVec2(at.x + k, at.y + k), IM_COL32(0, 0, 0, 200), where);
+            draw->AddText(font, where_size, at, row.down ? IM_COL32(200, 90, 70, 255) : IM_COL32(214, 206, 186, 235), where);
         }
         if (arrow_room > 0.0f) {
-            const ImVec2 c(text_x + bar_w - 6.0f * k, top + 11.0f * k + small_size * 0.5f);
+            const ImVec2 c(text_x + bar_w - 6.0f * k, top + 7.0f * k + where_size * 0.55f);
             const ImVec2 d(std::sin(row.bearing), -std::cos(row.bearing));
             const ImVec2 p(-d.y, d.x);
             const float tip = 6.0f * k, back = 4.0f * k, wide = 4.0f * k;
@@ -2003,7 +2156,7 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
                                     ImVec2(c.x - d.x * back - p.x * wide, c.y - d.y * back - p.y * wide),
                                     IM_COL32(220, 214, 200, 230));
         }
-        const float hp_y = top + 34.0f * k, hp_h = 7.0f * k;
+        const float hp_y = top + 31.0f * k, hp_h = 7.0f * k;
         if (art) TexturedBar(draw, gauge, art->health, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, dim, k);
         else GameBar(draw, ImVec2(text_x, hp_y), ImVec2(bar_w, hp_h), row.health, IM_COL32(196, 46, 40, 255),
                      IM_COL32(112, 16, 16, 255), dim, k);
@@ -2090,6 +2243,16 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     cjk_config.MergeMode = true;
     io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_cjk),
                                    int(bb_font_cjk_end - bb_font_cjk), 18.0f, &cjk_config);
+    ImFontConfig name_config;
+    name_config.FontDataOwnedByAtlas = false;
+    name_font = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_name),
+                                               int(bb_font_name_end - bb_font_name), 18.0f, &name_config);
+    ImFontConfig name_fallback = font_config;
+    name_fallback.MergeMode = true;
+    io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_ttf), int(bb_font_ttf_end - bb_font_ttf), 18.0f,
+                                   &name_fallback);
+    io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_cjk), int(bb_font_cjk_end - bb_font_cjk), 18.0f,
+                                   &cjk_config);
 
     const vk::Instance vk_instance = instance.GetInstance();
     ImGui_ImplVulkan_LoadFunctions(
@@ -2246,7 +2409,7 @@ bool HandleEvent(const SDL_Event& event) {
 
 bool Visible() {
     return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() ||
-                           !BbEngine::OnlineFixes::PartyRows().empty());
+                           !BbEngine::OnlineFixes::PartyRows().empty() || BbFaceShot::JustTaken());
 }
 
 bool MenuOpen() {
@@ -2297,6 +2460,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (!menu_open) {
         const auto party = BbEngine::OnlineFixes::PartyRows();
         if (!party.empty()) PartyHud(party);
+        PortraitToast();
     }
     ImGui::Render();
 

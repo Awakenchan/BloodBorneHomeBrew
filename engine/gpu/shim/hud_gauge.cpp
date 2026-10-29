@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "hud_gauge.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -17,8 +18,10 @@ namespace {
 constexpr char kPack[] = "dvdroot_ps4/menu/common.tpf.dcx";
 constexpr char16_t kAtlas[] = u"MENU_Common_00091";
 constexpr int kAtlasWidth = 1024, kAtlasHeight = 512, kBc7 = 98;
-constexpr int kStripTop = 0, kStripRows = 136;
 constexpr Piece kFrame{4, 4, 648, 17}, kHealth{10, 26, 638, 9}, kTrail{10, 39, 638, 9}, kStamina{4, 122, 638, 9};
+constexpr Piece kPortrait{580, 311, 84, 96}, kFiligree{580, 296, 84, 11}, kRust{669, 312, 83, 96}, kTeal{669, 412, 82, 94};
+constexpr Piece kHeader{757, 10, 153, 12};
+constexpr int kKeyFloor = 12, kKeyFull = 90;
 constexpr std::size_t kMostBytes = 64u << 20;
 
 std::atomic<int> g_state{0};
@@ -53,7 +56,8 @@ bool Inflate(const Bytes& file, Bytes& out) {
     return r == Z_STREAM_END && z.avail_out == 0;
 }
 
-bool FindTexture(const Bytes& tpf, std::size_t& data, int& width, int& height) {
+template <std::size_t N>
+bool FindTexture(const Bytes& tpf, const char16_t (&atlas)[N], int want_w, int want_h, std::size_t& data) {
     if (tpf.size() < 0x10 || std::memcmp(tpf.data(), "TPF\0", 4) != 0) return false;
     const std::uint32_t count = Le<std::uint32_t>(tpf, 8);
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -61,12 +65,11 @@ bool FindTexture(const Bytes& tpf, std::size_t& data, int& width, int& height) {
         if (at + 36 > tpf.size()) return false;
         const std::uint32_t offset = Le<std::uint32_t>(tpf, at), name = Le<std::uint32_t>(tpf, at + 24);
         const std::uint32_t format = Le<std::uint32_t>(tpf, at + 32);
-        if (name + sizeof kAtlas > tpf.size()) continue;
-        if (std::memcmp(tpf.data() + name, kAtlas, sizeof kAtlas) != 0 || format != kBc7) continue;
-        width = Le<std::uint16_t>(tpf, at + 12);
-        height = Le<std::uint16_t>(tpf, at + 14);
+        if (name + sizeof atlas > tpf.size()) continue;
+        if (std::memcmp(tpf.data() + name, atlas, sizeof atlas) != 0 || format != kBc7) continue;
+        const int width = Le<std::uint16_t>(tpf, at + 12), height = Le<std::uint16_t>(tpf, at + 14);
         data = offset;
-        return width == kAtlasWidth && height == kAtlasHeight && data + std::size_t(width) * height <= tpf.size();
+        return width == want_w && height == want_h && data + std::size_t(width) * height <= tpf.size();
     }
     return false;
 }
@@ -202,51 +205,66 @@ int Morton(int x, int y) {
     return r;
 }
 
+std::vector<std::uint32_t> Decode(const Bytes& tpf, std::size_t data, int width, const Piece& p) {
+    const int tiles_wide = width / 4 / 8;
+    std::vector<std::uint32_t> out(std::size_t(p.w) * p.h, 0u);
+    std::uint32_t texels[16];
+    for (int by = p.y / 4; by <= (p.y + p.h - 1) / 4; ++by) {
+        for (int bx = p.x / 4; bx <= (p.x + p.w - 1) / 4; ++bx) {
+            const std::size_t tile = std::size_t(by / 8) * tiles_wide + bx / 8;
+            DecodeBc7(tpf.data() + data + (tile * 64 + Morton(bx % 8, by % 8)) * 16, texels);
+            for (int i = 0; i < 16; ++i) {
+                const int x = bx * 4 + i % 4 - p.x, y = by * 4 + i / 4 - p.y;
+                if (x >= 0 && y >= 0 && x < p.w && y < p.h) out[std::size_t(y) * p.w + x] = texels[i];
+            }
+        }
+    }
+    return out;
+}
+
+bool ReadPack(const char* game, const char* pack, Bytes& tpf) {
+    std::ifstream in(std::filesystem::path(game) / pack, std::ios::binary);
+    const Bytes file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    return !file.empty() && Inflate(file, tpf);
+}
+
 void Load() {
     const char* game = std::getenv("BB_GAME_DIR");
     if (!game || !*game) {
         g_state = -1;
         return;
     }
-    std::ifstream in(std::filesystem::path(game) / kPack, std::ios::binary);
-    const Bytes file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     Bytes tpf;
     std::size_t data = 0;
-    int width = 0, height = 0;
-    if (file.empty() || !Inflate(file, tpf) || !FindTexture(tpf, data, width, height)) {
+    const int width = kAtlasWidth, height = kAtlasHeight;
+    if (!ReadPack(game, kPack, tpf) || !FindTexture(tpf, kAtlas, width, height, data)) {
         std::printf("Party HUD: the game's gauge art was not found; drawn bars are used\n");
         g_state = -1;
         return;
     }
-    const int blocks_wide = width / 4, tiles_wide = blocks_wide / 8;
-    std::vector<std::uint32_t> strip(std::size_t(width) * kStripRows);
-    std::uint32_t texels[16];
-    for (int by = kStripTop / 4; by < (kStripTop + kStripRows) / 4; ++by) {
-        for (int bx = 0; bx < blocks_wide; ++bx) {
-            const std::size_t tile = std::size_t(by / 8) * tiles_wide + bx / 8;
-            const std::size_t block = tile * 64 + Morton(bx % 8, by % 8);
-            DecodeBc7(tpf.data() + data + block * 16, texels);
-            for (int i = 0; i < 16; ++i) {
-                const int x = bx * 4 + i % 4, y = by * 4 + i / 4 - kStripTop;
-                strip[std::size_t(y) * width + x] = texels[i];
+    g_art.width = width;
+    g_art.height = height;
+    g_art.pixels = Decode(tpf, data, width, Piece{0, 0, width, height});
+    for (const Piece& p : {kHeader, kFiligree}) {
+        for (int y = p.y; y < p.y + p.h; ++y) {
+            for (int x = p.x; x < p.x + p.w; ++x) {
+                std::uint32_t& c = g_art.pixels[std::size_t(y) * width + x];
+                const int bright = std::max({int(c & 0xff), int(c >> 8 & 0xff), int(c >> 16 & 0xff)});
+                const int alpha = std::clamp((bright - kKeyFloor) * 255 / (kKeyFull - kKeyFloor), 0, int(c >> 24));
+                c = (c & 0x00ffffffu) | std::uint32_t(alpha) << 24;
             }
         }
     }
-    const Piece pieces[] = {kFrame, kHealth, kTrail, kStamina};
-    g_art.width = kFrame.w;
-    for (const Piece& p : pieces) g_art.height += p.h + 1;
-    g_art.pixels.assign(std::size_t(g_art.width) * g_art.height, 0u);
-    Piece* placed[] = {&g_art.frame, &g_art.health, &g_art.trail, &g_art.stamina};
-    int row = 0;
-    for (int k = 0; k < 4; ++k) {
-        const Piece& p = pieces[k];
-        for (int y = 0; y < p.h; ++y)
-            std::memcpy(&g_art.pixels[std::size_t(row + y) * g_art.width],
-                        &strip[std::size_t(p.y - kStripTop + y) * width + p.x], std::size_t(p.w) * 4);
-        *placed[k] = {0, row, p.w, p.h};
-        row += p.h + 1;
-    }
-    std::printf("Party HUD: the game's own health and stamina gauge art loaded\n");
+    g_art.frame = kFrame;
+    g_art.health = kHealth;
+    g_art.trail = kTrail;
+    g_art.stamina = kStamina;
+    g_art.portrait = kPortrait;
+    g_art.filigree = kFiligree;
+    g_art.rust = kRust;
+    g_art.teal = kTeal;
+    g_art.header = kHeader;
+    std::printf("Party HUD: the game's own gauge, frame and panel art loaded\n");
     g_state = 1;
 }
 }

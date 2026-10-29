@@ -10,11 +10,13 @@
 #include <ctime>
 #include <cstdarg>
 #include <algorithm>
+#include <cctype>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <set>
 #include <thread>
+#include <utility>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -45,9 +47,10 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7 };
-constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4;
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11 };
+constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4 + 4;
 constexpr std::size_t kBatchBytes = 16000;
+constexpr std::size_t kLargestPortrait = 128 * 1024;
 
 std::string Env(const char* name) {
     const char* v = std::getenv(name);
@@ -102,6 +105,18 @@ struct Sign {
     long long chara = 0;
 };
 
+struct Channel {
+    std::uint64_t id = 0;
+    std::string key;
+    std::string word;
+    std::string form;
+    Json fields;
+    int owner = 0;
+    long long share = 1;
+    Clock::time_point made;
+    std::map<int, Clock::time_point> ritual;
+};
+
 struct State {
     Link link;
     std::atomic<int> game_port{0};
@@ -123,6 +138,7 @@ struct State {
     std::map<std::uint64_t, MatchRoom> rooms;
     std::uint64_t next_room = 1;
     std::map<int, Sign> signs;
+    std::map<std::uint64_t, Channel> channels;
 
     std::mutex bridge_mu;
     std::map<int, SocketHandle> bridges;
@@ -132,6 +148,11 @@ struct State {
     std::map<int, std::pair<Vitals, Clock::time_point>> vitals;
     std::uint32_t travel = 0;
     Clock::time_point travel_at;
+    std::vector<std::uint32_t> progress;
+    std::vector<Dungeon> dungeons;
+    std::vector<std::uint32_t> chalices;
+    bool chalices_new = false;
+    std::map<int, std::vector<std::uint8_t>> portraits;
 };
 
 State& S() {
@@ -410,10 +431,185 @@ Json HandleSummon(int slot, const std::string& api, const Json& body) {
     return {{"ResKind", 0}};
 }
 
+std::uint64_t Fnv(const std::string& text) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (const unsigned char c : text) {
+        h ^= c;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+constexpr long long kNoChannel = 0x1040a;
+constexpr std::size_t kMostChannels = 64;
+constexpr std::size_t kLongestForm = 256 * 1024;
+constexpr auto kRitualOwn = std::chrono::seconds(120);
+
+std::string Stamp() {
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &now);
+#else
+    gmtime_r(&now, &tm);
+#endif
+    char text[32];
+    std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%S", &tm);
+    return text;
+}
+
+Channel& MakeChannelLocked(const std::string& key, int slot, const Json& body) {
+    std::uint64_t id = Fnv(key) & ((1ull << 52) - 1);
+    if (!id) id = 1;
+    auto it = S().channels.find(id);
+    if (it != S().channels.end()) return it->second;
+    if (S().channels.size() >= kMostChannels) {
+        auto oldest = S().channels.begin();
+        for (auto c = S().channels.begin(); c != S().channels.end(); ++c)
+            if (c->second.made < oldest->second.made) oldest = c;
+        S().channels.erase(oldest);
+    }
+    Channel c;
+    c.id = id;
+    c.key = key;
+    c.owner = slot;
+    c.made = Clock::now();
+    static const char kWord[] = "abcdefghijkmnpqrstuvwxyz23456789";
+    std::uint64_t w = Fnv(key + "#word");
+    for (int i = 0; i < 8; ++i, w >>= 5) c.word.push_back(kWord[w % 32]);
+    for (const char* field : {"HolyGrailTypeId", "RitualLevel", "FixedOrGeneral", "SubFeatureFlag"})
+        c.fields[field] = IntOf(body, field);
+    c.fields["WishMaterialList"] = body.contains("WishMaterialList") && body["WishMaterialList"].is_array()
+                                       ? body["WishMaterialList"]
+                                       : Json::array();
+    Log("dungeon %llu (%s) on the room's board", static_cast<unsigned long long>(id), key.c_str());
+    return S().channels.emplace(id, std::move(c)).first->second;
+}
+
+Json EntryOf(const Channel& c, int asker) {
+    Json e = c.fields;
+    const auto own = c.ritual.find(asker);
+    const bool ritual = own != c.ritual.end() && Clock::now() - own->second < kRitualOwn;
+    e["ChannelId"] = static_cast<long long>(c.id);
+    e["DiscernmentWord"] = c.word;
+    e["Status"] = 1;
+    e["ShareLevel"] = ritual ? 0 : (c.share ? c.share : 1);
+    e["TurnoutLevel"] = 0;
+    e["CreateUserId"] = 1000 + c.owner;
+    e["CreateCharaId"] = c.owner;
+    e["CreateDate"] = Stamp();
+    e["LastPlayDate"] = Stamp();
+    if (!c.form.empty()) {
+        e["FormDataVersion"] = 0;
+        e["FormData"] = c.form;
+    }
+    return e;
+}
+
+bool ChannelMatches(const Channel& c, const Json& body) {
+    for (const char* field : {"HolyGrailTypeId", "RitualLevel", "SubFeatureFlag"}) {
+        const auto it = body.find(field);
+        if (it != body.end() && !it->is_null() && IntOf(body, field) != IntOf(c.fields, field)) return false;
+    }
+    return true;
+}
+
+std::string FixedKey(const Json& body) {
+    return "fixed:" + std::to_string(IntOf(body, "HolyGrailTypeId")) + ":" + std::to_string(IntOf(body, "RitualLevel")) + ":" +
+           std::to_string(IntOf(body, "SubFeatureFlag"));
+}
+
+bool WantsFixed(const Json& body) {
+    const auto it = body.find("FixedOrGeneralList");
+    if (it == body.end() || !it->is_array()) return false;
+    for (const auto& f : *it)
+        if (IntOf(f, "FixedOrGeneral") == 2) return true;
+    return false;
+}
+
+Json HandleChannel(int slot, const std::string& api, const Json& body) {
+    std::lock_guard lock(S().host_mu);
+    if (api == "upload") {
+        const std::string form = StrOf(body, "FormData");
+        const bool fixed = IntOf(body, "FixedOrGeneral") == 2;
+        if (!fixed && (form.empty() || form.size() > kLongestForm || form.size() % 4)) return {{"ResKind", 1}};
+        Channel& c = MakeChannelLocked(fixed ? FixedKey(body) : "form:" + std::to_string(Fnv(form)), slot, body);
+        if (!form.empty() && form.size() <= kLongestForm) c.form = form;
+        c.ritual[slot] = Clock::now();
+        return {{"ResKind", 0}, {"ChannelId", static_cast<long long>(c.id)}, {"DiscernmentWord", c.word}};
+    }
+    if (api == "search") {
+        Json list = Json::array();
+        if (WantsFixed(body)) {
+            Channel& c = MakeChannelLocked(FixedKey(body), slot, body);
+            c.fields["FixedOrGeneral"] = 2;
+            c.ritual[slot] = Clock::now();
+            list.push_back(EntryOf(c, slot));
+            return {{"ResKind", 0}, {"ChannelList", list}};
+        }
+        const long long most = std::clamp<long long>(IntOf(body, "GetCount", 10), 1, 32);
+        std::vector<const Channel*> found;
+        for (const auto& [id, c] : S().channels)
+            if (c.owner != slot && !c.form.empty() && ChannelMatches(c, body)) found.push_back(&c);
+        std::sort(found.begin(), found.end(), [](const Channel* a, const Channel* b) { return a->made > b->made; });
+        for (const Channel* c : found) {
+            if (static_cast<long long>(list.size()) >= most) break;
+            list.push_back(EntryOf(*c, slot));
+        }
+        return {{"ResKind", 0}, {"ChannelList", list}};
+    }
+    if (api == "word_search") {
+        std::string word = StrOf(body, "SearchWord");
+        std::transform(word.begin(), word.end(), word.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+        for (const auto& [id, c] : S().channels) {
+            if (c.word != word) continue;
+            Json e = EntryOf(c, slot);
+            e["ResKind"] = 0;
+            return e;
+        }
+        return {{"ResKind", kNoChannel}};
+    }
+    if (api == "random_join") {
+        const Channel* best = nullptr;
+        for (const auto& [id, c] : S().channels)
+            if (c.owner != slot && (!best || c.made > best->made)) best = &c;
+        if (!best) return {{"ResKind", kNoChannel}};
+        Json e = EntryOf(*best, slot);
+        e["ResKind"] = 0;
+        return e;
+    }
+    if (api == "get_details_info" || api == "get_info") {
+        Json list = Json::array();
+        const auto ids = body.find("ChannelIdList");
+        if (ids != body.end() && ids->is_array()) {
+            for (const auto& entry : *ids) {
+                const auto it = S().channels.find(static_cast<std::uint64_t>(IntOf(entry, "ChannelId")));
+                if (it == S().channels.end()) continue;
+                if (api == "get_info") {
+                    const Json e = EntryOf(it->second, slot);
+                    list.push_back({{"ChannelId", e["ChannelId"]}, {"Status", e["Status"]}, {"ShareLevel", e["ShareLevel"]},
+                                    {"TurnoutLevel", 0}});
+                } else {
+                    list.push_back(EntryOf(it->second, slot));
+                }
+            }
+        }
+        return {{"ResKind", 0}, {api == "get_info" ? "ChannelInfoList" : "ChannelList", list}};
+    }
+    if (api == "share") {
+        const auto it = S().channels.find(static_cast<std::uint64_t>(IntOf(body, "ChannelId")));
+        if (it != S().channels.end() && it->second.owner == slot) it->second.share = IntOf(body, "ShareLevel", 1);
+        return {{"ResKind", 0}};
+    }
+    if (api == "add_material") return {{"ResKind", 0}, {"CompleteFlag", 0}};
+    return {{"ResKind", 0}};
+}
+
 Json HandleHost(int slot, const Json& request) {
     const std::string path = StrOf(request, "p");
     const Json& body = request.contains("b") ? request["b"] : Json::object();
     if (path.rfind("/summon_messenger/", 0) == 0) return HandleSummon(slot, path.substr(18), body);
+    if (path.rfind("/channel/", 0) == 0) return HandleChannel(slot, path.substr(9), body);
     return HandleSession(slot, path, body);
 }
 
@@ -603,6 +799,47 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         S().travel_at = Clock::now();
         return;
     }
+    if (kind == kProgress) {
+        if (data.size() < 1 || (data.size() - 1) % 4 || sender != S().link.HostSlot()) return;
+        std::lock_guard lock(S().vitals_mu);
+        for (std::size_t at = 1; at < data.size() && S().progress.size() < 4096; at += 4) {
+            std::uint32_t id = 0;
+            std::memcpy(&id, data.data() + at, 4);
+            S().progress.push_back(id);
+        }
+        return;
+    }
+    if (kind == kDungeon) {
+        constexpr std::size_t fixed = 1 + 8 + 4 * 43;
+        if (data.size() < fixed || (data.size() - fixed) % 4 || sender != S().link.HostSlot()) return;
+        Dungeon d;
+        std::memcpy(&d.channel, data.data() + 1, 8);
+        std::memcpy(d.record.data(), data.data() + 9, 4 * 43);
+        d.flags.resize((data.size() - fixed) / 4);
+        if (!d.flags.empty()) std::memcpy(d.flags.data(), data.data() + fixed, 4 * d.flags.size());
+        std::lock_guard lock(S().vitals_mu);
+        if (S().dungeons.size() < 8) S().dungeons.push_back(std::move(d));
+        return;
+    }
+    if (kind == kPortrait) {
+        if (data.size() < 2 || data.size() > kLargestPortrait) return;
+        std::lock_guard lock(S().vitals_mu);
+        S().portraits[sender].assign(data.begin() + 1, data.end());
+        return;
+    }
+    if (kind == kChalices) {
+        if ((data.size() - 1) % 4 || data.size() > 1 + 4 * 64) return;
+        std::lock_guard lock(S().vitals_mu);
+        for (std::size_t at = 1; at < data.size(); at += 4) {
+            std::uint32_t id = 0;
+            std::memcpy(&id, data.data() + at, 4);
+            if (std::find(S().chalices.begin(), S().chalices.end(), id) == S().chalices.end()) {
+                S().chalices.push_back(id);
+                S().chalices_new = true;
+            }
+        }
+        return;
+    }
     if (kind == kVitals) {
         if (data.size() < kVitalsFixed) return;
         const std::size_t name_size = data[1];
@@ -619,6 +856,8 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         std::memcpy(&v.revives, data.data() + at, 2);
         at += 2;
         std::memcpy(v.pos, data.data() + at, sizeof v.pos);
+        at += sizeof v.pos;
+        std::memcpy(&v.map, data.data() + at, 4);
         std::lock_guard lock(S().vitals_mu);
         S().vitals[sender] = {std::move(v), Clock::now()};
         return;
@@ -737,19 +976,9 @@ std::string GameApiAnswer(const std::string& path, const Json& body) {
         return Json{{"ResKind", 0}, {"PublishCharacterIdList", Json::array({{{"PublishCharaId", slot ? slot : 1}}})}}.dump();
     }
     if (path == "/basic_utils/get_normal_notice") return R"({"ResKind":0,"NoticeList":[]})";
-    if (path == "/basic_utils/get_emergency_notice") {
-        const std::time_t now = std::time(nullptr);
-        std::tm tm{};
-#ifdef _WIN32
-        gmtime_s(&tm, &now);
-#else
-        gmtime_r(&now, &tm);
-#endif
-        char text[32];
-        std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%S", &tm);
-        return Json{{"ResKind", 0}, {"NoticeList", Json::array()}, {"CheckTime", text}}.dump();
-    }
-    if (path.rfind("/summon_messenger/", 0) == 0) {
+    if (path == "/basic_utils/get_emergency_notice")
+        return Json{{"ResKind", 0}, {"NoticeList", Json::array()}, {"CheckTime", Stamp()}}.dump();
+    if (path.rfind("/summon_messenger/", 0) == 0 || path.rfind("/channel/", 0) == 0) {
         Json reply;
         std::string error;
         if (!Rpc({{"p", path}, {"b", body}}, reply, error, 8000)) return "";
@@ -759,10 +988,6 @@ std::string GameApiAnswer(const std::string& path, const Json& body) {
     if (const std::string list = ApiList(path); !list.empty()) reply[list] = Json::array();
     if (path == "/blood_messenger/exist_messages") reply["LostBloodMessIdList"] = Json::array();
     if (path == "/chair_messenger/get") reply["ChairMessCount"] = 0;
-    if (path.rfind("/channel/", 0) == 0) {
-        reply["ChannelList"] = Json::array();
-        reply["ChannelInfoList"] = Json::array();
-    }
     return reply.dump();
 }
 
@@ -877,6 +1102,8 @@ void SendVitals(const Vitals& own) {
     std::memcpy(frame.data() + at, &own.revives, 2);
     at += 2;
     std::memcpy(frame.data() + at, own.pos, sizeof own.pos);
+    at += sizeof own.pos;
+    std::memcpy(frame.data() + at, &own.map, 4);
     S().link.Send(0, frame.data(), frame.size());
 }
 
@@ -910,6 +1137,83 @@ bool TakeTravel(std::uint32_t& lamp) {
     lamp = S().travel;
     S().travel = 0;
     return true;
+}
+
+void SendProgress(const std::vector<std::uint32_t>& flags) {
+    if (flags.empty() || !S().started.load() || !S().link.Connected()) return;
+    std::vector<std::uint8_t> frame(1 + 4 * flags.size());
+    frame[0] = kProgress;
+    std::memcpy(frame.data() + 1, flags.data(), 4 * flags.size());
+    S().link.Send(0, frame.data(), frame.size());
+}
+
+std::vector<std::uint32_t> TakeProgress() {
+    std::lock_guard lock(S().vitals_mu);
+    return std::exchange(S().progress, {});
+}
+
+void PutDungeonForm(std::uint64_t channel, const std::vector<std::uint8_t>& data) {
+    std::string form(4 * ((data.size() + 2) / 3) + 1, char(0));
+    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(form.data()), data.data(), static_cast<int>(data.size()));
+    form.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
+    std::lock_guard lock(S().host_mu);
+    const auto it = S().channels.find(channel);
+    if (it == S().channels.end() || it->second.form == form) return;
+    it->second.form = form;
+    Log("dungeon %llu: its layout is on the room's board", static_cast<unsigned long long>(channel));
+}
+
+void SendDungeon(const Dungeon& d) {
+    if (!S().started.load() || !S().link.Connected()) return;
+    std::vector<std::uint8_t> frame(1 + 8 + 4 * 43 + 4 * d.flags.size());
+    frame[0] = kDungeon;
+    std::memcpy(frame.data() + 1, &d.channel, 8);
+    std::memcpy(frame.data() + 9, d.record.data(), 4 * 43);
+    if (!d.flags.empty()) std::memcpy(frame.data() + 9 + 4 * 43, d.flags.data(), 4 * d.flags.size());
+    S().link.Send(0, frame.data(), frame.size());
+}
+
+bool TakeDungeon(Dungeon& out) {
+    std::lock_guard lock(S().vitals_mu);
+    if (S().dungeons.empty()) return false;
+    out = std::move(S().dungeons.back());
+    S().dungeons.clear();
+    return true;
+}
+
+void SendChalices(const std::vector<std::uint32_t>& goods) {
+    if (goods.empty() || goods.size() > 64 || !S().started.load() || !S().link.Connected()) return;
+    std::vector<std::uint8_t> frame(1 + 4 * goods.size());
+    frame[0] = kChalices;
+    std::memcpy(frame.data() + 1, goods.data(), 4 * goods.size());
+    S().link.Send(0, frame.data(), frame.size());
+}
+
+bool TakeChalices(std::vector<std::uint32_t>& out) {
+    std::lock_guard lock(S().vitals_mu);
+    if (!S().chalices_new) return false;
+    S().chalices_new = false;
+    out = S().chalices;
+    return true;
+}
+
+void SendPortrait(const std::vector<std::uint8_t>& packed) {
+    if (packed.empty() || packed.size() + 1 > kLargestPortrait || !S().started.load() || !S().link.Connected()) return;
+    std::vector<std::uint8_t> frame(1 + packed.size());
+    frame[0] = kPortrait;
+    std::memcpy(frame.data() + 1, packed.data(), packed.size());
+    S().link.Send(0, frame.data(), frame.size());
+}
+
+std::vector<std::pair<int, std::vector<std::uint8_t>>> TakePortraits() {
+    std::lock_guard lock(S().vitals_mu);
+    std::vector<std::pair<int, std::vector<std::uint8_t>>> out(S().portraits.begin(), S().portraits.end());
+    S().portraits.clear();
+    return out;
+}
+
+int HostSlot() {
+    return S().link.HostSlot();
 }
 
 std::string PlayerName() {

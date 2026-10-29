@@ -18,6 +18,7 @@
 #include "trophy_sync.h"
 #include "widescreen.h"
 #include "../input/input.h"
+#include "../face_shot.h"
 #include "bbport_settings.h"
 #include <array>
 #include <cstdlib>
@@ -51,6 +52,7 @@ std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_
     FrameRate::Tick();
     Loading::Tick(saved[5]);
     ChangeAppearance::Tick();
+    BbFaceShot::Tick(ChangeAppearance::PreviewShown());
     Rebirth::Tick();
     Options::Tick();
     BbInput::Tick();

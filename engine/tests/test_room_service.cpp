@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -77,10 +78,12 @@ bool SwapVitals(const char* own, const char* other) {
     v.stamina_max = 100;
     v.revives = 3;
     v.pos[0] = 1.5f;
+    v.map = 0x1d0a5a00u;
     for (int i = 0; i < 50; ++i) {
         BbRoom::SendVitals(v);
         for (const BbRoom::Vitals& got : BbRoom::Party(5000)) {
-            if (got.name == other && got.hp == 640 && got.hp_max == 800 && got.revives == 3 && got.pos[0] == 1.5f) {
+            if (got.name == other && got.hp == 640 && got.hp_max == 800 && got.revives == 3 && got.pos[0] == 1.5f &&
+                got.map == 0x1d0a5a00u) {
                 std::printf("%s: vitals from %s (slot %d)\n", own, other, got.slot);
                 for (int k = 0; k < 8; ++k) {
                     BbRoom::SendVitals(v);
@@ -92,6 +95,11 @@ bool SwapVitals(const char* own, const char* other) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     return false;
+}
+
+Json FixedSearch() {
+    return {{"HolyGrailTypeId", 0}, {"RitualLevel", 1}, {"SubFeatureFlag", 0}, {"FormDataVersion", 0}, {"Status", 1},
+            {"FixedOrGeneralList", Json::array({{{"FixedOrGeneral", 2}}})}, {"GetCount", 1}};
 }
 
 std::string Sign() {
@@ -136,8 +144,22 @@ int Host(int game_port, int http_port) {
     ::sendto(udp, "back!", 5, 0, reinterpret_cast<sockaddr*>(&from), len);
     std::printf("host: P2P ok\n");
     if (!SwapVitals("HostHunter", "GuestHunter")) return Fail("no vitals from the guest");
+    const Json found = Game(http_port, "/channel/search", FixedSearch());
+    if (!found.is_object() || found["ChannelList"].size() != 1) return Fail("no fixed dungeon on the board");
+    const auto channel = static_cast<std::uint64_t>(found["ChannelList"][0].value("ChannelId", 0LL));
+    BbRoom::PutDungeonForm(channel, std::vector<std::uint8_t>(0x7c, 0x5a));
+    std::printf("host: fixed dungeon %llu, its layout on the board\n", static_cast<unsigned long long>(channel));
+    BbRoom::Dungeon dungeon;
+    dungeon.channel = channel;
+    dungeon.record[3] = 0x1d0a5a00u;
+    dungeon.flags = {12900166u, 72900202u};
     for (int i = 0; i < 10; ++i) {
         BbRoom::SendTravel(2412951);
+        std::vector<std::uint32_t> flags = {12411800u, 72410201u, 1062u | 0x80000000u};
+        for (std::uint32_t id = 0; flags.size() < 3600; ++id) flags.push_back(12400000u + id);
+        BbRoom::SendProgress(flags);
+        BbRoom::SendDungeon(dungeon);
+        BbRoom::SendChalices({6109u, 6209u});
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
     std::printf("HOST OK\n");
@@ -186,6 +208,34 @@ int Guest(int game_port, int http_port, bool early) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             if (lamp != 2412951) return Fail("no travel from the host");
             std::printf("guest: the host travels to lamp %u\n", lamp);
+            std::vector<std::uint32_t> flags;
+            for (int k = 0; k < 40 && flags.empty(); ++k) {
+                flags = BbRoom::TakeProgress();
+                if (flags.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            if (flags.size() < 3600 || flags[0] != 12411800u || flags[1] != 72410201u || flags[2] != (1062u | 0x80000000u)) return Fail("no progress from the host");
+            std::printf("guest: the host's progress: %zu flag(s), first %u\n", flags.size(), flags[0]);
+            const Json found = Game(http_port, "/channel/search", FixedSearch());
+            if (!found.is_object() || found["ChannelList"].size() != 1) return Fail("no fixed dungeon for the guest");
+            const long long channel = found["ChannelList"][0].value("ChannelId", 0LL);
+            Json details;
+            for (int k = 0; k < 20; ++k) {
+                details = Game(http_port, "/channel/get_details_info", {{"ChannelIdList", Json::array({{{"ChannelId", channel}}})}});
+                if (details.is_object() && details["ChannelList"].size() == 1 && details["ChannelList"][0].contains("FormData")) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
+            if (!details.is_object() || details["ChannelList"].size() != 1 ||
+                details["ChannelList"][0].value("FormData", "").size() != 168)
+                return Fail("the host's dungeon layout did not reach the guest");
+            std::printf("guest: the host's dungeon %lld with its layout\n", channel);
+            BbRoom::Dungeon dungeon;
+            for (int k = 0; k < 40 && !BbRoom::TakeDungeon(dungeon); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (static_cast<long long>(dungeon.channel) != channel || dungeon.record[3] != 0x1d0a5a00u || dungeon.flags.size() != 2)
+                return Fail("no dungeon progress from the host");
+            std::vector<std::uint32_t> chalices;
+            for (int k = 0; k < 40 && !BbRoom::TakeChalices(chalices); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (chalices.size() != 2 || chalices[0] != 6109u) return Fail("no chalices from the host");
+            std::printf("guest: dungeon progress and %zu chalice(s) from the host\n", chalices.size());
             std::printf("GUEST OK\n");
             return 0;
         }
