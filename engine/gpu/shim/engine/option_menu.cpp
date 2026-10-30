@@ -288,6 +288,14 @@ bool MountAssets(const char* assets, const char* game) {
             return true;
         };
         if (!add("dvdroot_ps4/menu/optionsetting.gfx")) return false;
+        // Widescreen: the same movie with its full-screen dim widened for the UI viewport
+        // (start/main.cpp, made from the prepared one).
+        const char* wide = std::getenv("BB_WIDE_OPTION_MOVIE");
+        std::error_code e;
+        if (wide && *wide && fs::is_regular_file(wide, e)) {
+            files.back().second = fs::path(wide).string();
+            host_log("pc-options: optionsetting.gfx widened for the UI viewport");
+        }
         for (const auto& language : fs::directory_iterator(dump / "dvdroot_ps4/msg")) {
             if (!language.is_directory()) continue;
             const fs::path relative = fs::path("dvdroot_ps4/msg") / language.path().filename() / "menu.msgbnd.dcx";

@@ -66,5 +66,9 @@ struct PlateTitles {
 Bytes MenuMessages(const Bytes& dcx, Language language, const PlateTitles& titles = {});
 Bytes MenuMessages(const Bytes& dcx, bool chinese = false);
 Bytes OptionMovie(const Bytes& gfx);
+// Widescreen: `gfx` with its full-screen shapes scaled to cover the UI viewport of `width` x `height`
+// (BB_UI_SIZE), what was changed added to `notes`; empty when nothing needs it. Its pictures only
+// with `pictures` (all but the title screen's, whose art keeps its shape).
+Bytes WideMovie(const Bytes& gfx, int width, int height, std::string& notes, bool pictures = false);
 Bytes AltarScripts(const Bytes& dcx);
 }

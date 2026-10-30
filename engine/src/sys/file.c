@@ -30,7 +30,7 @@ typedef struct stat HostStat;
 
 enum {
     FILE_LIMIT = 1024,
-    MOUNT_LIMIT = 64,
+    MOUNT_LIMIT = 256, /* Widescreen mounts up to ~70 widened menu movies (BB_WIDE_UI_MOVIES). */
     MOUNT_GUEST = 64,
     MOUNT_HOST = 512,
     PATH_SIZE = 1024,
@@ -189,9 +189,12 @@ static const char *find_mod_file(const char *guest) {
     return found ? found->host : NULL;
 }
 
-static void load_file_fixes(void) {
+/* A list of "relative path<TAB>host file" lines, each mounted over /app0/<relative path> (and with
+   `hostapp`, /hostapp/<relative path>, the other name of the game's folder): the effect fixes
+   (BB_FILE_FIXES) and the widened menu movies (BB_WIDE_UI_MOVIES, start/main.cpp). */
+static void load_file_list(const char *variable, const char *what, int hostapp) {
     const char *name;
-    FILE *list = open_list("BB_FILE_FIXES", &name);
+    FILE *list = open_list(variable, &name);
     if (!list) return;
     char line[2048], guest[2064];
     int mounted = 0;
@@ -200,10 +203,12 @@ static void load_file_fixes(void) {
         if (!host) continue;
         snprintf(guest, sizeof(guest), "/app0/%s", line);
         if (!sys_file_mount(guest, host)) ++mounted;
-        else printf("Runtime: the fixed %s cannot be mounted\n", line);
+        else printf("Runtime: %s cannot be mounted (%s)\n", line, variable);
+        snprintf(guest, sizeof(guest), "/hostapp/%s", line);
+        if (hostapp && sys_file_mount(guest, host)) printf("Runtime: %s cannot be mounted under /hostapp (%s)\n", line, variable);
     }
     fclose(list);
-    if (mounted) printf("Runtime: %d game files fixed (BB_FILE_FIXES)\n", mounted);
+    if (mounted) printf("Runtime: %d %s (%s)\n", mounted, what, variable);
 }
 
 void sys_file_configure(const char *app0, const char *user) {
@@ -212,7 +217,8 @@ void sys_file_configure(const char *app0, const char *user) {
     snprintf(user_dir, sizeof(user_dir), "%s", user);
     sys_file_mount("/app0", app0);
     sys_file_mount("/hostapp", app0);
-    load_file_fixes();
+    load_file_list("BB_FILE_FIXES", "game files fixed", 0);
+    load_file_list("BB_WIDE_UI_MOVIES", "menu movies widened for the widescreen UI viewport", 1);
     mkdir(user, 0755);
     char path[600];
     snprintf(path, sizeof(path), "%s/.write-test", user);

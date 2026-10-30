@@ -2086,8 +2086,18 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
     // the stage is copied, over a cleared image. UI the game draws past the stage still shows.
     // A frame of the world is copied whole: with no upscaler every frame comes here, and the
     // world's sides were cut to black bars (widescreen worked only with an upscaler on).
+    // With the menus' movies widened (BB_WIDE_UI_MOVIES or the PC options' BB_WIDE_OPTION_MOVIE,
+    // start/main.cpp) the menus' full-screen pictures, dims and fades are drawn beside the stage
+    // too, so such a frame is copied whole as well: a loading screen's frames alternate between this
+    // copy and the upscaler's, and its picture flickered between the full width and the stage.
+    static const bool wide_movies = [] {
+        const char* movies = std::getenv("BB_WIDE_UI_MOVIES");
+        const char* options = std::getenv("BB_WIDE_OPTION_MOVIE");
+        return (movies && *movies) || (options && *options);
+    }();
     s32 x0 = 0, y0 = 0, x1 = s32(ui_width), y1 = s32(ui_height);
-    if (const auto ui = UiComposition::UiSize(); !world && (ui[0] != 1920.0f || ui[1] != 1080.0f)) {
+    if (const auto ui = UiComposition::UiSize();
+        !world && !wide_movies && (ui[0] != 1920.0f || ui[1] != 1080.0f)) {
         const auto fit = UiComposition::Fit(ui_width, ui_height, ui);
         const float stage = UiComposition::StageScale(ui), w = 1920.0f * stage, h = 1080.0f * stage;
         x0 = std::clamp(s32(std::lround(fit.offset[0] + fit.scale[0] * (ui[0] - w) / 2)), 0, s32(ui_width));

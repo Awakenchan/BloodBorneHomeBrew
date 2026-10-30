@@ -592,6 +592,44 @@ int Main(std::vector<std::wstring> arguments) {
     } else {
         UnsetEnv("BB_UI_SIZE");
     }
+    UnsetEnv("BB_WIDE_UI_MOVIES");
+    UnsetEnv("BB_WIDE_OPTION_MOVIE");
+    // Widescreen on a screen of another shape: the menus' full-screen dims, fades, pictures (but the
+    // title screen's) and bands (subtitles, area names) are drawn for the 16:9 stage and stopped at
+    // its edges; widened copies of their movies are mounted over the game's (src/sys/file.c,
+    // BB_WIDE_UI_MOVIES). The PC menus' optionsetting.gfx is widened too, and mounted by the System
+    // pages themselves (BB_WIDE_OPTION_MOVIE, engine/option_menu.cpp). A 16:9 viewport (Widescreen
+    // off, or a 16:9 screen) changes nothing.
+    const bool wide_ui = std::int64_t(patches.ui.w) * 1080 != std::int64_t(patches.ui.h) * 1920;
+    if (wide_ui) {
+        try {
+            std::optional<fs::path> option_movie;
+            if (const auto menus = Env("BB_PC_MENU_ASSETS"); menus && !menus->empty()) {
+                const fs::path prepared = Path(*menus) / "dvdroot_ps4" / "menu" / "optionsetting.gfx";
+                if (fs::is_regular_file(prepared)) option_movie = prepared;
+            }
+            const auto movies = PrepareWideMovies(merged, option_movie, data / "engine-assets",
+                                                  out / "bb-engine-assets.exe", patches.ui.w, patches.ui.h);
+            std::string list, names;
+            for (const auto& m : movies) {
+                if (option_movie && m.relative == "dvdroot_ps4/menu/optionsetting.gfx")
+                    SetEnv("BB_WIDE_OPTION_MOVIE", Utf8(m.file));
+                else
+                    list += m.relative + "\t" + Utf8(m.file) + "\n";
+                names += (names.empty() ? "" : ", ") + Utf8(Path(m.relative).stem());
+                if (Env("BB_UI_VIEWPORT_LOG", "") == "1")
+                    Log("Widescreen: %s: %s", m.relative.c_str(), m.note.c_str());
+            }
+            if (!list.empty()) {
+                WriteText(out / "wide-ui-movies.txt", list);
+                SetEnv("BB_WIDE_UI_MOVIES", Utf8(out / "wide-ui-movies.txt"));
+            }
+            Log("Widescreen: %zu menu movies' full-screen dims, fades and bands widened for %s: %s",
+                movies.size(), size_text(patches.ui).c_str(), names.c_str());
+        } catch (const std::exception& e) {
+            Log("Widescreen: the menus' full-screen dims and fades stay 16:9: %s", e.what());
+        }
+    }
     if (patches.heap_patch && !Env("BB_DMEM_MB")) {
         SetEnv("BB_DMEM_MB", "9152");
         Log("Patches: the game's heaps are enlarged; direct memory 9152 MiB");
