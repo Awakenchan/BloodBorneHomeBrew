@@ -97,6 +97,23 @@ Set `BB_DIRECTIONAL_SHADOWS=0` before launch to restore the previous native blur
 path and disable added cascade overlap. The existing PCSS and contact-shadow
 toggles still apply; disable those as well for the original directional filtering.
 
+### Renderer optimizations
+
+Renderer optimizations are permanently enabled, with no menu toggle.
+The shadow shader skips projection setup for
+sky/invalid depth and skips blocker/filter sampling after native directional
+shadows have faded completely. Existing validity checks, partial fading,
+cascade blending, contact shadows, sample counts and resolutions are preserved.
+It also skips the camera's diagnostic inverse calculation when neither the
+alternate-inverse path nor camera logging uses it. Gameplay and audio paths
+are unchanged. Older `renderer_optimizations` settings are no longer used.
+
+Benefits depend on the scene; this is not a guaranteed overall FPS increase.
+The standalone `directional-shadow-test --benchmark` measures both pipelines with
+GPU timestamps on visible and fully faded shadows. Its correctness suite compares
+the complete RGBA output of both variants byte-for-byte, including atlas edges,
+cascade blends, sloped surfaces, sky and invalid coordinates.
+
 ### Higher-resolution native local-light shadows
 
 The game's original shadowcasting point lights use variance shadow maps, storing depth and squared-depth moments on six cube faces. BBFSS raises their native pool's base face size to 2048 pixels, producing **2048/1024/512/256** distance-quality tiers. The native allocator creates the larger faces and shared working targets, and the rendering and filtering passes consume their dimensions. This adds actual shadow silhouette detail rather than upscaling an existing low-resolution map.

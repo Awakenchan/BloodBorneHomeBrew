@@ -7,12 +7,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
+#include <limits>
 #include <vector>
 #include "video_core/host_shaders/contact_shadow_comp.h"
 
 namespace {
 #define CHECK(call) do { if ((call) != VK_SUCCESS) { std::fprintf(stderr, "%s failed\n", #call); std::exit(1); } } while (false)
-constexpr unsigned W = 17, H = 9, Atlas = 64, CbBase = 4, UbBase = 8;
+unsigned W = 17, H = 9;
+constexpr unsigned Atlas = 64, CbBase = 4, UbBase = 8;
 struct Push {
     unsigned offsets = (CbBase * 4) | ((UbBase * 4) << 8), frame = 0;
     float width = W, height = H, length = 0.6f, thickness = 0.35f, strength = 0.75f, flip = 1;
@@ -20,8 +23,10 @@ struct Push {
     float light = 0.02f, maximum = 0.3f, minimum = 0.0f, bias = 0.04f;
     unsigned filter = 1;
     float blend = 0;
+    unsigned optimizations = 0;
 };
-static_assert(sizeof(Push) == 68);
+static_assert(sizeof(Push) == 72); // Final word selects pipeline, not part of shader push constants.
+constexpr unsigned PushBytes = 68;
 struct Buffer { VkBuffer buffer{}; VkDeviceMemory memory{}; void* data{}; };
 struct Image { VkImage image{}; VkDeviceMemory memory{}; VkImageView view{}; };
 
@@ -36,7 +41,11 @@ struct Test {
     VkDescriptorSetLayout set_layout{};
     VkPipelineLayout layout{};
     VkPipeline pipeline{};
+    VkPipeline optimized_pipeline{};
     VkSampler sampler{};
+    VkQueryPool timing{};
+    float timestamp_period = 0;
+    unsigned timestamp_bits = 0;
     PFN_vkCmdPushDescriptorSetKHR descriptors{};
     std::vector<Buffer> buffers;
     std::vector<Image> images;
@@ -103,6 +112,10 @@ struct Test {
         vkGetPhysicalDeviceQueueFamilyProperties(gpu, &family_count, families.data());
         while (family < family_count && !(families[family].queueFlags & VK_QUEUE_COMPUTE_BIT)) ++family;
         assert(family < family_count);
+        timestamp_bits = families[family].timestampValidBits;
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(gpu, &properties);
+        timestamp_period = properties.limits.timestampPeriod;
         const float priority = 1;
         VkDeviceQueueCreateInfo qi{.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             .queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority};
@@ -131,7 +144,7 @@ struct Test {
             .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
             .bindingCount = 5, .pBindings = bindings.data()};
         CHECK(vkCreateDescriptorSetLayout(device, &si, nullptr, &set_layout));
-        VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Push)};
+        VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, PushBytes};
         VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1, .pSetLayouts = &set_layout, .pushConstantRangeCount = 1, .pPushConstantRanges = &range};
         CHECK(vkCreatePipelineLayout(device, &li, nullptr, &layout));
@@ -142,7 +155,13 @@ struct Test {
         VkComputePipelineCreateInfo pc{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
             .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module, .pName = "main"}, .layout = layout};
-        CHECK(vkCreateComputePipelines(device, {}, 1, &pc, nullptr, &pipeline));
+        for (unsigned optimized = 0; optimized < 2; ++optimized) {
+            VkSpecializationMapEntry entry{0, 0, sizeof optimized};
+            VkSpecializationInfo specialization{1, &entry, sizeof optimized, &optimized};
+            pc.stage.pSpecializationInfo = &specialization;
+            CHECK(vkCreateComputePipelines(device, {}, 1, &pc, nullptr,
+                optimized ? &optimized_pipeline : &pipeline));
+        }
         vkDestroyShaderModule(device, module, nullptr);
         VkSamplerCreateInfo sm{.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
@@ -150,6 +169,11 @@ struct Test {
             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
         CHECK(vkCreateSampler(device, &sm, nullptr, &sampler));
+        if (timestamp_bits) {
+            VkQueryPoolCreateInfo query{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
+            CHECK(vkCreateQueryPool(device, &query, nullptr, &timing));
+        }
     }
     void Barrier(VkImage image, VkImageLayout old_layout, VkImageLayout next) {
         VkImageMemoryBarrier b{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -174,7 +198,9 @@ struct Test {
             vkFreeMemory(device, b.memory, nullptr);
         }
         vkDestroySampler(device, sampler, nullptr);
+        if (timing) vkDestroyQueryPool(device, timing, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyPipeline(device, optimized_pipeline, nullptr);
         vkDestroyPipelineLayout(device, layout, nullptr);
         vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
         vkDestroyCommandPool(device, pool, nullptr);
@@ -184,8 +210,10 @@ struct Test {
 };
 }
 
-int main() {
+int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const bool benchmark = argc > 1 && std::strcmp(argv[1], "--benchmark") == 0;
+    if (benchmark) { W = 1280; H = 720; }
     Test t;
     auto cb = t.MakeBuffer(1024), ub = t.MakeBuffer(1024);
     auto scene = t.MakeBuffer(W * H * 4), atlas = t.MakeBuffer(Atlas * Atlas * 4);
@@ -207,14 +235,18 @@ int main() {
     uniforms[72] = 100; uniforms[73] = 1;
     std::fill_n(static_cast<unsigned*>(pixels.data), W * H, 0x601e140au);
     bool initialized = false;
-    const auto run = [&](Push push, float view_z, bool tilted = false) {
+    bool patterned_depth = false;
+    double gpu_ms = 0;
+    const auto dispatch = [&](Push push, float view_z, bool tilted = false) {
         for (unsigned y = 0; y < H; ++y)
             for (unsigned x = 0; x < W; ++x)
                 static_cast<float*>(scene.data)[y * W + x] =
+                    patterned_depth && (x + y) % 4 == 0 ? 1.0f :
                     view_z + (tilted ? 0.02f * (2 * (float(x) + 0.5f) / W - 1) : 0);
         CHECK(vkResetCommandBuffer(t.cmd, 0));
         VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         CHECK(vkBeginCommandBuffer(t.cmd, &begin));
+        if (t.timing) vkCmdResetQueryPool(t.cmd, t.timing, 0, 2);
         for (auto i : {depth, map, output}) t.Barrier(i.image,
             initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
         const std::array<Image, 3> ims{depth, map, output};
@@ -239,10 +271,17 @@ int main() {
                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &m},
             {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 4, .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &ubi}}};
-        vkCmdBindPipeline(t.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, t.pipeline);
+        vkCmdBindPipeline(t.cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            push.optimizations ? t.optimized_pipeline : t.pipeline);
         t.descriptors(t.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, t.layout, 0, 5, writes.data());
-        vkCmdPushConstants(t.cmd, t.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
-        vkCmdDispatch(t.cmd, (W + 7) / 8, (H + 7) / 8, 1);
+        vkCmdPushConstants(t.cmd, t.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, PushBytes, &push);
+        if (t.timing) vkCmdWriteTimestamp(t.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, t.timing, 0);
+        const unsigned repeats = benchmark ? 16 : 1;
+        for (unsigned repeat = 0; repeat < repeats; ++repeat) {
+            if (repeat) t.Barrier(output.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            vkCmdDispatch(t.cmd, (W + 7) / 8, (H + 7) / 8, 1);
+        }
+        if (t.timing) vkCmdWriteTimestamp(t.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, t.timing, 1);
         t.Barrier(output.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
         VkBufferImageCopy copy{.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {W, H, 1}};
         vkCmdCopyImageToBuffer(t.cmd, output.image, VK_IMAGE_LAYOUT_GENERAL, result.buffer, 1, &copy);
@@ -254,6 +293,13 @@ int main() {
         VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &t.cmd};
         CHECK(vkQueueSubmit(t.queue, 1, &submit, {}));
         CHECK(vkQueueWaitIdle(t.queue));
+        if (t.timing) {
+            std::array<std::uint64_t, 2> stamps{};
+            CHECK(vkGetQueryPoolResults(t.device, t.timing, 0, 2, sizeof stamps, stamps.data(),
+                sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+            const auto mask = t.timestamp_bits == 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << t.timestamp_bits) - 1;
+            gpu_ms = double((stamps[1] - stamps[0]) & mask) * t.timestamp_period / (1e6 * repeats);
+        }
         initialized = true;
         const auto* out = static_cast<unsigned*>(result.data);
         float alpha = 0;
@@ -263,8 +309,44 @@ int main() {
         }
         return alpha / (W * H);
     };
+    const auto run = [&](Push push, float view_z, bool tilted = false) {
+        push.optimizations = 0;
+        const float alpha = dispatch(push, view_z, tilted);
+        const auto* data = static_cast<unsigned*>(result.data);
+        std::vector<unsigned> baseline(data, data + W * H);
+        push.optimizations = 1;
+        dispatch(push, view_z, tilted);
+        assert(std::equal(baseline.begin(), baseline.end(), static_cast<unsigned*>(result.data)));
+        return alpha;
+    };
     auto* depths = static_cast<float*>(atlas.data);
     Push p;
+    if (benchmark) {
+        assert(t.timing);
+        for (unsigned y = 0; y < Atlas; ++y)
+            for (unsigned x = 0; x < Atlas; ++x)
+                depths[y * Atlas + x] = x < 16 ? 0.2f : 1.0f;
+        for (unsigned scenario = 0; scenario < 4; ++scenario) {
+            const unsigned pcss = scenario & 1;
+            p.pcss = pcss; p.contact = 1; p.blend = 0.1f;
+            p.light = 0.5f;
+            uniforms[72] = scenario < 2 ? 100 : 0;
+            run(p, 0.475f, true);
+            std::array<std::vector<double>, 2> samples;
+            for (unsigned trial = 0; trial < 24; ++trial) {
+                for (unsigned order = 0; order < 2; ++order) {
+                    p.optimizations = (order + trial) % 2;
+                    dispatch(p, 0.475f, true);
+                    if (trial >= 4) samples[p.optimizations].push_back(gpu_ms);
+                }
+            }
+            for (auto& s : samples) std::sort(s.begin(), s.end());
+            std::printf("1280x720 %s + contact (%s), median GPU ms: original %.4f, optimized %.4f\n",
+                pcss ? "PCSS" : "PCF", scenario < 2 ? "visible" : "fully faded",
+                samples[0][samples[0].size()/2], samples[1][samples[1].size()/2]);
+        }
+        return 0;
+    }
     std::fill_n(depths, Atlas * Atlas, 1.0f);
     assert(run(p, 0.4f) > 0.999f);
     std::fill_n(depths, Atlas * Atlas, 0.0f);
@@ -366,6 +448,30 @@ int main() {
     assert(std::equal(previous.begin(), previous.end(), static_cast<unsigned*>(result.data)));
     uniforms[72] = 0;
     assert(run(p, 0.4f) > 0.999f);
+    p.contact = 1;
+    run(p, 0.4f);
+    first[3] = 2;
+    assert(std::abs(run(p, 0.4f) - 96.0f / 255) < 0.001f);
+    first[3] = 0.25f;
+    // Non-identity, off-axis projection and all cascade blend bands.
+    constants[0] = 0.8f; constants[5] = -0.7f;
+    constants[3] = 0.03f; constants[7] = -0.02f;
+    constants[10] = 0.9f; constants[14] = 0.07f;
+    uniforms[72] = 100;
+    for (unsigned mode : {0u, 1u}) {
+        p.pcss = mode;
+        p.blend = 0.1f;
+        for (float z : {0.4f, 0.54f, 0.75f, 0.96f})
+            run(p, z, true);
+        for (float z : {0.0f, 1.0f, std::numeric_limits<float>::quiet_NaN()})
+            run(p, z);
+        patterned_depth = true;
+        for (float fade_end : {0.0f, 1.0f, 100.0f}) {
+            uniforms[72] = fade_end;
+            run(p, 0.54f, true);
+        }
+        patterned_depth = false;
+    }
     std::puts("Directional shadows: PASS (four atlas tiles, PCF/PCSS edges, lit/shadow, "
               "cascade blending, sloped receivers, fractional comparisons, stock/sky fallback, fade, "
               "RGB preservation, odd sizes, buffer offsets, contact hardening, thin caster, frame stability)");

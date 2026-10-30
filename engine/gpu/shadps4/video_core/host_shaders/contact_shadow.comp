@@ -45,6 +45,8 @@ layout(push_constant) uniform Constants {
     uint filter_on;
     float cascade_blend;
 };
+// Enabled permanently in the renderer; tests specialize to zero for A/B regression coverage.
+layout(constant_id = 0) const uint optimizations = 1u;
 
 const int STEPS = 20;
 const int BLOCKER_TAPS = 64;
@@ -57,6 +59,7 @@ float sceneDepth(vec2 uv) { return textureLod(depth_tex, uv, 0.0).x; }
 
 mat4 invMat;  // ndc (x, y, depth, 1) -> homogeneous view
 mat4 projMat; // view (x, y, z, 1) -> homogeneous ndc
+bool fullyFaded;
 
 vec3 viewPosAt(vec2 uv, float depth) {
     vec4 c = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
@@ -100,7 +103,7 @@ bool setupCascade(int index) {
 }
 
 bool setup(vec2 uv0) {
-    d0 = sceneDepth(uv0);
+    if (optimizations == 0u) d0 = sceneDepth(uv0);
     if (!(d0 < 1.0) || !(d0 > 0.0)) return false;
     P0 = viewPosAt(uv0, d0);
     if (!(P0.z > 0.0)) return false;
@@ -213,6 +216,7 @@ float pcss(vec2 uv0) {
     if (!(gu > 1e-9) || !(gv > 1e-9) || !(gz > 1e-9)) {
         return -1.0;
     }
+    if (fullyFaded) return 1.0;
 
     // Receiver plane: how the light depth changes across the shadow map around this pixel, from
     // the neighbouring pixels. It keeps the filter from shadowing sloped surfaces with themselves.
@@ -291,14 +295,18 @@ float pcss(vec2 uv0) {
 }
 
 void main() {
+    base = (buf_off & 0xffu) >> 2;
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, ivec2(size)))) {
         return;
     }
-    base = (buf_off & 0xffu) >> 2;
+    const vec2 uv = (vec2(pixel) + 0.5) / size;
+    if (optimizations != 0u) {
+        d0 = sceneDepth(uv);
+        if (!(d0 < 1.0) || !(d0 > 0.0)) return;
+    }
     invMat = transpose(mat4(row(0), row(4), row(8), row(12)));
     projMat = inverse(invMat);
-    const vec2 uv = (vec2(pixel) + 0.5) / size;
     vec4 c = imageLoad(shadow_img, pixel);
     if (!setup(uv)) {
         return;
@@ -306,9 +314,16 @@ void main() {
     float alpha = c.a;
 
     if (filter_on != 0u) {
+        const uint ub = ((buf_off >> 8) & 0xffu) >> 2;
+        float fade = clamp(uintBitsToFloat(ubuf.d[ub + 73u]) *
+                               (uintBitsToFloat(ubuf.d[ub + 72u]) - length(P0)),
+                           0.0, 1.0);
+        // Keep all validity checks; only sampling whose final weight is zero
+        // can be skipped. Contact shadows remain independent of native fading.
+        fullyFaded = optimizations != 0u && fade == 0.0;
         float vis = pcss(uv);
         int primary = cascade;
-        if (vis >= 0.0 && primary < 3 && cascade_blend > 0.0) {
+        if (!fullyFaded && vis >= 0.0 && primary < 3 && cascade_blend > 0.0) {
             float split = cb(80 + primary);
             float previous = primary == 0 ? 0.0 : cb(79 + primary);
             float band = cascade_blend * max(split - previous, 0.0);
@@ -317,13 +332,10 @@ void main() {
                 if (next >= 0.0)
                     vis = mix(vis, next, smoothstep(split - band, split, P0.z));
             }
-            setupCascade(primary);
+            if (optimizations == 0u || contact_on != 0u)
+                setupCascade(primary);
         }
         if (vis >= 0.0) {
-            const uint ub = ((buf_off >> 8) & 0xffu) >> 2;
-            float fade = clamp(uintBitsToFloat(ubuf.d[ub + 73u]) *
-                                   (uintBitsToFloat(ubuf.d[ub + 72u]) - length(P0)),
-                               0.0, 1.0);
             alpha = 1.0 - fade * (1.0 - vis);
         }
     }
