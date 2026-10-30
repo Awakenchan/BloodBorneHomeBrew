@@ -63,7 +63,7 @@ DepthOfField::DepthOfField(const Instance& instance_, Scheduler& scheduler_,
     : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
       runtime{runtime_}, scene_targets{scene_targets_} {
     const char* env = std::getenv("BB_MODERN_DOF");
-    enabled = !env || std::string_view{env} != "0";
+    enabled = env && std::string_view{env} == "1";
     if (!enabled) return;
     const auto device = instance.GetDevice();
     const std::array types{Buffer, Buffer, Buffer, Sampled, Sampled, Sampled, Sampled,

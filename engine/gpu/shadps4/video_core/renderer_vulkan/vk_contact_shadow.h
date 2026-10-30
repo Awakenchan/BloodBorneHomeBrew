@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // bbport: screen-space contact shadows and PCSS (contact_shadow.comp). After the game's shadow
-// resolve draw has written its result (shadow term in the alpha of an RGBA8 target), and before
-// the next draw (the blur chain) reads it, one compute dispatch can replace the game's 4-tap PCF
-// with NVIDIA's percentage-closer soft shadows (the "effect_pcss" setting) and march the scene
+// resolve draw and its blur chain have written their result (shadow term in RGBA8 alpha),
+// one compute dispatch replaces the game's 4-tap PCF with a tighter atlas-safe PCF, or
+// NVIDIA's percentage-closer soft shadows (the "effect_pcss" setting), and marches the scene
 // depth toward the sun, darkening the shadow where small occluders are missed by the shadow map
 // (the "effect_contact_shadows" setting).
 // BB_CONTACT_SHADOWS=0 / BB_PCSS=0 remove either from the build of the pass; BB_CONTACT_LENGTH
@@ -52,10 +52,11 @@ public:
 
     /// The shadow resolve draws into `target`; the dispatch runs before the next draw.
     void OnShadowDraw(VideoCore::ImageId target, const Inputs& inputs);
-    /// Any other draw is about to start: runs the dispatch of a pending shadow resolve.
-    void Flush();
+    void OnBlurDraw(VideoCore::ImageId target, VAddr source);
+    /// Wait through native ping-pong blurs; resolve alpha on their final target.
+    void Flush(bool native_blur = false);
     bool Enabled() const {
-        return (contact_enabled || pcss_enabled) && !failed;
+        return (directional_enabled || contact_enabled || pcss_enabled) && !failed;
     }
 
 private:
@@ -73,6 +74,7 @@ private:
     Inputs pending_inputs;
     bool use_contact = false;
     bool use_pcss = false;
+    bool use_filter = false;
     float length_m = 0.6f;
     float thickness_m = 0.35f;
     float strength = 0.75f;
@@ -84,6 +86,7 @@ private:
     float bias_m = 0.04f;
     bool contact_enabled = true;
     bool pcss_enabled = true;
+    bool directional_enabled = true;
     bool failed = false;
 };
 

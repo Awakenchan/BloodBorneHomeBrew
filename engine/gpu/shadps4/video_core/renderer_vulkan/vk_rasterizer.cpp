@@ -609,7 +609,8 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     if (!ssr_draw) {
         ssr_temporal->Flush(upscaler->Jitter());
     }
-    contact_shadow->Flush();
+    contact_shadow->Flush(
+        key.mrt_mask && pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x11ffdfb5);
     point_shadow->Flush();
     if (regs.color_control.degamma_enable) {
         LOG_WARNING(Render_Vulkan, "Color buffers require gamma correction");
@@ -2131,6 +2132,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             ssr_temporal->OnSsrDraw(cb_descs[0].first, inputs);
         }
         ++ssr_frame;
+    }
+    if (pipeline->GetGraphicsKey().mrt_mask &&
+        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x11ffdfb5 &&
+        cb_descs[0].first) {
+        const auto& blur = pipeline->GetStage(Shader::SwStage::Fragment);
+        contact_shadow->OnBlurDraw(cb_descs[0].first,
+                                   blur.images.empty() ? 0 : blur.images[0].GetSharp(blur).Address());
     }
     if (pipeline->GetGraphicsKey().mrt_mask &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0xf55643de &&

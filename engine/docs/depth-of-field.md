@@ -1,6 +1,7 @@
 # Map-driven depth of field
 
-`BB_MODERN_DOF=0` selects stock Yebis filtering. Otherwise, when the existing **Depth of
+Stock Yebis filtering is the default. Set `BB_MODERN_DOF=1` before launch to opt into
+the modern replacement. With that opt-in, when the existing **Depth of
 field (DoF)** option is enabled, supported passes use map-driven far bokeh plus
 autofocus-driven foreground bokeh.
 No GPARAM files are changed, and there is no map-name table in the renderer.
@@ -13,7 +14,7 @@ It does not change the authored far ranges or enable blur in the near focus zone
 Zero restores sharp RGB while preserving the original
 output alpha on the recognized recombination path. Stock fallback pixels fade
 toward sharp below 1; they cannot be amplified above their original blur.
-The control requires DOF enabled and `BB_MODERN_DOF` not set to 0, applies live
+The control requires DOF enabled and `BB_MODERN_DOF=1`, applies live
 independently of Picture tuning, and resets to 1 with **Game's own picture**.
 
 ## Authored settings

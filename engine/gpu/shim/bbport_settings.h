@@ -169,6 +169,7 @@ struct Values {
     std::atomic<float> graphics_point_fog_intensity{1};
     std::atomic<float> graphics_dof_intensity{1};
     std::atomic<float> graphics_ssr_intensity{1};
+    std::atomic<int> graphics_shadow_resolution{2}; // High / Very high / Ultra; restart required.
     std::atomic<float> graphics_fog{1},graphics_brightness{1},graphics_contrast{1},graphics_hue{0};
     std::atomic<float> camera_fov_scale{1.0f}, camera_distance_scale{1.0f}, camera_height_scale{1.0f};
     std::atomic<int> model_lod{0};

@@ -76,7 +76,7 @@ namespace BloodborneLauncher
 
         public MainWindow()
         {
-            Title = "Lantern Engine";
+            Title = "BloodborneFSS (Powered by Lantern Engine)";
             Width = 1040;
             Height = 780;
             MinWidth = 820;
@@ -446,7 +446,7 @@ namespace BloodborneLauncher
             grid.Children.Add(_searchArea);
 
             var title = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, FontSize = 12, IsHitTestVisible = false };
-            var name = new Run("Lantern Engine") { FontWeight = FontWeight.SemiBold };
+            var name = new Run("BloodborneFSS (Powered by Lantern Engine)") { FontWeight = FontWeight.SemiBold };
             name.Bind(TextElement.ForegroundProperty, this.GetResourceObservable("TextFillColorPrimaryBrush"));
             _titlePage.Bind(TextElement.ForegroundProperty, this.GetResourceObservable("TextFillColorTertiaryBrush"));
             title.Inlines = new InlineCollection { name, _titlePage };

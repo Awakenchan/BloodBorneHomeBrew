@@ -456,3 +456,12 @@ add_executable(widescreen-test EXCLUDE_FROM_ALL ../tests/test_widescreen.cpp
     shim/bbport_menu_i18n.cpp)
 target_include_directories(widescreen-test PRIVATE shim)
 target_compile_options(widescreen-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_executable(native-local-shadows-test EXCLUDE_FROM_ALL ../tests/test_native_local_shadows.cpp
+    shim/engine/graphics.cpp shim/engine/engine_hooks.cpp shim/bbport_settings.cpp shim/bbport_menu_i18n.cpp)
+target_include_directories(native-local-shadows-test PRIVATE shim)
+target_compile_options(native-local-shadows-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_executable(directional-shadow-test EXCLUDE_FROM_ALL ../tests/test_directional_shadows.cpp)
+target_include_directories(directional-shadow-test PRIVATE ${SHADER_INCLUDE})
+target_compile_options(directional-shadow-test PRIVATE -UNDEBUG -Wall -Werror)
+target_link_libraries(directional-shadow-test PRIVATE Vulkan::Vulkan)
+add_dependencies(directional-shadow-test host_shaders)

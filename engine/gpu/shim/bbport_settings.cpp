@@ -282,6 +282,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.graphics_ssr_intensity=Clamp(std::isfinite(f)?f:1.0f,0.0f,3.0f);
     } else if (key == "graphics_shadow_scale") {
         v.graphics_shadow_scale=Clamp(std::isfinite(f)?f:1.0f,0.25f,8.0f);
+    } else if (key == "graphics_shadow_resolution") {
+        v.graphics_shadow_resolution = std::clamp(i, 0, 2);
     } else if (key == "graphics_bloom") {
         v.graphics_bloom=Clamp(std::isfinite(f)?f:1.0f,0.0f,10.0f);
     } else if (key == "graphics_saturation") {
@@ -634,6 +636,7 @@ void Save() {
     put("graphics_dof_intensity",fixed(v.graphics_dof_intensity,2));
     put("graphics_ssr_intensity",fixed(v.graphics_ssr_intensity,2));
     put("graphics_shadow_scale",fixed(v.graphics_shadow_scale,2));
+    put("graphics_shadow_resolution",std::to_string(std::clamp(v.graphics_shadow_resolution.load(), 0, 2)));
     put("graphics_bloom",fixed(v.graphics_bloom,2));
     put("graphics_saturation",fixed(v.graphics_saturation,2));
     put("graphics_fog",fixed(v.graphics_fog,2));

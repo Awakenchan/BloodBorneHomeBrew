@@ -16,6 +16,8 @@ struct Entry {
 };
 
 constexpr Entry kSpanish[] = {
+    {"Shadow resolution", "Resolución de sombras"},
+    {"High", "Alta"}, {"Very high", "Muy alta"}, {"Ultra", "Ultra"},
     {"Hide mouse cursor",
      "Ocultar el cursor del ratón"},
     {"Picture",
@@ -282,6 +284,8 @@ constexpr Entry kSpanish[] = {
 };
 
 constexpr Entry kPortugueseBrazil[] = {
+    {"Shadow resolution", "Resolução das sombras"},
+    {"High", "Alta"}, {"Very high", "Muito alta"}, {"Ultra", "Ultra"},
     {"Hide mouse cursor",
      "Ocultar o cursor do mouse"},
     {"Picture",
@@ -547,6 +551,8 @@ constexpr Entry kPortugueseBrazil[] = {
 };
 
 constexpr Entry kFrench[] = {
+    {"Shadow resolution", "Résolution des ombres"},
+    {"High", "Élevée"}, {"Very high", "Très élevée"}, {"Ultra", "Ultra"},
     {"Hide mouse cursor",
      "Masquer le curseur de la souris"},
     {"Picture",
@@ -814,6 +820,8 @@ constexpr Entry kFrench[] = {
 };
 
 constexpr Entry kGerman[] = {
+    {"Shadow resolution", "Schattenauflösung"},
+    {"High", "Hoch"}, {"Very high", "Sehr hoch"}, {"Ultra", "Ultra"},
     {"Hide mouse cursor",
      "Mauszeiger ausblenden"},
     {"Picture",
@@ -1081,6 +1089,8 @@ constexpr Entry kGerman[] = {
 };
 
 constexpr Entry kItalian[] = {
+    {"Shadow resolution", "Risoluzione delle ombre"},
+    {"High", "Alta"}, {"Very high", "Molto alta"}, {"Ultra", "Ultra"},
     {"Hide mouse cursor",
      "Nascondi il cursore del mouse"},
     {"Picture",
@@ -1348,6 +1358,8 @@ constexpr Entry kItalian[] = {
 };
 
 constexpr Entry kPolish[] = {
+    {"Shadow resolution", "Rozdzielczość cieni"},
+    {"High", "Wysoka"}, {"Very high", "Bardzo wysoka"}, {"Ultra", "Ultra"},
     {"Hide mouse cursor",
      "Ukryj kursor myszy"},
     {"Picture",
@@ -1612,6 +1624,8 @@ constexpr Entry kPolish[] = {
 };
 
 constexpr Entry kTurkish[] = {
+    {"Shadow resolution", "Gölge çözünürlüğü"},
+    {"High", "Yüksek"}, {"Very high", "Çok yüksek"}, {"Ultra", "Ultra"},
     {"Hide mouse cursor",
      "Fare imlecini gizle"},
     {"Picture",
@@ -1876,6 +1890,8 @@ constexpr Entry kTurkish[] = {
 };
 
 constexpr Entry kChinese[] = {
+    {"Shadow resolution", "阴影分辨率"},
+    {"High", "高"}, {"Very high", "很高"}, {"Ultra", "极高"},
     {"Off", "关闭"},
     {"Infinite", "无限"},
     {"Custom", "自定义"},

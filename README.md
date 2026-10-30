@@ -28,6 +28,8 @@ Screen-space reflections reconstruct view-space positions from depth and march r
 
 Depth- and normal-aware filtering avoids borrowing reflection directions from unrelated surfaces. Intersections require a front-to-back depth crossing, bisection refinement and a final view-space hit validation. A depth-aware composite blends reflections with the existing environment lighting, with relaxed rough-surface attenuation to cover more materials.
 
+On locally planar, depth-continuous receivers, reflection normals favor the reconstructed geometric plane and limit residual ripple tilt to about 1.15 degrees. This keeps reflected silhouettes coherent while retaining subtle water distortion. The classification is geometric, not water-material identification; irregular surfaces and depth boundaries retain the standard normal-filtering path.
+
 The saved **SSR intensity** slider applies a live 0-3x multiplier after stabilization and roughness fading. Zero restores the environment-reflection contribution rather than replacing it with black. SSR still cannot reflect geometry outside the screen or hidden behind visible objects.
 
 Implementation: [`ssr.frag`](engine/gpu/shadps4/video_core/host_shaders/ssr.frag), [`ssr_trace.comp`](engine/gpu/shadps4/video_core/host_shaders/ssr_trace.comp), [`ssr_temporal.comp`](engine/gpu/shadps4/video_core/host_shaders/ssr_temporal.comp) and the [composite generator](engine/tools/re/ssr_composite_patch.py).
@@ -58,6 +60,45 @@ Shadows remain tighter near contact and soften as the receiver moves away from t
 
 Implementation: the PCSS path in [`contact_shadow.comp`](engine/gpu/shadps4/video_core/host_shaders/contact_shadow.comp).
 
+### Directional shadow filtering and cascade transitions
+
+The native four-cascade layout and each map's authored split distances are retained.
+The in-game **Game effects (restart required) > Shadow resolution** dropdown selects
+**High** (2048 atlas, 1024 per cascade), **Very high** (4096 atlas, 2048 per cascade)
+or **Ultra** (8192 atlas, 4096 per cascade; default). The selection is saved as
+`graphics_shadow_resolution=0/1/2` and applies when Bloodborne restarts, independently
+of Picture tuning. It overrides map-specific atlas quality without changing cascade
+distances. Ultra uses approximately 256 MiB per D32 atlas versus 64 MiB for Very high,
+excluding other working resources, and increases shadow rendering cost.
+After the native shadow blur chain, an atlas-safe eight-tap PCF resolve replaces
+only the final shadow alpha, preserving the packed depth in RGB. Each tap uses
+bilinearly interpolated depth comparisons with receiver-plane correction, rather
+than blurring shadow boundaries repeatedly in screen space.
+
+The optional **PCSS** effect uses the same cascade-safe comparisons, a
+receiver-plane-corrected blocker average, and a bias capped by the world-space
+shadow texel size. All reads stay inside the selected cascade tile.
+A guarded native camera hook extends cascades 1-3 backwards by 10% of the preceding
+interval for both caster culling and projection. The resolve blends over those
+bands only when that hook is installed. Map split distances, total shadow distance,
+native stabilization settings are not overridden.
+
+Set `BB_DIRECTIONAL_SHADOWS=0` before launch to restore the previous native blur
+path and disable added cascade overlap. The existing PCSS and contact-shadow
+toggles still apply; disable those as well for the original directional filtering.
+
+### Higher-resolution native local-light shadows
+
+The game's original shadowcasting point lights use variance shadow maps, storing depth and squared-depth moments on six cube faces. BBFSS raises their native pool's base face size to 2048 pixels, producing **2048/1024/512/256** distance-quality tiers. The native allocator creates the larger faces and shared working targets, and the rendering and filtering passes consume their dimensions. This adds actual shadow silhouette detail rather than upscaling an existing low-resolution map.
+
+Native spotlight shadows receive the same eightfold increase per dimension: their original **512/256/128/64** tiers become **4096/2048/1024/512**. The spotlight allocator also derives both dimensions and the shared working targets from its base size.
+
+The native moment filter uses a 6.4-texel tap radius instead of the original 3.2. At eight times the original map resolution, this gives one quarter of the original normalized blur footprint: a tighter filter to preserve silhouette detail without leaving edges completely unfiltered. Its normalized 13-tap weights and light visibility calculations are unchanged. Filter tuning applies only to light types whose resolution upgrade was installed successfully.
+
+Directional shadows and the separate supplemental screen-space point shadows are unchanged. Higher-resolution maps cost more GPU memory and rendering time. The allocation patches require verified 1.09 code; set `BB_NATIVE_LOCAL_SHADOWS=0` for original point-shadow sizes or `BB_NATIVE_SPOT_SHADOWS=0` for original spotlight sizes before launch.
+
+Implementation: the guarded native point- and spotlight-pool patches in [`graphics.cpp`](engine/gpu/shim/engine/graphics.cpp).
+
 ### Contact shadows
 
 Short screen-space rays march toward the directional light to find nearby occluders that the shadow map is too coarse to resolve. The result supplements the existing shadow visibility, adding fine grounding around small objects and surface details.
@@ -67,6 +108,11 @@ Contact shadows complement PCSS rather than replace shadow maps. They can only d
 Implementation: the contact-shadow path in [`contact_shadow.comp`](engine/gpu/shadps4/video_core/host_shaders/contact_shadow.comp).
 
 ### Bokeh depth of field
+
+Bloodborne's original native Yebis depth of field is used by default. The modern
+bokeh replacement below is retained as an optional implementation: set
+`BB_MODERN_DOF=1` before launch to enable it. Its added autofocus, foreground blur
+and intensity slider do not modify native DOF when the replacement is disabled.
 
 Modern depth-aware bokeh preserves each map's resolved far-DOF settings instead of imposing one global photographic preset. The renderer consumes the game's encoded blur curve and measures the native blur kernel's covariance on the GPU to calibrate a disk filter with equivalent second moment and anisotropy.
 

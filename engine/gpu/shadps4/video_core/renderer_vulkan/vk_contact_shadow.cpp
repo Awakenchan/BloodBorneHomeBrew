@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "bbport_settings.h"
+#include "engine/graphics.h"
 #include "common/assert.h"
 #include "video_core/host_shaders/contact_shadow_comp.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
@@ -37,8 +38,10 @@ struct Push {
     float max_penumbra_m;
     float min_penumbra_m;
     float bias_m;
+    u32 filter_on;
+    float cascade_blend;
 };
-static_assert(sizeof(Push) == 60);
+static_assert(sizeof(Push) == 68);
 
 constexpr auto Compute = vk::PipelineStageFlagBits2::eComputeShader;
 
@@ -56,7 +59,8 @@ ContactShadow::ContactShadow(const Instance& instance_, Scheduler& scheduler_,
       runtime{runtime_}, camera_motion{camera_motion_} {
     contact_enabled = EnvFloat("BB_CONTACT_SHADOWS", 1.0f) > 0.5f;
     pcss_enabled = EnvFloat("BB_PCSS", 1.0f) > 0.5f;
-    if (!contact_enabled && !pcss_enabled) {
+    directional_enabled = EnvFloat("BB_DIRECTIONAL_SHADOWS", 1.0f) > 0.5f;
+    if (!contact_enabled && !pcss_enabled && !directional_enabled) {
         return;
     }
     length_m = EnvFloat("BB_CONTACT_LENGTH", length_m);
@@ -124,15 +128,26 @@ void ContactShadow::OnShadowDraw(VideoCore::ImageId target, const Inputs& inputs
                   settings.effects[BbSettings::EffectContactShadows].load(std::memory_order_relaxed);
     use_pcss = pcss_enabled && inputs.uniforms && inputs.shadow_map &&
                settings.effects[BbSettings::EffectPcss].load(std::memory_order_relaxed);
-    if (!use_contact && !use_pcss) {
+    use_filter = (directional_enabled || use_pcss) && inputs.uniforms && inputs.shadow_map;
+    if (!use_contact && !use_filter) {
         return;
     }
     pending = target;
     pending_inputs = inputs;
 }
 
-void ContactShadow::Flush() {
-    if (!pending) {
+void ContactShadow::OnBlurDraw(VideoCore::ImageId target, VAddr source) {
+    if (!directional_enabled || !pending || !target) return;
+    if (texture_cache.GetImage(pending).info.guest_address != source) {
+        std::printf("Directional shadows: unexpected blur resource chain; retaining native result\n");
+        pending = {};
+        return;
+    }
+    pending = target;
+}
+
+void ContactShadow::Flush(bool native_blur) {
+    if (!pending || (native_blur && directional_enabled)) {
         return;
     }
     const auto target_id = pending;
@@ -155,6 +170,9 @@ void ContactShadow::Flush() {
         std::printf("Contact shadows: %ux%u, length %.2f m, thickness %.2f m, strength %.2f\n",
                     target.info.size.width, target.info.size.height, length_m, thickness_m,
                     strength);
+        std::printf("Directional shadows: %s after native blur, cascade blend %.0f%%\n",
+                    use_filter ? (use_pcss ? "atlas-safe PCSS" : "atlas-safe PCF") : "native filter",
+                    100.0f * BbEngine::Graphics::DirectionalShadowBlend());
     }
 
     scheduler.EndRendering();
@@ -196,12 +214,14 @@ void ContactShadow::Flush() {
         .max_penumbra_m = max_penumbra_m,
         .min_penumbra_m = min_penumbra_m,
         .bias_m = bias_m,
+        .filter_on = use_filter ? 1u : 0u,
+        .cascade_blend = BbEngine::Graphics::DirectionalShadowBlend(),
     };
     const auto in = pending_inputs;
-    const bool pcss_on = use_pcss;
+    const bool filter_on = use_filter;
     scheduler.RecordCrumb(
         {.name = "Contact shadows"},
-        [push, width, height, target_view, depth_view, sampler = *sampler, in, pcss_on,
+        [push, width, height, target_view, depth_view, sampler = *sampler, in, filter_on,
          constants = pending_inputs.constants, constants_offset = pending_inputs.constants_offset,
          constants_range = pending_inputs.constants_range, pipeline = *pipeline,
          layout = *layout](vk::CommandBuffer cmdbuf) {
@@ -218,11 +238,11 @@ void ContactShadow::Flush() {
                                                      vk::ImageLayout::eGeneral};
             const vk::DescriptorImageInfo target_info{{}, target_view, vk::ImageLayout::eGeneral};
             const vk::DescriptorBufferInfo ubo_info =
-                pcss_on ? vk::DescriptorBufferInfo{in.uniforms, in.uniforms_offset,
+                filter_on ? vk::DescriptorBufferInfo{in.uniforms, in.uniforms_offset,
                                                    in.uniforms_range}
                         : buffer_info;
             const vk::DescriptorImageInfo map_info =
-                pcss_on ? vk::DescriptorImageInfo{sampler, in.shadow_map, in.shadow_layout}
+                filter_on ? vk::DescriptorImageInfo{sampler, in.shadow_map, in.shadow_layout}
                         : depth_info;
             const std::array<vk::WriteDescriptorSet, 5> writes{{
                 {.dstBinding = 0, .descriptorCount = 1,

@@ -104,6 +104,11 @@ void Install(std::uint8_t* image, std::size_t size) {
     const bool camera = Camera::Install(image, size);
     const bool wide = Widescreen::Install(image, size);
     const bool graphics = Graphics::Install(image, size);
+    const bool local_shadows = Graphics::InstallLocalShadows(image, size);
+    const bool spot_shadows = Graphics::InstallSpotShadows(image, size);
+    Graphics::InstallLocalShadowSoftness(image, size, local_shadows, spot_shadows);
+    const bool directional_shadows = Graphics::InstallDirectionalShadows(image, size);
+    const bool directional_resolution = Graphics::InstallDirectionalShadowResolution(image, size);
     const bool menus = Options::Install(image, size);
     bool editor = false;
     const bool list = ChangeAppearance::Watch(image);
@@ -120,7 +125,9 @@ void Install(std::uint8_t* image, std::size_t size) {
     const bool online = OnlineFixes::Install(image, size);
     const bool guard = RenderGuard::Install(image, size);
     const bool timing = EffectTiming::Install(image, size);
-    if (!(editor || input || camera || wide || graphics || menus || rebirth || cheats || online || guard || timing)) {
+    if (!(editor || input || camera || wide || graphics || local_shadows || spot_shadows || directional_shadows ||
+          directional_resolution || menus || rebirth || cheats ||
+          online || guard || timing)) {
         for (auto& h : hooks) Discard(h);
         host_log("engine features off: none could be prepared");
         return;

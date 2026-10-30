@@ -78,6 +78,26 @@ class SsrGeometryTest(unittest.TestCase):
         self.assertFalse(valid((0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 2)))
         self.assertFalse(valid((0, 0, 2.001), (0, 0, 2.001), (0, 0, 1), (0, 0, 2)))
 
+    def test_planar_receiver_keeps_subtle_ripples(self):
+        def confidence(error, continuity, alignment):
+            return ((1 - smoothstep(0.02, 0.08, error)) *
+                    (1 - smoothstep(0.01, 0.03, continuity)) *
+                    smoothstep(0.8, 0.95, alignment))
+        self.assertEqual(confidence(0, 0, 1), 1)
+        self.assertEqual(confidence(0.1, 0, 1), 0)  # Curved/broken receiver.
+        self.assertEqual(confidence(0, 0.1, 1), 0)  # Depth discontinuity.
+        self.assertEqual(confidence(0, 0, 0.5), 0)  # Incompatible shading normal.
+        for angle in (0, 0.5, 5, 15):
+            tangent = math.sin(math.radians(angle))
+            limited = min(tangent, 0.02)
+            actual = math.degrees(math.atan(limited))
+            self.assertLessEqual(actual, 1.146)
+            if angle > 0:
+                self.assertGreater(actual, 0)
+        source = (SHADERS / "ssr_trace.comp").read_text()
+        self.assertIn("0.02 / max(length(ripple), 0.0001)", source)
+        self.assertIn("smoothstep(0.02, 0.08, plane_error)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

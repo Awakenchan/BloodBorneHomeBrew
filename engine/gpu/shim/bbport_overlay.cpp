@@ -646,6 +646,21 @@ void PictureSection() {
 void EffectsSection() {
     auto& s = BbSettings::Get();
     Section("Game effects (restart required)", "Эффекты игры (после перезапуска)");
+    if (const char* label = Item("Shadow resolution", "Разрешение теней")) {
+        const char* levels[] = {BbSettings::MenuText("High", "Высокое"),
+                                BbSettings::MenuText("Very high", "Очень высокое"),
+                                BbSettings::MenuText("Ultra", "Ультра")};
+        int quality = std::clamp(s.graphics_shadow_resolution.load(), 0, 2);
+        if (ImGui::Combo(label, &quality, levels, 3))
+            Store(s.graphics_shadow_resolution, quality, true);
+        Hint(BbSettings::MenuText(
+            "Directional shadow atlas: High 2048, Very high 4096, Ultra 8192 (default). "
+            "Four cascades share the atlas. Requires restarting Bloodborne; independent of Picture tuning. "
+            "Ultra uses four times the atlas memory of Very high. Point and spotlight maps are unchanged.",
+            "Атлас направленных теней: высокое 2048, очень высокое 4096, ультра 8192 (по умолчанию). "
+            "Четыре каскада делят атлас. Требуется перезапуск Bloodborne; не зависит от настройки изображения. "
+            "Ультра требует вчетверо больше памяти атласа, чем очень высокое. Точечные и прожекторные тени не меняются."));
+    }
     if (const char* label = Item("Model detail", "Детализация моделей")) {
         const char* lods[] = {BbSettings::MenuText("Highest (-2)", "Максимальная (-2)"),
                               BbSettings::MenuText("Game default", "Как в игре"),

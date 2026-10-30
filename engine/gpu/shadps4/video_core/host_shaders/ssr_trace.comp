@@ -85,6 +85,19 @@ vec3 stableNormal(vec2 uv) {
         if (weight > 0.0) {
             n = normalize(mix(n, g, GEO_BLEND * weight));
         }
+        // A flat receiver needs a coherent mirror plane. Retain subtle ripples, not
+        // the large shading-normal tilt that stretches reflected silhouettes.
+        float footprint = max(max(length(px - p), length(nx - p)),
+                              max(length(py - p), length(ny - p)));
+        float plane_error = max(max(abs(dot(g, px - p)), abs(dot(g, nx - p))),
+                                max(abs(dot(g, py - p)), abs(dot(g, ny - p)))) /
+                            max(footprint, 0.0001);
+        float planar = (1.0 - smoothstep(0.02, 0.08, plane_error)) *
+                       (1.0 - smoothstep(0.01, 0.03, continuity)) *
+                       smoothstep(0.8, 0.95, dot(g, center));
+        vec3 ripple = n - g * dot(n, g);
+        ripple *= min(1.0, 0.02 / max(length(ripple), 0.0001));
+        n = normalize(mix(n, normalize(g + ripple), planar));
     }
     return n;
 }

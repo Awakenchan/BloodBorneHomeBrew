@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
@@ -29,6 +30,43 @@ constexpr std::size_t kShadowSetup = 0xeac210;
 constexpr std::uint8_t kShadowSetupEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x48,
                                               0x83, 0xec, 0x18, 0x49, 0x89, 0xf6, 0x48, 0x89, 0xfb};
 constexpr std::size_t kShadowDistances[] = {0x38, 0x3c, 0x44, 0x48};
+constexpr std::size_t kCascadeRange = 0xeac540, kCascadeRangeTail = 0xeac657;
+constexpr std::uint8_t kCascadeRangeEntry[] = {
+    0xc5, 0xf8, 0x28, 0x02, 0xc5, 0xf8, 0x29, 0x06, 0xc5, 0xf8, 0x28, 0x42, 0x10,
+    0xc5, 0xf8, 0x29, 0x46, 0x10};
+constexpr std::uint8_t kCascadeRangeStores[] = {
+    0xc5, 0xfa, 0x11, 0x46, 0x54, 0xc5, 0xf2, 0x5d, 0x42, 0x58, 0xc5, 0xfa, 0x11, 0x46, 0x58};
+constexpr float kCascadeBlend = 0.1f;
+constexpr std::size_t kDirectionalSizeTable = 0x48a9668, kDirectionalSizeDefault = 0xeac238;
+constexpr std::uint32_t kDirectionalSizes[] = {2048, 1024, 2048, 4096};
+constexpr std::uint8_t kDirectionalSizeCode[] = {
+    0xb8, 0x00, 0x08, 0x00, 0x00, 0x48, 0x83, 0xf9, 0x03, 0x77, 0x0a,
+    0x48, 0x8d, 0x05, 0x1e, 0xd4, 0x9f, 0x03, 0x8b, 0x04, 0x88};
+std::atomic<bool> g_cascade_overlap{false};
+
+constexpr std::size_t kLocalShadowPool = 0x22440b0, kLocalShadowSize = 0x224443f;
+constexpr std::uint8_t kLocalShadowPoolEntry[] = {
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53,
+    0x48, 0x81, 0xe4, 0xe0, 0xff, 0xff, 0xff, 0x48, 0x81, 0xec, 0x20, 0x01, 0x00, 0x00};
+constexpr std::uint8_t kLocalShadowSizeRead[] = {
+    0x41, 0x8b, 0x44, 0x24, 0x14, 0x4d, 0x89, 0xe6, 0x4c, 0x89, 0x74, 0x24, 0x58,
+    0x89, 0x44, 0x24, 0x44};
+constexpr std::size_t kLocalShadowTier = 0x2244cb0;
+constexpr std::uint8_t kLocalShadowTierCode[] = {
+    0x41, 0xd1, 0xed, 0x48, 0xff, 0xc1, 0x48, 0x83, 0xf9, 0x04};
+constexpr std::size_t kSpotShadowSize = 0x22440ed, kSpotShadowTier = 0x224442a;
+constexpr std::uint8_t kSpotShadowSizeRead[] = {
+    0x41, 0x8b, 0x04, 0x24, 0x89, 0x44, 0x24, 0x68, 0x48, 0x8d, 0x4b, 0x10,
+    0x48, 0x89, 0x4c, 0x24, 0x50, 0x49, 0x89, 0xdd, 0x45, 0x31, 0xff, 0x89, 0x44, 0x24, 0x60};
+constexpr std::uint8_t kSpotShadowTierCode[] = {
+    0xd1, 0x6c, 0x24, 0x68, 0xd1, 0x6c, 0x24, 0x60, 0x49, 0xff, 0xc7, 0x49, 0x83, 0xff, 0x04};
+constexpr std::size_t kPointShadowRadius = 0x4929c80, kSpotShadowRadius = 0x4929c84;
+constexpr std::size_t kPointShadowRadiusLoad = 0x22b7011;
+constexpr std::uint8_t kPointShadowRadiusCode[] = {0xc5, 0xfa, 0x10, 0x05, 0x67, 0x2c, 0x67, 0x02};
+constexpr std::size_t kSpotShadowRadiusLoad = 0x22b7220, kSpotShadowRadiusLoadFallback = 0x22b7298;
+constexpr std::uint8_t kSpotShadowRadiusCode[] = {0xc5, 0xfa, 0x10, 0x05, 0x5c, 0x2a, 0x67, 0x02};
+constexpr std::uint8_t kSpotShadowRadiusFallbackCode[] = {0xc5, 0xfa, 0x10, 0x05, 0xe4, 0x29, 0x67, 0x02};
+constexpr float kOriginalLocalShadowRadius = 3.2f, kScaledLocalShadowRadius = 6.4f;
 
 constexpr std::size_t kYebisRecord = 0x21d4860;
 constexpr std::uint8_t kYebisRecordEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
@@ -148,6 +186,20 @@ GUEST_ABI std::int64_t BeforeShadowSetup(std::uint64_t, const std::uint64_t* sav
     return 0;
 }
 
+GUEST_ABI std::int64_t BeforeCascadeRangeStores(std::uint64_t, const std::uint64_t* saved) {
+    const unsigned cascade = unsigned(saved[1]);
+    if (cascade == 0 || cascade > 3 || !saved[5] || !saved[3]) return 0;
+    float near = 0, previous = 0, camera_near = 0;
+    std::memcpy(&near, SavedXmm(saved, 0), sizeof near);
+    if (cascade > 1 && !Peek(saved[5] + 0x6dc + 4 * (cascade - 2), &previous)) return 0;
+    if (!Peek(saved[3] + 0x54, &camera_near) ||
+        !std::isfinite(near) || !std::isfinite(previous) || !std::isfinite(camera_near) ||
+        near <= previous || camera_near > near) return 0;
+    near = std::max(camera_near, near - kCascadeBlend * (near - previous));
+    std::memcpy(const_cast<std::uint8_t*>(SavedXmm(saved, 0)), &near, sizeof near);
+    return 0;
+}
+
 GUEST_ABI std::int64_t BeforeYebisRecord(std::uint64_t, const std::uint64_t*) {
     if (!g_post_block) return 0;
     const bool on = On();
@@ -219,6 +271,134 @@ void CommitFogUpload(std::uint8_t* image, std::uint8_t* stub) {
 }
 
 bool Enabled() { return g_enabled; }
+
+float DirectionalShadowBlend() {
+    return g_cascade_overlap.load(std::memory_order_relaxed) ? kCascadeBlend : 0.0f;
+}
+
+bool InstallDirectionalShadowResolution(std::uint8_t* image, std::size_t size) {
+    if (!image ||
+        !Matches(image, size, kDirectionalSizeTable,
+                 reinterpret_cast<const std::uint8_t*>(kDirectionalSizes), sizeof kDirectionalSizes) ||
+        !Matches(image, size, kDirectionalSizeDefault, kDirectionalSizeCode, sizeof kDirectionalSizeCode)) {
+        std::printf("Engine: directional shadow resolution unavailable: allocation code differs from 1.09\n");
+        return false;
+    }
+    const unsigned quality = unsigned(std::clamp(
+        BbSettings::Get().graphics_shadow_resolution.load(std::memory_order_relaxed), 0, 2));
+    const std::uint32_t atlas = 2048u << quality;
+    const std::array<std::uint32_t, 4> sizes{atlas, atlas, atlas, atlas};
+    // Override every native quality/profile entry and the out-of-range fallback.
+    // Native allocation, half-atlas viewports, projection and reciprocal sizes stay in sync.
+    if (!WriteCode(image + kDirectionalSizeTable, sizes.data(), sizeof sizes) ||
+        !WriteCode(image + kDirectionalSizeDefault + 1, &atlas, sizeof atlas)) {
+        std::printf("Engine: directional shadow resolution incomplete: cannot write native allocation settings\n");
+        return false;
+    }
+    std::printf("Engine: directional shadow atlas %ux%u, four %ux%u cascades (restart to change)\n",
+                atlas, atlas, atlas / 2, atlas / 2);
+    return true;
+}
+
+bool InstallDirectionalShadows(std::uint8_t* image, std::size_t size) {
+    const char* enabled = std::getenv("BB_DIRECTIONAL_SHADOWS");
+    if (enabled && std::strcmp(enabled, "0") == 0) {
+        std::printf("Engine: directional cascade coverage left at the game's settings\n");
+        return false;
+    }
+    Hook hook;
+    if (!image || !Matches(image, size, kCascadeRange, kCascadeRangeEntry, sizeof kCascadeRangeEntry) ||
+        !Prepare(hook, image, size, kCascadeRangeTail, kCascadeRangeStores, BeforeCascadeRangeStores)) {
+        std::printf("Engine: directional overlap off: cascade code does not match 1.09 or hook unavailable\n");
+        return false;
+    }
+    // Expand the next cascade backwards; the native camera feeds both caster culling
+    // and light projection. Split selection and each map's overall distance stay authored.
+    Commit(std::span<Hook>{&hook, 1});
+    g_cascade_overlap.store(true, std::memory_order_relaxed);
+    std::printf("Engine: directional cascades overlap by 10%%; authored splits and atlas size retained\n");
+    return true;
+}
+
+bool InstallLocalShadowSoftness(std::uint8_t* image, std::size_t size, bool point, bool spot) {
+    if (!point && !spot) return true;
+    const auto radius_matches = [&](std::size_t at) {
+        return Matches(image, size, at, reinterpret_cast<const std::uint8_t*>(&kOriginalLocalShadowRadius),
+                       sizeof kOriginalLocalShadowRadius);
+    };
+    if (!image ||
+        (point && (!radius_matches(kPointShadowRadius) ||
+                   !Matches(image, size, kPointShadowRadiusLoad, kPointShadowRadiusCode,
+                            sizeof kPointShadowRadiusCode))) ||
+        (spot && (!radius_matches(kSpotShadowRadius) ||
+                  !Matches(image, size, kSpotShadowRadiusLoad, kSpotShadowRadiusCode,
+                           sizeof kSpotShadowRadiusCode) ||
+                  !Matches(image, size, kSpotShadowRadiusLoadFallback, kSpotShadowRadiusFallbackCode,
+                           sizeof kSpotShadowRadiusFallbackCode)))) {
+        std::printf("Engine: local-shadow filter tuning unavailable: the filter code is not 1.09's\n");
+        return false;
+    }
+    // The native 13-tap generator multiplies only XY offsets by this radius, not the
+    // normalized weights. At eight times stock resolution, a doubled radius gives
+    // one quarter of the stock UV footprint without spreading 13 taps too thinly.
+    for (const auto at : {point ? kPointShadowRadius : 0, spot ? kSpotShadowRadius : 0}) {
+        if (at && !WriteCode(image + at, &kScaledLocalShadowRadius, sizeof kScaledLocalShadowRadius)) {
+            std::printf("Engine: local-shadow filter tuning incomplete: cannot write filter radius at %zx\n", at);
+            return false;
+        }
+    }
+    std::printf("Engine: local-shadow filter radius 6.4 texels (point %s, spotlight %s); high-resolution maps kept\n",
+                point ? "on" : "unchanged", spot ? "on" : "unchanged");
+    return true;
+}
+
+bool InstallLocalShadows(std::uint8_t* image, std::size_t size) {
+    const char* enabled = std::getenv("BB_NATIVE_LOCAL_SHADOWS");
+    if (enabled && std::strcmp(enabled, "0") == 0) {
+        std::printf("Engine: native point-shadow resolution left at the game's settings\n");
+        return false;
+    }
+    if (!image ||
+        !Matches(image, size, kLocalShadowPool, kLocalShadowPoolEntry, sizeof kLocalShadowPoolEntry) ||
+        !Matches(image, size, kLocalShadowSize, kLocalShadowSizeRead, sizeof kLocalShadowSizeRead) ||
+        !Matches(image, size, kLocalShadowTier, kLocalShadowTierCode, sizeof kLocalShadowTierCode)) {
+        std::printf("Engine: higher-resolution point shadows off: the pool code is not 1.09's\n");
+        return false;
+    }
+    // Replace only the point pool's base-size load with mov eax,2048. The native allocator
+    // derives all four tiers, cube faces, shared depth targets and render dimensions from it.
+    constexpr std::uint8_t resolution[] = {0xb8, 0x00, 0x08, 0x00, 0x00};
+    if (!WriteCode(image + kLocalShadowSize, resolution, sizeof resolution)) {
+        std::printf("Engine: higher-resolution point shadows off: cannot write the pool size\n");
+        return false;
+    }
+    std::printf("Engine: native point-shadow faces 2048/1024/512/256; other pools untouched by point patch\n");
+    return true;
+}
+
+bool InstallSpotShadows(std::uint8_t* image, std::size_t size) {
+    const char* enabled = std::getenv("BB_NATIVE_SPOT_SHADOWS");
+    if (enabled && std::strcmp(enabled, "0") == 0) {
+        std::printf("Engine: native spotlight shadow resolution left at the game's settings\n");
+        return false;
+    }
+    if (!image ||
+        !Matches(image, size, kLocalShadowPool, kLocalShadowPoolEntry, sizeof kLocalShadowPoolEntry) ||
+        !Matches(image, size, kSpotShadowSize, kSpotShadowSizeRead, sizeof kSpotShadowSizeRead) ||
+        !Matches(image, size, kSpotShadowTier, kSpotShadowTierCode, sizeof kSpotShadowTierCode)) {
+        std::printf("Engine: higher-resolution spotlight shadows off: the pool code is not 1.09's\n");
+        return false;
+    }
+    // xor eax,eax; mov ah,16 sets EAX to 4096 in the original four-byte load's space.
+    // The following stores feed both dimensions; the native loop halves them for each tier.
+    constexpr std::uint8_t resolution[] = {0x31, 0xc0, 0xb4, 0x10};
+    if (!WriteCode(image + kSpotShadowSize, resolution, sizeof resolution)) {
+        std::printf("Engine: higher-resolution spotlight shadows off: cannot write the pool size\n");
+        return false;
+    }
+    std::printf("Engine: native spotlight shadow maps 4096/2048/1024/512; directional pool unchanged\n");
+    return true;
+}
 
 bool Install(std::uint8_t* image, std::size_t size) {
     const std::size_t lea_end = kYebisBlockLoad + sizeof kLeaRax + 4;

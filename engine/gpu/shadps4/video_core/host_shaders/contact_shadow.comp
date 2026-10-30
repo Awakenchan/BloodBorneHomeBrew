@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: screen-space contact shadows and PCSS (vk_contact_shadow.h). The game's shadow resolve
-// draw (a full-screen pass sampling the cascaded shadow map) has written its result into the
+// draw (a full-screen pass sampling the cascaded shadow map) and its blur chain have written into the
 // alpha of an RGBA8 target (1 = lit; the colour holds the packed depth the blur chain needs).
 //
 // The resolve draw's constants (decoded from its shader f55643de): words 0..15 are the matrix
@@ -42,6 +42,8 @@ layout(push_constant) uniform Constants {
     float max_penumbra_m;
     float min_penumbra_m;
     float bias_m;
+    uint filter_on;
+    float cascade_blend;
 };
 
 const int STEPS = 20;
@@ -73,20 +75,12 @@ vec3 P0;
 int cascade;
 vec4 rA, rB, rW, rZ; // view-space rows of the light-space matrix (u, v, w, depth)
 float lu, lv, lz;    // light-space coordinates of the pixel
+vec2 tileMin, tileMax;
 
-bool setup(vec2 uv0) {
-    d0 = sceneDepth(uv0);
-    if (!(d0 < 1.0) || !(d0 > 0.0)) {
-        return false;
-    }
-    P0 = viewPosAt(uv0, d0);
-    if (!(P0.z > 0.0)) {
-        return false;
-    }
-    cascade = 0;
-    cascade += cb(80) < P0.z ? 1 : 0;
-    cascade += P0.z > cb(81) ? 1 : 0;
-    cascade += P0.z > cb(82) ? 1 : 0;
+bool setupCascade(int index) {
+    cascade = index;
+    tileMin = vec2(index & 1, index >> 1) * 0.5;
+    tileMax = tileMin + 0.5;
     int m = 16 + 16 * cascade;
     // rows: light u, light v, light depth (stored at +8), w (stored at +12)
     mat4 shadowMat = transpose(mat4(row(m), row(m + 4), row(m + 12), row(m + 8)));
@@ -104,6 +98,15 @@ bool setup(vec2 uv0) {
     lv = dot(rB, p4) / wl;
     lz = dot(rZ, p4) / wl;
     return true;
+}
+
+bool setup(vec2 uv0) {
+    d0 = sceneDepth(uv0);
+    if (!(d0 < 1.0) || !(d0 > 0.0)) return false;
+    P0 = viewPosAt(uv0, d0);
+    if (!(P0.z > 0.0)) return false;
+    int index = int(P0.z > cb(80)) + int(P0.z > cb(81)) + int(P0.z > cb(82));
+    return setupCascade(index);
 }
 
 float contact(vec2 uv0) {
@@ -172,8 +175,38 @@ vec2 vogel(int i, int n, float phi) {
     return r * vec2(cos(a), sin(a));
 }
 
+float mapDepth(vec2 uv) {
+    ivec2 extent = textureSize(shadow_map, 0);
+    ivec2 lo = ivec2(tileMin * vec2(extent));
+    ivec2 hi = ivec2(tileMax * vec2(extent)) - 1;
+    return texelFetch(shadow_map, clamp(ivec2(floor(uv * vec2(extent))), lo, hi), 0).x;
+}
+
+// Interpolate comparisons, not depths. All four texels and their receiver-plane
+// corrections stay inside this cascade even at a shared atlas edge.
+float compareBilinear(vec2 uv, vec2 center, vec2 slope, float bias) {
+    ivec2 extent = textureSize(shadow_map, 0);
+    vec2 p = uv * vec2(extent) - 0.5;
+    ivec2 origin = ivec2(floor(p));
+    vec2 f = fract(p);
+    ivec2 lo = ivec2(tileMin * vec2(extent));
+    ivec2 hi = ivec2(tileMax * vec2(extent)) - 1;
+    vec4 lit;
+    for (int j = 0; j < 4; ++j) {
+        ivec2 at = clamp(origin + ivec2(j & 1, j >> 1), lo, hi);
+        vec2 delta = (vec2(at) + 0.5) / vec2(extent) - center;
+        float receiver = lz + dot(slope, delta);
+        lit[j] = float(texelFetch(shadow_map, at, 0).x >= receiver - bias);
+    }
+    return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);
+}
+
 // Percentage-closer soft shadows: returns the lit fraction, or -1 when it cannot be computed.
 float pcss(vec2 uv0) {
+    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    vec2 center = vec2(lu, lv);
+    if (any(lessThan(center, tileMin)) || any(greaterThanEqual(center, tileMax)) ||
+        !(lz >= 0.0 && lz <= 1.0)) return -1.0;
     // Light-space units per metre, from the view-space gradients of the light-space matrix.
     float gu = length(rA.xyz - lu * rW.xyz);
     float gv = length(rB.xyz - lv * rW.xyz);
@@ -203,9 +236,18 @@ float pcss(vec2 uv0) {
     }
 
     vec2 uvPerMetre = vec2(gu, gv);
-    vec2 center = vec2(lu, lv);
-    float bias = bias_m * gz;
+    float worldTexel = max(texel.x / gu, texel.y / gv);
+    float bias = min(bias_m, 0.5 * worldTexel) * gz;
     float phi = 6.2831853 * hash(uv0 * size + 17.0);
+
+    if (pcss_on == 0u) {
+        float lit = 0.0;
+        for (int i = 0; i < 8; ++i) {
+            vec2 off = vogel(i, 8, phi) * texel;
+            lit += compareBilinear(center + off, center, slope, bias);
+        }
+        return lit / 8.0;
+    }
 
     // 1. Blocker search over the largest penumbra a blocker can cast.
     vec2 searchRadius = max_penumbra_m * uvPerMetre;
@@ -213,10 +255,13 @@ float pcss(vec2 uv0) {
     int blockers = 0;
     for (int i = 0; i < BLOCKER_TAPS; ++i) {
         vec2 off = vogel(i, BLOCKER_TAPS, phi) * searchRadius;
-        float receiver = lz + dot(slope, off);
-        float sz = textureLod(shadow_map, center + off, 0.0).x;
+        vec2 sampleUv = clamp(center + off, tileMin + 0.5 * texel, tileMax - 0.5 * texel);
+        vec2 sampledUv = (floor(sampleUv / texel) + 0.5) * texel;
+        float plane = dot(slope, sampledUv - center);
+        float receiver = lz + plane;
+        float sz = mapDepth(sampleUv);
         if (sz < receiver - bias) {
-            blockerSum += sz;
+            blockerSum += sz - plane;
             ++blockers;
         }
     }
@@ -229,13 +274,11 @@ float pcss(vec2 uv0) {
     float penumbra = clamp(blockerDist * light_tan, min_penumbra_m, max_penumbra_m);
 
     // 3. Percentage-closer filter of that width.
-    vec2 filterRadius = penumbra * uvPerMetre;
+    vec2 filterRadius = max(penumbra * uvPerMetre, 0.5 * texel);
     float lit = 0.0;
     for (int i = 0; i < FILTER_TAPS; ++i) {
         vec2 off = vogel(i, FILTER_TAPS, phi + 1.7) * filterRadius;
-        float receiver = lz + dot(slope, off);
-        float sz = textureLod(shadow_map, center + off, 0.0).x;
-        lit += sz >= receiver - bias ? 1.0 : 0.0;
+        lit += compareBilinear(center + off, center, slope, bias);
     }
     return lit / float(FILTER_TAPS);
 }
@@ -255,8 +298,20 @@ void main() {
     }
     float alpha = c.a;
 
-    if (pcss_on != 0u) {
+    if (filter_on != 0u) {
         float vis = pcss(uv);
+        int primary = cascade;
+        if (vis >= 0.0 && primary < 3 && cascade_blend > 0.0) {
+            float split = cb(80 + primary);
+            float previous = primary == 0 ? 0.0 : cb(79 + primary);
+            float band = cascade_blend * max(split - previous, 0.0);
+            if (band > 0.0 && P0.z > split - band && setupCascade(primary + 1)) {
+                float next = pcss(uv);
+                if (next >= 0.0)
+                    vis = mix(vis, next, smoothstep(split - band, split, P0.z));
+            }
+            setupCascade(primary);
+        }
         if (vis >= 0.0) {
             const uint ub = ((buf_off >> 8) & 0xffu) >> 2;
             float fade = clamp(uintBitsToFloat(ubuf.d[ub + 73u]) *
