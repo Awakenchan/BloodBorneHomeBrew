@@ -78,6 +78,15 @@ than blurring shadow boundaries repeatedly in screen space.
 The optional **PCSS** effect uses the same cascade-safe comparisons, a
 receiver-plane-corrected blocker average, and a bias capped by the world-space
 shadow texel size. All reads stay inside the selected cascade tile.
+Its blocker search uses 64 disk samples including the receiver's own shadow
+texel, reducing missed thin casters. Filtering selects 16, 32 or 64 bilinear
+comparison taps for radii up to 1, up to 4, or above 4 atlas texels respectively.
+Quality depends on footprint, not potentially misleading all-lit/all-shadow
+sample prefixes. Contact hardening has a half-texel filtering floor rather than
+a fixed world-space softness minimum (`BB_PCSS_MIN` can still override it).
+The sample pattern remains frame-stable; no temporal reconstruction is added.
+This is our Vulkan implementation of classic PCSS with these enhancements,
+not NVIDIA's ShadowWorks PCSS+ SDK.
 A guarded native camera hook extends cascades 1-3 backwards by 10% of the preceding
 interval for both caster culling and projection. The resolve blends over those
 bands only when that hook is installed. Map split distances, total shadow distance,

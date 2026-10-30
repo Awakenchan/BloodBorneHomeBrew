@@ -82,7 +82,7 @@ private:
     u32 debug = 0;
     float light_tan = 0.02f;
     float max_penumbra_m = 0.3f;
-    float min_penumbra_m = 0.015f;
+    float min_penumbra_m = 0.0f;
     float bias_m = 0.04f;
     bool contact_enabled = true;
     bool pcss_enabled = true;

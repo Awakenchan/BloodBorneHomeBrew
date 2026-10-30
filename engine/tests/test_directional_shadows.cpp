@@ -17,7 +17,7 @@ struct Push {
     unsigned offsets = (CbBase * 4) | ((UbBase * 4) << 8), frame = 0;
     float width = W, height = H, length = 0.6f, thickness = 0.35f, strength = 0.75f, flip = 1;
     unsigned debug = 0, contact = 0, pcss = 0;
-    float light = 0.02f, maximum = 0.3f, minimum = 0.015f, bias = 0.04f;
+    float light = 0.02f, maximum = 0.3f, minimum = 0.0f, bias = 0.04f;
     unsigned filter = 1;
     float blend = 0;
 };
@@ -185,6 +185,7 @@ struct Test {
 }
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     Test t;
     auto cb = t.MakeBuffer(1024), ub = t.MakeBuffer(1024);
     auto scene = t.MakeBuffer(W * H * 4), atlas = t.MakeBuffer(Atlas * Atlas * 4);
@@ -320,9 +321,51 @@ int main() {
         fractional += a > 0 && a < 255;
     }
     assert(fractional >= H);
+    // Quantify contact hardening using a straight edge and increasing separation.
+    p.pcss = 1; p.bias = 0; p.light = 1; p.maximum = 2;
+    const auto soft_pixels = [&] {
+        unsigned count = 0;
+        for (unsigned i = 0; i < W * H; ++i) {
+            const unsigned a = static_cast<unsigned*>(result.data)[i] >> 24;
+            count += a > 12 && a < 243;
+        }
+        return count;
+    };
+    const auto edge_at = [&](float blocker) {
+        for (unsigned y = 0; y < Atlas; ++y)
+            for (unsigned x = 0; x < Atlas; ++x)
+                depths[y * Atlas + x] = x < 16 ? blocker : 1.0f;
+        run(p, 0.4f);
+        return soft_pixels();
+    };
+    const unsigned contact_width = edge_at(0.449f);
+    const unsigned middle_width = edge_at(0.2f);
+    const unsigned far_width = edge_at(0.0f);
+    std::printf("PCSS edge widths (pixels): contact %u, middle %u, far %u\n",
+                contact_width, middle_width, far_width);
+    assert(contact_width >= H && middle_width > contact_width && far_width > middle_width);
+    // A single shadow-map texel directly over the receiver must survive a
+    // large search disk. All screen pixels map to that texel.
+    auto* first = constants + 16;
+    first[0] = first[5] = 0.0001f;
+    first[3] = first[7] = 16.5f / Atlas;
+    std::fill_n(depths, Atlas * Atlas, 1.0f);
+    depths[16 * Atlas + 16] = 0.449f;
+    const float thin_visibility = run(p, 0.4f);
+    std::printf("PCSS single-texel caster visibility: %.4f\n", thin_visibility);
+    assert(thin_visibility < 0.5f);
+    first[0] = first[5] = 0.1f;
+    first[3] = first[7] = 0.25f;
+    // No temporal noise is introduced by this upgrade.
+    edge_at(0.2f);
+    std::vector<unsigned> previous(static_cast<unsigned*>(result.data),
+                                   static_cast<unsigned*>(result.data) + W * H);
+    p.frame = 37;
+    run(p, 0.4f);
+    assert(std::equal(previous.begin(), previous.end(), static_cast<unsigned*>(result.data)));
     uniforms[72] = 0;
     assert(run(p, 0.4f) > 0.999f);
     std::puts("Directional shadows: PASS (four atlas tiles, PCF/PCSS edges, lit/shadow, "
               "cascade blending, sloped receivers, fractional comparisons, stock/sky fallback, fade, "
-              "RGB preservation, odd sizes, buffer offsets)");
+              "RGB preservation, odd sizes, buffer offsets, contact hardening, thin caster, frame stability)");
 }

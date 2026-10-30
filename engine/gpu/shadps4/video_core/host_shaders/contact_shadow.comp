@@ -47,8 +47,7 @@ layout(push_constant) uniform Constants {
 };
 
 const int STEPS = 20;
-const int BLOCKER_TAPS = 16;
-const int FILTER_TAPS = 24;
+const int BLOCKER_TAPS = 64;
 
 uint base;
 float cb(int i) { return uintBitsToFloat(cbuf.d[base + uint(i)]); }
@@ -254,7 +253,11 @@ float pcss(vec2 uv0) {
     float blockerSum = 0.0;
     int blockers = 0;
     for (int i = 0; i < BLOCKER_TAPS; ++i) {
-        vec2 off = vogel(i, BLOCKER_TAPS, phi) * searchRadius;
+        // Include the receiver's own shadow texel: a sparse disk must not miss
+        // a thin caster directly above the receiver and return fully lit.
+        float radius = sqrt(float(i) / float(BLOCKER_TAPS - 1));
+        float angle = float(i) * 2.399963 + phi;
+        vec2 off = radius * vec2(cos(angle), sin(angle)) * searchRadius;
         vec2 sampleUv = clamp(center + off, tileMin + 0.5 * texel, tileMax - 0.5 * texel);
         vec2 sampledUv = (floor(sampleUv / texel) + 0.5) * texel;
         float plane = dot(slope, sampledUv - center);
@@ -275,12 +278,16 @@ float pcss(vec2 uv0) {
 
     // 3. Percentage-closer filter of that width.
     vec2 filterRadius = max(penumbra * uvPerMetre, 0.5 * texel);
+    float radiusTexels = max(filterRadius.x / texel.x, filterRadius.y / texel.y);
+    int filterTaps = radiusTexels <= 1.0 ? 16 : radiusTexels <= 4.0 ? 32 : 64;
     float lit = 0.0;
-    for (int i = 0; i < FILTER_TAPS; ++i) {
-        vec2 off = vogel(i, FILTER_TAPS, phi + 1.7) * filterRadius;
+    // Choose quality from footprint, never from an all-lit/all-shadow prefix:
+    // early convergence guesses can discard small casters and gaps.
+    for (int i = 0; i < filterTaps; ++i) {
+        vec2 off = vogel(i, filterTaps, phi + 1.7) * filterRadius;
         lit += compareBilinear(center + off, center, slope, bias);
     }
-    return lit / float(FILTER_TAPS);
+    return lit / float(filterTaps);
 }
 
 void main() {
