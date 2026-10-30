@@ -23,6 +23,7 @@
 #include "engine/cheats.h"
 #include "engine/graphics.h"
 #include "engine/online_fixes.h"
+#include "input/input.h"
 #include "voice.h"
 #include "hud_gauge.h"
 #include "face_shot.h"
@@ -2008,6 +2009,40 @@ void SummonNote() {
     draw->AddText(font, px, ImVec2(cx - size.x * 0.5f, y + 12.0f * k), IM_COL32(226, 216, 192, 255), text.c_str());
 }
 
+bool AnnouncementActive() {
+    std::string text;
+    float alpha = 0.0f;
+    return BbRoom::CurrentAnnouncement(text, alpha);
+}
+
+void Announcement() {
+    std::string text;
+    float alpha = 0.0f;
+    if (!BbRoom::CurrentAnnouncement(text, alpha)) return;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float k = base_scale;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const char* title = BbSettings::MenuText("Server announcement", "Объявление сервера");
+    const float px = ImGui::GetFontSize() * 1.35f;
+    const float title_px = ImGui::GetFontSize() * 0.95f;
+    const float wrap = std::min(viewport->WorkSize.x * 0.7f, 900.0f * k);
+    const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, wrap, text.c_str());
+    const ImVec2 title_size = font->CalcTextSizeA(title_px, FLT_MAX, 0.0f, title);
+    const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float y = viewport->WorkPos.y + viewport->WorkSize.y * 0.12f;
+    const float half = std::max(std::max(size.x, title_size.x) * 0.5f + 80.0f * k, 360.0f * k);
+    const float height = title_size.y + size.y + 34.0f * k;
+    const ImVec2 a(cx - half, y), b(cx + half, y + height);
+    const auto shade = [&](int r, int g, int b_, int a_) { return IM_COL32(r, g, b_, int(float(a_) * alpha)); };
+    draw->AddRectFilledMultiColor(a, ImVec2(cx, b.y), shade(0, 0, 0, 0), shade(0, 0, 0, 200), shade(0, 0, 0, 200), shade(0, 0, 0, 0));
+    draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, shade(0, 0, 0, 200), shade(0, 0, 0, 0), shade(0, 0, 0, 0), shade(0, 0, 0, 200));
+    draw->AddLine(a, ImVec2(b.x, a.y), shade(200, 190, 170, 140), 1.0f * k);
+    draw->AddLine(ImVec2(a.x, b.y), b, shade(200, 190, 170, 140), 1.0f * k);
+    draw->AddText(font, title_px, ImVec2(cx - title_size.x * 0.5f, y + 10.0f * k), shade(170, 160, 138, 255), title);
+    draw->AddText(font, px, ImVec2(cx - size.x * 0.5f, y + title_size.y + 22.0f * k), shade(226, 216, 192, 255), text.c_str(), nullptr, wrap);
+}
+
 void FpsCounter() {
     const auto& s = BbSettings::Get();
     char text[128];
@@ -2238,6 +2273,46 @@ void PortraitToast() {
     const float px = ImGui::GetFontSize() * 1.1f;
     const ImVec2 t = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
     draw->AddText(font, px, ImVec2(a.x + (size - t.x) * 0.5f, a.y + size + 8.0f * k), IM_COL32(226, 216, 192, 255), text);
+}
+
+void SpectatorBanner() {
+    std::string name;
+    int choices = 0;
+    if (!BbEngine::OnlineFixes::SpectatedName(name, choices)) return;
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const ImU32 parchment = IM_COL32(226, 216, 192, 255), shadow = IM_COL32(0, 0, 0, 210);
+    const float center = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float top = viewport->WorkPos.y + viewport->WorkSize.y - 190.0f * k;
+    const float title_size = ImGui::GetFontSize() * 1.0f, name_size = ImGui::GetFontSize() * 1.6f, hint_size = ImGui::GetFontSize() * 0.9f;
+    const float half = 300.0f * k;
+    draw->AddRectFilledMultiColor(ImVec2(center - half, top - 8.0f * k), ImVec2(center, top + 86.0f * k), IM_COL32(4, 4, 6, 0),
+                                  IM_COL32(4, 4, 6, 170), IM_COL32(4, 4, 6, 170), IM_COL32(4, 4, 6, 0));
+    draw->AddRectFilledMultiColor(ImVec2(center, top - 8.0f * k), ImVec2(center + half, top + 86.0f * k), IM_COL32(4, 4, 6, 170),
+                                  IM_COL32(4, 4, 6, 0), IM_COL32(4, 4, 6, 0), IM_COL32(4, 4, 6, 170));
+    const auto line = [&](const char* text, float px, float y, ImU32 colour) {
+        const ImVec2 size = font->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
+        const ImVec2 at(center - size.x * 0.5f, y);
+        draw->AddText(font, px, ImVec2(at.x + k, at.y + k), shadow, text);
+        draw->AddText(font, px, at, colour, text);
+    };
+    line(BbSettings::MenuText("Spectating", "Наблюдение"), title_size, top, IM_COL32(196, 160, 92, 255));
+    line(name.c_str(), name_size, top + 22.0f * k, parchment);
+    if (ImTextureData* gauge = GaugeTexture()) {
+        if (const BbHudGauge::Art* art = BbHudGauge::Ready()) {
+            const float w = 200.0f * k, h = w * float(art->header.h) / (float(art->header.w) * (2.0f * kOrnamentArm + kOrnamentScroll));
+            Ornament(draw, gauge, art->header, ImVec2(center - w * 0.5f, top - h - 2.0f * k), ImVec2(center + w * 0.5f, top - 2.0f * k), false,
+                     IM_COL32(255, 255, 255, 220));
+        }
+    }
+    if (choices > 1) {
+        const bool mouse = host_input_device() == InputDevice::KeyboardMouse;
+        line(mouse ? BbSettings::MenuText("Left mouse: next hunter", "ЛКМ: следующий охотник")
+                   : BbSettings::MenuText("R1 / RB: next hunter", "R1 / RB: следующий охотник"),
+             hint_size, top + 58.0f * k, IM_COL32(226, 216, 192, 200));
+    }
 }
 
 void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
@@ -2645,8 +2720,8 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() || coop_open ||
-                           !BbEngine::OnlineFixes::PartyRows().empty() || BbFaceShot::JustTaken());
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() || AnnouncementActive() || coop_open ||
+                           !BbEngine::OnlineFixes::PartyRows().empty() || BbEngine::OnlineFixes::Spectating() || BbFaceShot::JustTaken());
 }
 
 bool MenuOpen() {
@@ -2988,6 +3063,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (!menu_open) {
         SummonNote();
+        Announcement();
     }
     if (prompt_active && !menu_open) {
         TextPrompt();
@@ -2995,6 +3071,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (!menu_open) {
         const auto party = BbEngine::OnlineFixes::PartyRows();
         if (!party.empty()) PartyHud(party);
+        SpectatorBanner();
         PortraitToast();
     }
     if (coop_open && !menu_open) {

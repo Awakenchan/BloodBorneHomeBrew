@@ -23,11 +23,7 @@ extern __thread RuntimeRecoverBuf *runtime_fault_recover;
 void runtime_restart(void);
 #define ABI __attribute__((sysv_abi))
 typedef void (ABI *GuestCallback)(void);
-void runtime_start(uint64_t capabilities);
-uintptr_t runtime_resolve(const char *name, int is_data);
-void runtime_report(void);
 void runtime_finalize(void *dso);
-uintptr_t runtime_memory_resolve(const char *name);
 void runtime_memory_report(void);
 uint64_t runtime_memory_regions(void);
 int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
@@ -39,8 +35,8 @@ void runtime_wait_note(int kind, uint64_t ns);
 void runtime_wait_report(double frames);
 void runtime_guest_call_sites(uint64_t out[3]);
 uint64_t runtime_heap_growths(void);
+uint64_t runtime_process_time_us(void);
 static inline uint64_t runtime_wait_clock(void) { return host_monotonic_ns(); }
-const char *runtime_import_name(const char *name);
 void runtime_set_libc_tls(const void *data, uint64_t filesz, uint64_t memsz);
 void runtime_set_module_tls(uint64_t module, const void *data, uint64_t filesz, uint64_t memsz);
 void runtime_set_procparam(void *param);
@@ -56,29 +52,7 @@ enum { RUNTIME_BLOCK_MUTEX = 1, RUNTIME_BLOCK_SEMA = 2, RUNTIME_BLOCK_COND = 3 }
 int runtime_block_begin(int kind, uintptr_t object);
 void runtime_block_end(int slot);
 void runtime_blocked_report(void);
-typedef struct { const char *name; void *function; } RuntimeExport;
-#define RUNTIME_LOOKUP(table, nid) runtime_lookup(table, sizeof(table)/sizeof(*(table)), nid)
-const char *runtime_symbol(const char *nid);
-uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
-uintptr_t runtime_file_resolve(const char *name);
-uintptr_t runtime_services_resolve(const char *name);
-void runtime_file_report(void);
-void runtime_file_stream_report(void);
-void runtime_file_configure(const char *app0, const char *user);
-int runtime_file_mount(const char *guest, const char *host);
-void runtime_file_unmount(const char *guest);
-int runtime_file_translate(const char *guest, char *out, size_t size);
-int64_t runtime_file_open(const char *path, int flags, int mode);
-int64_t runtime_file_close(int fd);
-int64_t runtime_file_read(int fd, void *buffer, uint64_t size);
-int64_t runtime_file_pread(int fd, void *buffer, uint64_t size, int64_t offset);
-int64_t runtime_file_write(int fd, const void *buffer, uint64_t size);
-int64_t runtime_file_lseek(int fd, int64_t offset, int whence);
-int64_t runtime_file_stat(const char *path, void *guest_stat);
-int64_t runtime_file_fstat(int fd, void *guest_stat);
-int64_t runtime_file_getdents(int fd, char *buffer, uint64_t size, int64_t *base);
 int32_t runtime_guest_errno(int host_errno);
 void *runtime_low_map(size_t size, int prot);
-const char *runtime_file_user_dir(void);
 void runtime_thread_attach_host(const char *name);
 #endif

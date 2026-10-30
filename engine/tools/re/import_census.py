@@ -9,10 +9,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ORDER = ['runtime.c',
-                 'runtime_memory.c', 'runtime_kernel.c',
-                 'runtime_services.c',
-                 'runtime_file.c']
 
 def imports(game, modules):
     sys.path.insert(0, str(ROOT / 'scripts'))
@@ -42,14 +38,10 @@ def providers():
     found = defaultdict(list)
     sym_files = defaultdict(list)
     for path in sorted((ROOT / 'src/sys').glob('*.c')):
+        if path.name == 'net_offline.c':
+            continue
         for nid in re.findall(r'\{"([A-Za-z0-9+\-]{11})",\s*"', path.read_text(encoding='utf-8')):
             found[nid].append(path.relative_to(ROOT).as_posix())
-    for name in RUNTIME_ORDER:
-        text = (ROOT / 'src' / name).read_text(encoding='utf-8', errors='replace')
-        for nid in re.findall(r'"([A-Za-z0-9+\-]{11})#', text):
-            found[nid].append(f'src/{name}')
-        for sym in re.findall(r'\{\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,', text):
-            sym_files[sym].append(f'src/{name}')
     for path in sorted((ROOT / 'gpu').rglob('*.cpp')):
         if 'third_party' in path.parts:
             continue

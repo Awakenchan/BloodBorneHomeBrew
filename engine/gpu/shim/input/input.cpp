@@ -7,6 +7,7 @@
 #include "../bbport_overlay.h"
 #include "../bbport_settings.h"
 #include "../engine/change_appearance.h"
+#include "../engine/online_fixes.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <atomic>
@@ -414,10 +415,21 @@ extern "C" int bbgpu_menu_buttons(std::uint32_t* confirm, std::uint32_t* back) {
     return MenuPointer::Navigating() ? 1 : 0;
 }
 
+static void SpectateButton(std::uint32_t& buttons) {
+    static bool was = false;
+    const bool down = (buttons & PadBits::kR1) != 0;
+    if (BbEngine::OnlineFixes::Spectating() && !menu_pointer_in_menu()) {
+        if (down && !was) BbEngine::OnlineFixes::SpectateNext();
+        buttons &= ~PadBits::kR1;
+    }
+    was = down;
+}
+
 extern "C" int bbgpu_pc_input(BbPcPad* d, const bool* keys, int nkeys, int gamepad_present) {
     const auto& s = BbSettings::Get();
     if (!g_active.load(std::memory_order_relaxed) || !s.pc_controls) {
         g_wants_relative = false;
+        SpectateButton(d->buttons);
         return 0;
     }
     PadState pad;
@@ -442,7 +454,12 @@ extern "C" int bbgpu_pc_input(BbPcPad* d, const bool* keys, int nkeys, int gamep
     MouseCamera::Publish(s.mouse_sensitivity, s.mouse_invert_x, s.mouse_invert_y,
                          camera && keyboard_mouse && !s.mouse_auto_rotation);
 
-    const MouseRead mouse = TakeMouse();
+    MouseRead mouse = TakeMouse();
+    if (BbEngine::OnlineFixes::Spectating() && !menu) {
+        if (mouse.pressed & kLeftButton) BbEngine::OnlineFixes::SpectateNext();
+        mouse.held &= ~kLeftButton;
+        mouse.pressed &= ~kLeftButton;
+    }
     bool any_down = mouse.held != 0;
     for (int i = 0; keys && i < nkeys && !any_down; ++i) any_down = keys[i];
     host_bind_capture_note_held(any_down);
@@ -453,6 +470,7 @@ extern "C" int bbgpu_pc_input(BbPcPad* d, const bool* keys, int nkeys, int gamep
     } else {
         AddKeyboardAndMouse(pad, keys, nkeys, mouse, menu, keys_move_hunter, camera);
     }
+    SpectateButton(pad.buttons);
     {
         std::scoped_lock lock(g_pad_lock);
         g_last_pad = pad;

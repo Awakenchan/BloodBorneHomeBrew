@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace BbEngine::Loading {
 namespace {
@@ -18,9 +19,17 @@ constexpr std::size_t kPacerMode = 0xc, kPacerVblanks = 0x10, kPacerTarget = 0x1
 
 constexpr std::size_t kTargetStores[] = {0x2034840, 0x203485a, 0x203487e, 0x20348b3};
 constexpr std::uint8_t kTargetStore[] = {0x41, 0xc7, 0x44, 0x24, 0x18};
-constexpr float kLoadingTarget = 1.0f / 30.0f;
+float g_loading_target = 1.0f / 30.0f;
+
+constexpr std::size_t kLampWarp = 0x13cdf30, kLampLookup = 0x1f26b40, kLampRowVtable = 0x5320b40;
+constexpr std::uint32_t kLampFirst = 2000000, kLampLast = 7000000;
+constexpr auto kBenchSettled = std::chrono::seconds(5), kBenchWarp = std::chrono::seconds(20);
 
 using Clock = std::chrono::steady_clock;
+std::vector<std::uint32_t> g_bench_lamps;
+std::size_t g_bench_next = 0;
+bool g_bench_on = false, g_bench_list = false, g_bench_said_settled = false;
+Clock::time_point g_bench_since;
 std::uint8_t* g_image = nullptr;
 std::atomic<bool> g_up{false};
 Clock::time_point g_started, g_load_began;
@@ -50,7 +59,7 @@ void SetLoadingPace(bool on) {
     for (int i = 0; i < 4; ++i) {
         std::uint8_t* imm = g_image + kTargetStores[i] + sizeof kTargetStore;
         if (on) std::memcpy(&g_game_targets[i], imm, sizeof(float));
-        const float value = on ? kLoadingTarget : g_game_targets[i];
+        const float value = on ? g_loading_target : g_game_targets[i];
         WriteCode(imm, &value, sizeof value);
     }
     g_fast_set = on;
@@ -68,11 +77,65 @@ Pace PaceOf(std::uint64_t pacer) {
     Peek(pacer + kPacerTarget, &p.target);
     return p;
 }
+
+struct LampRow {
+    std::uint64_t vtable;
+    std::uint32_t id;
+    const std::uint16_t* row;
+};
+
+void ListLamps() {
+    for (std::uint32_t lamp = kLampFirst; lamp < kLampLast; ++lamp) {
+        LampRow found{Image() + kLampRowVtable, 0xffffffffu, nullptr};
+        Call(Image() + kLampLookup, &found, lamp);
+        if (found.row) std::printf("Load bench: lamp %u is in map %u_%u\n", lamp, found.row[0], found.row[1]);
+    }
+}
+
+void BenchTick(bool loading, bool ended, Clock::time_point now) {
+    if (g_bench_list) {
+        g_bench_list = false;
+        ListLamps();
+    }
+    if (g_bench_next >= g_bench_lamps.size()) return;
+    if (loading) return;
+    if (ended || g_bench_since == Clock::time_point{}) {
+        g_bench_since = now;
+        g_bench_said_settled = false;
+    }
+    if (!g_bench_said_settled && now - g_bench_since >= kBenchSettled) {
+        g_bench_said_settled = true;
+        std::printf("Load bench: settled\n");
+        std::fflush(stdout);
+    }
+    if (now - g_bench_since < kBenchWarp) return;
+    const std::uint32_t lamp = g_bench_lamps[g_bench_next++];
+    std::printf("Load bench: to lamp %u\n", lamp);
+    std::fflush(stdout);
+    g_bench_since = now;
+    g_bench_said_settled = true;
+    Call(Image() + kLampWarp, lamp);
+}
 }
 
 void Install(std::uint8_t* image) {
     g_image = image;
     g_started = Clock::now();
+    if (const char* pace = std::getenv("LANTERN_LOADING_PACE_MS"); pace && std::atof(pace) > 0) {
+        g_loading_target = static_cast<float>(std::atof(pace) / 1000.0);
+        std::printf("Loading: loading screens paced at %.1f ms (LANTERN_LOADING_PACE_MS)\n", g_loading_target * 1000.0f);
+    }
+    if (const char* bench = std::getenv("LANTERN_LOAD_BENCH")) {
+        g_bench_on = true;
+        g_bench_list = !std::strcmp(bench, "list");
+        for (const char* at = bench; !g_bench_list && *at;) {
+            char* end = nullptr;
+            const unsigned long lamp = std::strtoul(at, &end, 10);
+            if (end == at) break;
+            g_bench_lamps.push_back(static_cast<std::uint32_t>(lamp));
+            at = *end == ',' ? end + 1 : end;
+        }
+    }
     const char* fast = std::getenv("BB_FAST_LOADING");
     const char* fps = std::getenv("BB_FPS");
     if (!fast || std::strcmp(fast, "1") != 0) return;
@@ -109,7 +172,7 @@ void Tick(std::uint64_t pacer) {
         g_load_began = now;
         g_frames = 0;
         const Pace p = PaceOf(pacer);
-        if (p.target != kLoadingTarget) g_target_before = p.target;
+        if (p.target != g_loading_target) g_target_before = p.target;
         std::printf("Loading: begins; pacer mode %u, %u vblank(s) a frame, target %.1f ms\n", p.mode, p.vblanks,
                     p.target * 1000.0f);
     } else if (!loading && was) {
@@ -117,7 +180,7 @@ void Tick(std::uint64_t pacer) {
         const bool cutscene = CutscenePlaying();
         float live = 0;
         if (g_fast_this_load && !cutscene && g_target_before > 0 && Peek(pacer + kPacerTarget, &live) &&
-            live == kLoadingTarget) {
+            live == g_loading_target) {
             *reinterpret_cast<volatile float*>(pacer + kPacerTarget) = g_target_before;
             std::printf("Loading: the frame pace back to %.1f ms (the loading pace stayed set)\n",
                         g_target_before * 1000.0f);
@@ -134,5 +197,6 @@ void Tick(std::uint64_t pacer) {
         std::printf("Loading: the first in-game frame, %.1f s after the game started\n",
                     std::chrono::duration<double>(now - g_started).count());
     }
+    if (g_bench_on && g_world_seen) BenchTick(loading, !loading && was, now);
 }
 }

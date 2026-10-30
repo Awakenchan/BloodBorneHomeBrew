@@ -17,7 +17,7 @@
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
-#include "core/libraries/videoout/video_out.h"
+#include "core/libraries/videoout/driver.h"
 #include "core/memory.h"
 #include "core/platform.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -248,20 +248,9 @@ static inline bool IsValidEventType(Platform::InterruptId id) {
 s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
     LOG_TRACE(Lib_GnmDriver, "called");
 
-    auto equeue = GetEqueue(eq);
-    if (!equeue) {
+    if (sys_equeue_add(eq, id, SYS_EQUEUE_GRAPHICS_CORE, udata)) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
-
-    EqueueEvent kernel_event{};
-    kernel_event.event.ident = id;
-    kernel_event.event.filter = OrbisKernelEvent::Filter::GraphicsCore;
-    kernel_event.event.flags = OrbisKernelEvent::Flags::Add;
-    kernel_event.event.fflags = 0;
-    kernel_event.event.data = id;
-    kernel_event.event.udata = udata;
-
-    equeue->AddEvent(kernel_event);
 
     Platform::IrqC::Instance()->Register(
         static_cast<Platform::InterruptId>(id),
@@ -273,11 +262,9 @@ s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
                 return;
 
             // Event data is expected to be an event type as per sceGnmGetEqEventType.
-            equeue->TriggerEvent(static_cast<GnmEventType>(id),
-                                 OrbisKernelEvent::Filter::GraphicsCore,
-                                 reinterpret_cast<void*>(id));
+            sys_equeue_trigger(eq, id, SYS_EQUEUE_GRAPHICS_CORE, id);
         },
-        equeue);
+        reinterpret_cast<void*>(eq));
     return ORBIS_OK;
 }
 
@@ -401,14 +388,13 @@ int PS4_SYSV_ABI sceGnmDebugHardwareStatus() {
 s32 PS4_SYSV_ABI sceGnmDeleteEqEvent(OrbisKernelEqueue eq, u64 id) {
     LOG_TRACE(Lib_GnmDriver, "called");
 
-    auto equeue = GetEqueue(eq);
-    if (!equeue) {
+    if (!sys_equeue_exists(eq)) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
-    equeue->RemoveEvent(id, OrbisKernelEvent::Filter::GraphicsCore);
+    sys_equeue_remove(eq, id, SYS_EQUEUE_GRAPHICS_CORE);
 
-    Platform::IrqC::Instance()->Unregister(static_cast<Platform::InterruptId>(id), equeue);
+    Platform::IrqC::Instance()->Unregister(static_cast<Platform::InterruptId>(id), reinterpret_cast<void*>(eq));
     return ORBIS_OK;
 }
 
@@ -1067,7 +1053,7 @@ int PS4_SYSV_ABI sceGnmGetDebugTimestamp() {
 
 int PS4_SYSV_ABI sceGnmGetEqEventType(const OrbisKernelEvent* ev) {
     LOG_TRACE(Lib_GnmDriver, "called");
-    return sceKernelGetEventData(ev);
+    return int(sys_equeue_event_data(ev));
 }
 
 int PS4_SYSV_ABI sceGnmGetEqTimeStamp() {
@@ -1303,7 +1289,7 @@ s32 PS4_SYSV_ABI sceGnmInsertWaitFlipDone(u32* cmdbuf, u32 size, s32 vo_handle, 
     }
 
     uintptr_t label_addr{};
-    ASSERT_MSG(VideoOut::sceVideoOutGetBufferLabelAddress(vo_handle, &label_addr) == 16,
+    ASSERT_MSG(VideoOut::BufferLabelAddress(vo_handle, &label_addr) == 16,
                "sceVideoOutGetBufferLabelAddress call failed");
 
     auto* wait_reg_mem = reinterpret_cast<PM4CmdWaitRegMem*>(cmdbuf);
@@ -2255,8 +2241,7 @@ static inline s32 PatchFlipRequest(u32* cmdbuf, u32 size, u32 vo_handle, u32 buf
                "Invalid flip packet");
     ASSERT_MSG(buf_idx != 0xffff'ffffu, "Invalid VO buffer index");
 
-    const s32 flip_result = VideoOut::sceVideoOutSubmitEopFlip(vo_handle, buf_idx, flip_mode,
-                                                               flip_arg, nullptr /*unk*/);
+    const s32 flip_result = VideoOut::SubmitEopFlip(vo_handle, buf_idx, flip_arg);
     if (flip_result != 0) {
         if (flip_result == 0x80290012) {
             LOG_ERROR(Lib_GnmDriver, "Flip queue is full");
@@ -2268,7 +2253,7 @@ static inline s32 PatchFlipRequest(u32* cmdbuf, u32 size, u32 vo_handle, u32 buf
     }
 
     uintptr_t label_addr{};
-    ASSERT_MSG(VideoOut::sceVideoOutGetBufferLabelAddress(vo_handle, &label_addr) == 16,
+    ASSERT_MSG(VideoOut::BufferLabelAddress(vo_handle, &label_addr) == 16,
                "sceVideoOutGetBufferLabelAddress call failed");
 
     // Write event to lock the VO surface

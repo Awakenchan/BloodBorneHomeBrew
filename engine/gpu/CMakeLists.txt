@@ -204,7 +204,6 @@ set(COMMON
     shadps4/common/path_util.cpp shadps4/common/rdtsc.cpp shadps4/common/spin_lock.cpp shadps4/common/recursive_lock.cpp
     shadps4/common/string_util.cpp shadps4/common/thread.cpp shadps4/common/signal_context.cpp
     shim/common/logging/log.cpp)
-file(GLOB AVPLAYER CONFIGURE_DEPENDS shadps4/core/libraries/avplayer/*.cpp)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
 file(GLOB SHIM_SOURCES CONFIGURE_DEPENDS shim/*.cpp shim/*/*.cpp)
 if (WIN32)
@@ -220,10 +219,7 @@ else()
     set(BBGPU_LIBRARY_TYPE SHARED)
 endif()
 add_library(bbgpu ${BBGPU_LIBRARY_TYPE} ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES}
-    shadps4/core/libraries/gnmdriver/gnmdriver.cpp
-    shadps4/core/libraries/videoout/driver.cpp shadps4/core/libraries/videoout/video_out.cpp
-    shadps4/core/libraries/kernel/equeue.cpp ${AVPLAYER}
-    shadps4/core/libraries/videodec/video_utils.cpp)
+    shadps4/core/libraries/gnmdriver/gnmdriver.cpp)
 add_dependencies(bbgpu host_shaders)
 add_subdirectory(bbnet)
 target_link_libraries(bbgpu PUBLIC bbnet)
@@ -243,7 +239,7 @@ set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
 # Keyboard prompts' keycaps (shim/engine/keycap_art.cpp): Roboto Medium (Apache License 2.0).
 set_source_files_properties(shim/engine/keycap_art.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/misc/fonts/Roboto-Medium.ttf)
-target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
+target_include_directories(bbgpu PRIVATE shim shadps4 ../src ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
 # bbport: NVIDIA Streamline SDK headers (MIT), for DLSS Frame Generation (vk_streamline.cpp).
 target_include_directories(bbgpu PRIVATE third_party/streamline/include)
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
@@ -428,6 +424,12 @@ target_include_directories(engine-menu-memory-test PRIVATE ..)
 add_executable(shared-progress-test EXCLUDE_FROM_ALL ../tests/test_shared_progress.cpp)
 target_compile_options(shared-progress-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(shared-progress-test PRIVATE ..)
+add_executable(party-death-test EXCLUDE_FROM_ALL ../tests/test_party_death.cpp)
+target_compile_options(party-death-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(party-death-test PRIVATE ..)
+add_executable(kept-travel-test EXCLUDE_FROM_ALL ../tests/test_kept_travel.cpp)
+target_compile_options(kept-travel-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(kept-travel-test PRIVATE ..)
 add_executable(rebirth-cost-test EXCLUDE_FROM_ALL ../tests/test_rebirth_cost.cpp)
 target_compile_options(rebirth-cost-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(rebirth-cost-test PRIVATE ..)

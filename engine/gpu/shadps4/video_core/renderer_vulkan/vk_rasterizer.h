@@ -813,6 +813,13 @@ private:
             return newest;
         }
     };
+    static constexpr u32 WaitedGranuleShift = 16;
+    static constexpr u64 WaitedScanLimit = 4096;
+    static bool ReadTrackingFiltered();
+    bool WaitedOnBefore(VAddr address, u64 size) const;
+    bool NoteWaitedOn(VAddr address, u64 size);
+    std::array<u64, 1u << 16> waited_on{};
+    u64 newest_pending_write = 0;
     PendingReads pending_reads;
     PendingReads pending_write_table; ///< the same per granule for GPU writes queued (NotePendingGpuWrite)
     u64 untracked_reads_packet = 0; ///< newest packet reading guest memory it does not list

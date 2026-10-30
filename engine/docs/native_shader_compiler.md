@@ -410,3 +410,67 @@ Sources read for this pass: shadPS4 PRs 1644 (manual interpolation for Bloodborn
 `nir_opcodes.py`; DXVK `src/dxso/dxso_compiler.cpp` (`emitMulOperand`, d3d9 float emulation) and
 its changelog (strict emulation on AMDVLK and NVIDIA 565+); AMDVLK issue 346; the Vulkan spec of
 `VK_KHR_pipeline_executable_properties` and `Invariant`.
+
+## The lifter (Phase G, 2026-10-30)
+
+`gpu/shim/lifter/` is our own path from GCN to SPIR-V: a decoder, structured control flow without
+flags, typed SSA and a SPIR-V writer, with no code of the recompiler. It is off by default.
+`LANTERN_LIFTER=1` uses it in `CompileModule` and falls back to the recompiler's module when it
+declines. The recompiler still runs first in that path, because today's pipeline code needs its
+`Info`.
+
+**Where the shaders come from.** Every shader of the dev cache comes from the game's files: 559
+programs, 0 missing, 0 with different code. The files hold 9,847 distinct programs, 4,376 in the
+shader bundles and 5,471 in the eboot and its modules (`tools/re/shader_files.py`), so they can be
+compiled ahead of time.
+
+**Numbers** (dev cache, 1034 states; `bb-shader-lab --lift`, `tests/spirv_diff.cpp`):
+
+| | recompiler | lifter |
+|---|---|---|
+| Lifted | | 1034 of 1034 |
+| Translation | about 1400 ms | about 260 ms |
+| SPIR-V words | 5.88M | 4.82M (-18%) |
+| `spirv-val` | | 1034 pass |
+| Same result over 24 inputs | | 1033, 0 different, 1 cannot run (the old module's function call) |
+
+Every family's profile (nvidia, gtx10, rdna, polaris, intel, storage-buffer constants, vec4 uniform
+buffers): 1034 lift, all pass `spirv-val`, 0 different over 8 inputs. Forced user clip planes and
+the HDR tone curve extension (`BB_HDR_SCENE_CURVE=1`, 2 composite states): 0 different. About 89%
+of the blocks ran in the comparison. With a profile that offers both AMD and KHR barycentrics the
+recompiler reads the raw barycentrics one component too far (40 states); the lifter does not.
+
+Driver, RTX 5060 (621.1), 997 pipelines, 0 failed, lifter against recompiler:
+
+| Stage | Binary | Registers | Pipeline create |
+|---|---|---|---|
+| vertex | -0.2% | 0.0% | -19% |
+| pixel | -0.3% | 0.0% | -9% |
+| compute | -1.7% | -0.5% | -30% |
+
+**All the game's programs.** Discover mode (`Input.discover`, `bb-shader-lab --lift-files`) lifts
+from the code alone and assigns its own slots and flat table, which is the direct-slot design for GX
+draws: 9,847 of 9,847 in 3.1 s, all pass `spirv-val`. These states are synthetic, so this proves
+coverage and not behaviour.
+
+**Vulkan validation.** The pipelines were built on lavapipe with the Khronos layer (not through
+`tools/validate_pipelines.sh`, which starts the game). nvidia, gtx10 and intel: 997 of 997 built.
+rdna and polaris: 802 built, 195 failed because lavapipe lacks the AMD extensions (recompiler on
+rdna: 801 built, 196 failed). The lifter added one kind of message, and it is not a defect: it
+declares `SPV_AMD_gcn_shader` where the recompiler uses the instruction without declaring it. The
+other messages are lavapipe's missing extensions and its limit on motion vector locations, which the
+recompiler also hits. The recompiler has 3 kinds the lifter does not: an undeclared `DenormPreserve`,
+its denorm requirement, and a fragment input the vertex stage does not write.
+
+**Not done.**
+
+- In-game GPU time, and any run in the game: the lifter stays off by default until then.
+- Driver numbers on anything but the RTX 5060. AMD, Intel and older NVIDIA are checked only through
+  their profiles, `spirv-val`, the comparison and lavapipe.
+- `tools/validate_pipelines.sh` with the lifter, and `--recompile-cache`, which does not use it yet.
+- Fallback gaps: image atomics, the SAMPLE_CD family, compute LDS (none in the census).
+- The renderer session's GX draws must drive discover mode, with runtime state from GX objects.
+
+**When the recompiler can go.** Not yet. `video_core` still takes `Info`, `resource.h`,
+`runtime_info.h` and the fetch shader parser from it, and `LANTERN_LIFTER` must first become the
+default on measured game numbers. It can be deleted once the renderer no longer needs those types.

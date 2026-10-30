@@ -17,7 +17,6 @@
 #include <condition_variable>
 #include <fstream>
 #include <iterator>
-#include <boost/asio/io_context.hpp>
 #include "common/polyfill_thread.h"
 #include "video_core/renderdoc.h"
 #include <cstdio>
@@ -68,9 +67,8 @@ Frontend::WindowSDL* g_window = nullptr;
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 
 namespace Libraries::GnmDriver { void RegisterLib(Core::Loader::SymbolsResolver* sym); }
-namespace Libraries::AvPlayer { void RegisterLib(Core::Loader::SymbolsResolver* sym); }
-namespace Libraries::VideoOut { void RegisterLib(Core::Loader::SymbolsResolver* sym); }
-namespace Libraries::Kernel { void RegisterEventQueue(Core::Loader::SymbolsResolver* sym); }
+extern "C" void lantern_av_decode_start(void);
+namespace Libraries::VideoOut { void Start(); }
 
 namespace {
 struct Symbol {
@@ -397,11 +395,10 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     }
     Core::Loader::SymbolsResolver resolver;
     Libraries::GnmDriver::RegisterLib(&resolver);
-    Libraries::VideoOut::RegisterLib(&resolver);
+    Libraries::VideoOut::Start();
     return 0;
 }
 
-namespace Libraries::Kernel { void StartKernelService(); }
 extern "C" void bbnet_register(void);
 extern "C" void bbnet_initialize(void);
 extern "C" void bbgpu_start_online(void) {
@@ -409,10 +406,8 @@ extern "C" void bbgpu_start_online(void) {
     if (online && online[0] == '1') bbnet_initialize();
 }
 extern "C" void bbgpu_register_kernel(void) {
-    Libraries::Kernel::StartKernelService();
     Core::Loader::SymbolsResolver resolver;
-    Libraries::Kernel::RegisterEventQueue(&resolver);
-    Libraries::AvPlayer::RegisterLib(&resolver);
+    lantern_av_decode_start();
     const char* online = std::getenv("BB_ONLINE");
     if (online && online[0] == '1') bbnet_register();
 }
@@ -486,36 +481,6 @@ extern "C" unsigned bbgpu_symbol_count(void) {
 }
 
 namespace Libraries::Kernel {
-boost::asio::io_context io_context;
-static std::mutex m_asio_req;
-static std::condition_variable_any cv_asio_req;
-static std::atomic<u32> asio_requests;
-static std::jthread service_thread;
-
-void KernelSignalRequest() {
-    std::unique_lock lock{m_asio_req};
-    ++asio_requests;
-    cv_asio_req.notify_one();
-}
-
-static void KernelServiceThread(std::stop_token stoken) {
-    Common::SetCurrentThreadName("bb:kernel_service");
-    while (!stoken.stop_requested()) {
-        {
-            std::unique_lock lock{m_asio_req};
-            cv_asio_req.wait(lock, stoken, [] { return asio_requests != 0; });
-            asio_requests.exchange(0);
-        }
-        if (stoken.stop_requested()) break;
-        io_context.run();
-        io_context.restart();
-    }
-}
-
-void StartKernelService() {
-    service_thread = std::jthread{KernelServiceThread};
-}
-
 int* PS4_SYSV_ABI __Error() {
     return runtime_errno();
 }

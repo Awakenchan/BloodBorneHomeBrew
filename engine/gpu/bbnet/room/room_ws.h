@@ -25,7 +25,10 @@ public:
     bool Connect(const std::string& url, int timeout_s, std::string& error);
     void Run(const Handler& handler);
     bool Send(const void* data, std::size_t size, bool binary);
-    bool SendLossy(const void* data, std::size_t size, std::size_t most_queued);
+    bool SendLossy(const void* data, std::size_t size, std::size_t most_backlog);
+    bool SendPaced(const void* data, std::size_t size);
+    std::size_t Backlog() const { return backlog_.load(); }
+    void WatchClosely() { watch_closely_ = true; }
     void Close();
     bool Open() const { return open_.load(); }
 
@@ -34,8 +37,11 @@ private:
     Impl* impl_;
     std::atomic<bool> open_{false};
     std::atomic<bool> closing_{false};
+    std::atomic<bool> watch_closely_{false};
     std::mutex queue_mutex_;
     std::deque<std::vector<std::uint8_t>> queue_;
+    std::deque<std::vector<std::uint8_t>> paced_;
+    std::atomic<std::size_t> backlog_{0};
     void Wake();
 };
 

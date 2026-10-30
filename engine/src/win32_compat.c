@@ -15,6 +15,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "win32_compat.h"
+#include "host_sync.h"
+#include <process.h>
 
 int runtime_win_mkdir(const char *path, int mode) { (void)mode; return _mkdir(path); }
 int runtime_win_rename(const char *from, const char *to) {
@@ -126,4 +128,53 @@ int runtime_win_inet_pton4(const char *src, void *dst) { return inet_pton(AF_INE
 const char *runtime_win_inet_ntop4(const void *src, char *dst, uint32_t size) {
     return inet_ntop(AF_INET, src, dst, size);
 }
+__asm__(".text\n"
+        ".globl runtime_setjmp\n"
+        ".def runtime_setjmp; .scl 2; .type 32; .endef\n"
+        ".p2align 4\n"
+        "runtime_setjmp:\n"
+        "  movq %rbx, 0(%rcx)\n  movq %rbp, 8(%rcx)\n  movq %rdi, 16(%rcx)\n  movq %rsi, 24(%rcx)\n"
+        "  movq %r12, 32(%rcx)\n  movq %r13, 40(%rcx)\n  movq %r14, 48(%rcx)\n  movq %r15, 56(%rcx)\n"
+        "  leaq 8(%rsp), %rdx\n  movq %rdx, 64(%rcx)\n  movq (%rsp), %rdx\n  movq %rdx, 72(%rcx)\n"
+        "  movups %xmm6, 80(%rcx)\n  movups %xmm7, 96(%rcx)\n  movups %xmm8, 112(%rcx)\n"
+        "  movups %xmm9, 128(%rcx)\n  movups %xmm10, 144(%rcx)\n  movups %xmm11, 160(%rcx)\n"
+        "  movups %xmm12, 176(%rcx)\n  movups %xmm13, 192(%rcx)\n  movups %xmm14, 208(%rcx)\n"
+        "  movups %xmm15, 224(%rcx)\n  stmxcsr 240(%rcx)\n  fnstcw 244(%rcx)\n"
+        "  xorl %eax, %eax\n  ret\n"
+        ".globl runtime_longjmp\n"
+        ".def runtime_longjmp; .scl 2; .type 32; .endef\n"
+        ".p2align 4\n"
+        "runtime_longjmp:\n"
+        "  movq 0(%rcx), %rbx\n  movq 8(%rcx), %rbp\n  movq 16(%rcx), %rdi\n  movq 24(%rcx), %rsi\n"
+        "  movq 32(%rcx), %r12\n  movq 40(%rcx), %r13\n  movq 48(%rcx), %r14\n  movq 56(%rcx), %r15\n"
+        "  movups 80(%rcx), %xmm6\n  movups 96(%rcx), %xmm7\n  movups 112(%rcx), %xmm8\n"
+        "  movups 128(%rcx), %xmm9\n  movups 144(%rcx), %xmm10\n  movups 160(%rcx), %xmm11\n"
+        "  movups 176(%rcx), %xmm12\n  movups 192(%rcx), %xmm13\n  movups 208(%rcx), %xmm14\n"
+        "  movups 224(%rcx), %xmm15\n  ldmxcsr 240(%rcx)\n  fldcw 244(%rcx)\n"
+        "  movq 64(%rcx), %rsp\n  movl $1, %eax\n  jmpq *72(%rcx)\n");
+
+typedef struct { void *(*entry)(void *); void *argument; } Start;
+static unsigned __stdcall start(void *p) {
+    Start s = *(Start *)p;
+    free(p);
+    s.entry(s.argument);
+    return 0;
+}
+int host_thread_start(HostThread *thread, size_t stack, void *(*entry)(void *), void *argument) {
+    Start *s = malloc(sizeof(*s));
+    if (!s) return ENOMEM;
+    s->entry = entry; s->argument = argument;
+    uintptr_t handle = _beginthreadex(NULL, (unsigned)stack, start, s, CREATE_SUSPENDED, NULL);
+    if (!handle) { free(s); return EAGAIN; }
+    *thread = (HANDLE)handle;
+    ResumeThread((HANDLE)handle);
+    return 0;
+}
+int host_thread_join(HostThread thread) {
+    DWORD r = WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    return r == WAIT_OBJECT_0 ? 0 : EINVAL;
+}
+void host_thread_detach(HostThread thread) { CloseHandle(thread); }
+
 #endif

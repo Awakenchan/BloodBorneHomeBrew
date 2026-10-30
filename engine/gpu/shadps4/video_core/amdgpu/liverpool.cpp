@@ -36,6 +36,8 @@
 #include "bbport_write_log.h"
 #include "bbport_free_check.h"
 #include "bbport_native_calls.h"
+#include "engine/gx_draws.h"
+#include "engine/gx_trace.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_occlusion.h"
@@ -1051,6 +1053,16 @@ void Liverpool::ApplyGraphicsRegisterPacket(Regs& regs, const PM4Header* header,
         mark_field(regs.num_indices);
         break;
     case PM4ItOpcode::Nop: {
+        if (count > 1 && reinterpret_cast<const u32*>(header)[1] == BbEngine::GxDraws::kBindTag) {
+            const auto* end = reinterpret_cast<const u32*>(header) + 1 + count;
+            for (const u32* at = payload; at < end;) {
+                const u32 offset = at[0] >> 16, words = at[0] & 0xffff;
+                std::memcpy(&regs.reg_array[Regs::ShRegWordOffset + offset], at + 1, words * sizeof(u32));
+                mark(Regs::ShRegWordOffset + offset, words);
+                at += words + 1;
+            }
+            break;
+        }
         // bbport BB_NATIVE_CALLS=1 (bbport_native_calls.h): a draw call's record has the effects
         // of the DRAW_INDEX_* packet it stands for and is hashed as that packet, so registers,
         // checksums and prepared draws are those of the original encoding.
@@ -1385,6 +1397,38 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     // bbport BB_NATIVE_CALLS=1: a draw call's record. Its registers were applied
                     // above as its DRAW_INDEX_* packet; drawn as the DRAW_INDEX_* cases below.
                     BbNativeCalls::NoteDecoded();
+                    if (BbEngine::GxTrace::On()) {
+                        BbEngine::GxTrace::Seen seen{};
+                        seen.programs[0] = regs.ps_program.address;
+                        seen.programs[1] = regs.vs_program.address;
+                        seen.programs[2] = regs.gs_program.address;
+                        seen.programs[3] = regs.es_program.address;
+                        seen.programs[4] = regs.hs_program.address;
+                        seen.programs[5] = regs.ls_program.address;
+                        seen.index_base = regs.index_base_address.Address();
+                        for (u32 target = 0; target < 8; ++target) {
+                            seen.color[target] = regs.color_buffers[target].Address();
+                        }
+                        seen.depth = regs.depth_buffer.DepthAddress();
+                        seen.index_count = native_record.index_count;
+                        seen.index_type = static_cast<u32>(regs.index_buffer_type.index_type);
+                        seen.primitive = static_cast<u32>(regs.primitive_type);
+                        seen.indexed = native_record.kind != BbNativeCalls::DrawAuto;
+                        const bool tessellated = regs.stage_enable.hs_en;
+                        const bool geometry = regs.stage_enable.gs_en;
+                        seen.user_data[0] = tessellated ? regs.ls_program.user_data.data()
+                                            : geometry  ? regs.es_program.user_data.data()
+                                                        : regs.vs_program.user_data.data();
+                        seen.user_data[1] = regs.hs_program.user_data.data();
+                        seen.user_data[2] = regs.vs_program.user_data.data();
+                        seen.user_data[3] = regs.gs_program.user_data.data();
+                        seen.user_data[4] = regs.ps_program.user_data.data();
+                        seen.viewport[0] = regs.viewports[0].xscale;
+                        seen.viewport[1] = regs.viewports[0].xoffset;
+                        seen.viewport[2] = regs.viewports[0].yscale;
+                        seen.viewport[3] = regs.viewports[0].yoffset;
+                        BbEngine::GxTrace::Check(reinterpret_cast<u64>(header), seen);
+                    }
                     if (DebugState.DumpingCurrentReg()) {
                         DebugState.PushRegsDump(base_addr, reinterpret_cast<uintptr_t>(header),
                                                 regs);

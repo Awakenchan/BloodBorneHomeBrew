@@ -274,6 +274,11 @@
             new(L.T("Name only"), "name"), new(L.T("Role and name"), "role"),
         };
 
+        public static readonly Choice[] SeamlessConnections =
+        {
+            new(L.T("Server"), "server"), new(L.T("Direct P2P"), "direct"),
+        };
+
         public static readonly Choice[] SeamlessRoles =
         {
             new(L.T("Join"), "guest"), new(L.T("Host"), "host"),

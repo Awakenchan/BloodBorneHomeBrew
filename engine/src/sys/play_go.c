@@ -19,12 +19,12 @@ static uint32_t chunk_count;
 static SYS_ABI int32_t playgo_initialize(const void *params) {
     (void)params;
     chunk_count = 1;
-    int fd = (int)runtime_file_open("/app0/sce_sys/playgo-chunk.dat", 0, 0);
+    int fd = (int)sys_file_open("/app0/sce_sys/playgo-chunk.dat", 0, 0);
     if (fd >= 0) {
         unsigned char header[12];
-        if (runtime_file_read(fd, header, sizeof(header)) == (int64_t)sizeof(header))
+        if (sys_file_read(fd, header, sizeof(header)) == (int64_t)sizeof(header))
             chunk_count = (uint32_t)header[10] | (uint32_t)header[11] << 8;
-        runtime_file_close(fd);
+        sys_file_close(fd);
     }
     printf("Runtime: PlayGo initialized; %d chunks, all installed locally\n", (int)chunk_count);
     return 0;

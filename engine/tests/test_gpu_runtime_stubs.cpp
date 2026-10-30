@@ -13,15 +13,30 @@ typedef sigjmp_buf RuntimeRecoverBuf;
 #endif
 extern "C" {
 void* runtime_low_map(size_t, int) { return nullptr; }
-int runtime_file_mount(const char*, const char*) { return -1; }
-void runtime_file_unmount(const char*) {}
+void sys_video_out_set_host(const void*) {}
+int sys_video_out_is_open(void) { return 0; }
+int sys_video_out_flip_rate(void) { return 0; }
+const uint64_t* sys_video_out_labels(void) { static uint64_t labels[16]; return labels; }
+int sys_video_out_buffer(int, const void**, uint64_t*) { return 0; }
+int sys_video_out_queue_flip(int, int64_t, int) { return 0; }
+void sys_video_out_flip_done(int, int64_t, int) {}
+int sys_equeue_exists(int64_t) { return 0; }
+int sys_equeue_add(int64_t, uint64_t, int16_t, void*) { return -1; }
+int sys_equeue_remove(int64_t, uint64_t, int16_t) { return -1; }
+int sys_equeue_trigger(int64_t, uint64_t, int16_t, uint64_t) { return -1; }
+uint64_t sys_equeue_event_data(const void*) { return 0; }
+void sys_equeue_report(double) {}
+void sys_av_player_set_decoder(const void*) {}
+void runtime_memory_invalidate(uintptr_t, uint64_t) {}
+int sys_file_mount(const char*, const char*) { return -1; }
+void sys_file_unmount(const char*) {}
 __thread RuntimeRecoverBuf* runtime_fault_recover = nullptr;
 int runtime_setjmp(RuntimeRecoverBuf*) { return 0; }
 [[noreturn]] void runtime_longjmp(RuntimeRecoverBuf*) { std::abort(); }
 uint32_t runtime_disabled_optimizations = 0;
 uint64_t runtime_experiment_bits = 0;
 uint64_t runtime_tsc_frequency() { return 1000000000; }
-int runtime_file_translate(const char*, char*, size_t) { std::abort(); }
+int sys_file_translate(const char*, char*, size_t) { std::abort(); }
 uint64_t runtime_memory_clamp(uintptr_t, uint64_t) { std::abort(); }
 uint64_t runtime_process_time_us() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 int runtime_memory_region(uintptr_t, uintptr_t*, uintptr_t*, int*) { std::abort(); }

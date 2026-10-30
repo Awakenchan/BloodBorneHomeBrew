@@ -98,7 +98,7 @@ static SYS_ABI int32_t yield(void) {
 
 static SYS_ABI __attribute__((noreturn)) void hard_exit(int status) {
     printf("Runtime: guest requested _exit(%d)\n", status);
-    runtime_report();
+    sys_report();
     fflush(stdout);
     _exit(status);
 }
@@ -106,7 +106,7 @@ static SYS_ABI __attribute__((noreturn)) void hard_exit(int status) {
 static SYS_ABI __attribute__((noreturn)) void raise_exception(uint32_t code, uint64_t argument) {
     fprintf(stderr, "STOP: guest raised debug exception code=0x%x argument=0x%llx\n", code,
             (unsigned long long)argument);
-    runtime_report();
+    sys_report();
     exit(23);
 }
 

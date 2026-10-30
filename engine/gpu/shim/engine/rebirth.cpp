@@ -8,9 +8,9 @@
 #include <filesystem>
 #include <string>
 
-extern "C" int runtime_file_translate(const char*, char*, std::size_t);
-extern "C" int runtime_file_mount(const char*, const char*);
-extern "C" void runtime_file_unmount(const char*);
+extern "C" int sys_file_translate(const char*, char*, std::size_t);
+extern "C" int sys_file_mount(const char*, const char*);
+extern "C" void sys_file_unmount(const char*);
 
 namespace BbEngine::Rebirth {
 namespace {
@@ -134,18 +134,18 @@ bool Install(std::uint8_t* image, std::size_t size) {
     char resolved[512]{};
     std::error_code error;
     const char* merged = std::getenv("BB_GAME_MERGED");
-    const bool games = !runtime_file_translate(guest.c_str(), resolved, sizeof resolved) &&
+    const bool games = !sys_file_translate(guest.c_str(), resolved, sizeof resolved) &&
                        (fs::equivalent(resolved, fs::path(game) / kAltarScripts, error) ||
                         (merged && *merged && fs::equivalent(resolved, fs::path(merged) / kAltarScripts, error)));
     if (!games) {
         host_log("rebirth off: a mod replaces the altar's talk scripts");
         return false;
     }
-    if (!fs::is_regular_file(asset, error) || runtime_file_mount(guest.c_str(), asset)) return false;
+    if (!fs::is_regular_file(asset, error) || sys_file_mount(guest.c_str(), asset)) return false;
     g_image = reinterpret_cast<std::uint64_t>(image);
     g_watch = menu_steps_watch(7, u"LevelUp");
     if (g_watch < 0) {
-        runtime_file_unmount(guest.c_str());
+        sys_file_unmount(guest.c_str());
         return false;
     }
     g_on = true;

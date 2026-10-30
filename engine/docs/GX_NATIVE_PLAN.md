@@ -66,14 +66,23 @@ The pending state is the second argument of every context method (the first is t
 | 1 | IASetPrimitiveTopology `0x2168ca0` | `+0x8` |
 | 2 | IASetIndexBuffer `0x2168cb0` | `+0x10` buffer, `+0x18` format, `+0x1c` offset |
 | 3 | IASetVertexBuffers `0x2168cc0` | `+0x20` buffers, `+0x120` strides, `+0x1a0` offsets (32 slots) |
-| 4–27 | six shader stages, four setters each | per stage: 16 constant buffers, 128 shader resources, 14 samplers, the shader |
+| 4–27 | six shader stages, four setters each | per stage: `+0` 16 samplers, `+0x80` 128 shader resources, `+0x480` 14 constant buffers, `+0x4f0` the shader |
 | 28–35 | Dispatch, Draw, DrawIndexed, DrawInstanced, DrawIndexedInstanced, both indirect draws, Commit | |
 
 The stages' blocks start at `+0x598`, `+0xa90`, `+0xf88`, `+0x1480`, `+0x1978` and `+0x1e70`, in
-replay order. The last is the compute stage (it is set before Dispatch); which graphics stage is
-which is still to be confirmed from the shader creators.
+replay order. The trace proves them against the registers: `+0x598` is the vertex stage (the LS
+program when hull is set, the VS program otherwise), `+0xa90` hull, `+0xf88` domain (the VS program),
+`+0x1978` pixel, with the program's address at `+8` of the description at shader `+0x100`. `+0x1480`
+(geometry) and `+0x1e70` (compute) have not drawn yet in a checked run.
 
-| Stage block | SetConstantBuffers | SetShaderResources | SetSamplers | SetShader |
+A GX draw may first write draws of its own: the output-merger flush resolves a render target that is
+being unbound through `0x26b5a70`, a rectangle with GX's state, not the game's. 87,692 of them in one
+run; a native path has to keep them.
+
+Trace result (2026-10-30, Hunter's Dream, Cathedral Ward, Central Yharnam, 5.36 million draws): 0
+differences in count, index address, index type, render targets, depth, viewport and shader programs.
+
+| Stage block | SetSamplers | SetShaderResources | SetConstantBuffers | SetShader |
 |---|---|---|---|---|
 | `+0x598` | `0x2168ce0` | `0x2168d00` | `0x2168d90` | `0x2168e00` |
 | `+0xa90` | `0x2168e10` | `0x2168e30` | `0x2168ec0` | `0x2168f30` |
@@ -82,10 +91,43 @@ which is still to be confirmed from the shader creators.
 | `+0x1978` | `0x21692c0` | `0x21692e0` | `0x2169370` | `0x21693e0` |
 | `+0x1e70` (compute) | `0x2169440` | `0x2169460` | `0x21694f0` | `0x21695b0` |
 
-The output merger's state is read by its flush (`0x26d2230`): the blend state at `+0x4d0`, the
-depth-stencil state at `+0x4d8`, eight render targets at `+0x4e0`, the depth view at `+0x520`, the
-blend factor at `+0x568` and the stencil reference at `+0x584`. These setters are not in the replay
-table, so a command list does not record them.
+On the immediate context the pending state is the block at `context+0xb730`; on a deferred context
+it is at `+0x28` of its recorder. The game writes it inline beside each call, and most setters only
+return: that is why no setter body writes these slots.
+
+| Pending state | What | Setter |
+|---|---|---|
+| `+0x220` | stream-output targets (4) | `0x21691a0` |
+| `+0x240` | rasterizer state | RSSetState `0x2169290` (only returns) |
+| `+0x248`, count `+0x4c8` | 16 viewports, 24 bytes each | RSSetViewports `0x21692a0` (the count goes to `0x26d3350`) |
+| `+0x3c8`, count `+0x4cc` | 16 scissor rectangles, 16 bytes each | RSSetScissorRects `0x21692b0` (the count goes to `0x26d3360`) |
+| `+0x4d0`, `+0x568`, `+0x580` | blend state, blend factor, sample mask | OMSetBlendState `0x21693f0` (only returns) |
+| `+0x4d8`, `+0x584` | depth-stencil state, stencil reference | OMSetDepthStencilState `0x2169400` (only returns) |
+| `+0x4e0`, `+0x520`, `+0x585` | 8 render targets, the depth view, a byte the same call sets | OMSetRenderTargets `0x2169420` |
+| `+0x528`, `+0x578`, `+0x57c` | 8 unordered-access views, their start and count | OMSetRenderTargetsAndUAVs `0x2169430` |
+
+A state object holds Gnm's register values, made once by its creator's converter, so the flushes copy
+them without translating: the rasterizer's flush is `0x26d3370`, the output merger's `0x26d2230`.
+
+| Creator | Object | Converter |
+|---|---|---|
+| CreateBlendState `0x21658e0` | 0x128 bytes | `0x2178050` |
+| CreateDepthStencilState `0x21659a0` | 0x38 bytes | `0x21782b0` |
+| CreateRasterizerState `0x2165a80` | 0x24 bytes | `0x2178550` |
+| CreateSamplerState `0x2165b40` | 0x40 bytes | `0x2178750` |
+
+Most state objects do not come from these creators: `0x21aeca0` builds the game's preset library by
+calling the converters itself, and the game keeps those pointers. A state object is plain immutable
+bytes, so Lantern learns it from its first bind instead of hooking its making.
+
+The shader creators, proven by the stage block each one's shaders are bound to: vertex `0x2166d00`,
+hull `0x2166e10`, domain `0x2166f20`, geometry `0x2167030` (and `0x2167140` with stream output, not
+hooked: eleven arguments), pixel `0x21672d0`; `0x21673e0` is left for compute.
+
+Objects with a table entry (`LANTERN_GX_OBJECTS`): buffers, textures and views from their creators,
+each released through its vtable's first two slots; shaders from their creators (they have no
+release: a reused address gets a new generation); state objects from their first bind (the bytes are
+compared at each bind, and changed bytes get a new generation).
 
 Every draw runs the same flushes before its packet: the output merger (`context+0xb558`), the
 shader stages (`0x26bba30` on `context+0xb518`, with an "indexed" flag), `0x26d3370` on
@@ -113,12 +155,81 @@ bind flags, CPU access, misc flags, structure stride); usage 1 (immutable) needs
 
 A view's resource keeps its dimension in a byte at `+0x38`, checked against the view's dimension.
 
+## How GX binds a shader's resources
+
+`0x26bc320` (7,500 lines, one body per stage combination) walks the shader object: `+0`, `+8`, `+0x10`
+are slot masks, `+0x18`, `+0x58`, `+0x98` map a slot to an entry of the table at `+0xd8`, `+0xe0` is
+the input table and `+0xe8` its length. An input is a word: kind (low byte), user-data register
+(next byte), slot (next byte). Kinds 0-1 are resource views, 2-3 access views, 4 a sampler, 5 a
+constant buffer; 8-11 point at whole tables, copied into a ring (`0x26addc0` on `context+0xb3e0`) for
+each draw. A constant buffer's descriptor is built on the spot from its current address,
+`0x26ae840(context+0xb3c0, buffer+0x18)`, and its size at `buffer+0x2c`.
+
+Checked at run time on 3 million resources: images 1,101,830 of 1,101,830 are a view's descriptor at
+`view+0x10`, byte for byte; samplers 544,314 of 544,425 are the state object's first 16 bytes (the
+rest are the shader's own anisotropy change); buffers 1,425,016 of 1,437,446 are a constant buffer's
+current address, and the rest are one 48-byte block of GX's in another ring.
+
+A shader-resource bind of Lantern's own (`gx_draws.cpp`, `LANTERN_GX_DRAWS=1`) replaces `0x26bc320`
+for draws with no hull or geometry shader, 90.4% of binds; the rest still run the game's function, and
+the state both keep is the same, so they can alternate at any draw. Its register writes go into one
+packet per bind, a NOP tagged `0xbb5e0000` holding offset-and-length runs of user data, in place of a
+hinted SET_SH_REG for each input. The shader and fetch registers are still the game's Gnm writers.
+Checked by the trace at the registers: about 1.67 million inputs, 0 differ. PM4 packets per draw go
+from 3.2 to 2.8 and from 3.7 to 3.1 (the only numbers so far that do not depend on what else the
+machine is doing); no clean FPS comparison yet.
+
+Where the GPU command thread's time goes, sampled at 117 FPS, 1,440 draws a frame, per draw: stage A
+5 us (PM4 walk 1.7, pipeline 0.9, constants 1.25, inputs 0.3, packet 0.4), stage B 2.85 us a packet.
+Flattening the user data costs almost nothing, so rewriting it from GX's slots gains nothing. What
+costs is the PM4 walk, the packet with its register blocks, copying constants and the read tracking.
+In real play (73 FPS, 1,544 draws a frame) stage A is 96% busy and stage B 99%.
+
+## GX textures against the address-keyed image cache
+
+`LANTERN_GX_OBJECTS=1` matches every image lookup to the GX texture at its address. Over the Hunter's
+Dream, Cathedral Ward and Central Yharnam (2026-10-30): 168,728 of 168,728 lookups at a texture's
+address have its size, and none fall inside a texture. Of 2,041 textures looked up, 1,923 have one
+image. The rest have the same size, format and byte count under several image ids, so the cache made
+the same image again; the one exception is a 1x1 cube whose image grows with its estimated size. 21 of
+2,155 images served more than one texture: a texture's memory reused. So a texture object can own its
+image, and all of those cases go away with it.
+
+78,641 lookups are in no GX resource, at least 256 distinct images:
+
+| What | Examples |
+|---|---|
+| Display buffers | three at 1920x1080, 8,355,840 bytes, formats 37 and 43 |
+| Post-processing chain | 1920x1080 and 960x540 format 97, 784x662 down to 7x6 format 122 |
+| Interface and other | 256x256, 256x1, 64x64 at addresses not aligned to a page |
+
+YEBIS's device is a Direct3D 11-shaped table at `0x5308810` (the object's vtable after construction in
+`0x2a3f5e0`): CreateBuffer `0x2a39310` → `0x11ecb70`, CreateTexture2D `0x2a39340` → `0x11df570`,
+CreateTexture3D `0x2a39360` → `0x11e1750`; a texture's memory is at `+0x98`. With those two texture
+creators in the table, lookups in no resource fall to 7,475 of 270,100 (2.8%): 7,416 are the three
+display buffers, made by `0x26b35e0` from `0x26d6b20`, and the other 59 are small images, 256x1 down to 1x1
+and 1024x1024, at addresses not aligned to a page. Textures with several images are then 422 of 3,452:
+the same size again, or a separate image for each mip range of one texture (256x256, 128x128, 64x64 at
+a growing byte count), which one image holding every mip ends.
+
+### Textures by object: the first slice
+
+`LANTERN_GX_TEXTURES=1`: `TextureCache::FindImage` widens a request at a known texture's address to the
+texture's full mips and layers from its GX description, so the first lookup makes the whole image and
+later ones are views of it. Depth targets and multisampled images are left out so far.
+
+Two boots through the Hunter's Dream, Cathedral Ward and Central Yharnam, old against widened: images
+created 3,927 to 3,578, expanded 49 to 5, candidates rejected 1,259 to 563; 42,690 requests widened, none
+too large for the memory and none of another layout; no render errors, 0 trace differences. Not checked:
+the picture itself. Still-identical images under one texture look like the collector, which frees an image
+unused for 20 seconds, and these boots warp between areas; that is not proven. The overlap resolver still
+runs, so it is not removed yet: what remains is the display buffers, depth targets and the small images.
+
+This removes re-created images and their copies. It does not raise FPS in a steady scene, where the memo
+already hits; that comes from stage A and B working from the objects, after this.
+
 ## Still to find, with our own tools
 
-- Which of the five other shader creators is which stage, and so which stage block is which. The
-  cheapest proof is at run time in stage 1: log which creator made the shader each SetShader gets.
-- The blend, depth-stencil, rasterizer and sampler state creators, and the rasterizer state and
-  viewports in the pending state (between `+0x528` and `+0x598`).
 - The texture holder: where the resource's memory, format and tiling mode sit.
 - Scaleform's renderer and its draws.
 

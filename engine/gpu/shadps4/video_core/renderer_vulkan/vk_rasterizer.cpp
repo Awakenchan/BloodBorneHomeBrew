@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #endif
 #include "bbport_platform.h"
+#include "engine/gx_trace.h"
 #include <bit>
 #include <map>
 #include <thread>
@@ -834,11 +835,47 @@ void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size) {
     // Numbered by packet (a position, the packet's start, counted as reached once the packet
     // before it had run, while this one was not recorded yet), in hashed granules: a lookup per
     // constant binding instead of a scan of the writes (a list scan was ~5% of this thread).
-    pending_write_table.Note(address, size, draw_pipe->NextPacket());
+    newest_pending_write = draw_pipe->NextPacket();
+    pending_write_table.Note(address, size, newest_pending_write);
+}
+
+bool Rasterizer::ReadTrackingFiltered() {
+    static const bool filtered = [] {
+        const char* env = std::getenv("LANTERN_READ_FILTER");
+        return env && env[0] == '1';
+    }();
+    return filtered;
+}
+
+bool Rasterizer::WaitedOnBefore(VAddr address, u64 size) const {
+    const u64 first = address >> WaitedGranuleShift, last = (address + size - 1) >> WaitedGranuleShift;
+    if (last - first >= WaitedScanLimit) {
+        return true;
+    }
+    for (u64 granule = first; granule <= last; ++granule) {
+        if (waited_on[(granule >> 6) & (waited_on.size() - 1)] & (1ull << (granule & 63))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Rasterizer::NoteWaitedOn(VAddr address, u64 size) {
+    bool fresh = false;
+    for (u64 granule = address >> WaitedGranuleShift; granule <= (address + size - 1) >> WaitedGranuleShift; ++granule) {
+        u64& word = waited_on[(granule >> 6) & (waited_on.size() - 1)];
+        const u64 bit = 1ull << (granule & 63);
+        fresh |= (word & bit) == 0;
+        word |= bit;
+    }
+    return fresh;
 }
 
 void Rasterizer::NotePendingRead(VAddr address, u64 size) {
     if (draw_pipe && size && OnStageA()) {
+        if (ReadTrackingFiltered() && !WaitedOnBefore(address, size)) {
+            return;
+        }
         pending_reads.Note(address, size, draw_pipe->NextPacket());
     }
 }
@@ -852,6 +889,10 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size) {
         return;
     }
     if (!enabled || !UseDrawPipe() || size == 0) {
+        DrainDrawPipe(DrawPipe::ReasonConstRam);
+        return;
+    }
+    if (ReadTrackingFiltered() && NoteWaitedOn(address, size)) {
         DrainDrawPipe(DrawPipe::ReasonConstRam);
         return;
     }
@@ -898,6 +939,9 @@ void Rasterizer::NoteCommandWriteInOrder(VAddr addr, const void* data, u64 size)
 
 bool Rasterizer::PendingWriteOverlaps(VAddr address, u64 size) {
     if (!draw_pipe || size == 0) {
+        return false;
+    }
+    if (ReadTrackingFiltered() && draw_pipe->ReachedPacket(newest_pending_write)) {
         return false;
     }
     const u64 packet = pending_write_table.Newest(address, size);
@@ -1871,6 +1915,30 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
     }
     if (!pipeline || Shader::Info::srt_walk_faults != srt_faults) {
         return;
+    }
+    if (BbEngine::GxTrace::On()) {
+        if (const void* sample = BbEngine::GxTrace::TakeSample()) {
+            for (const auto* stage : pipeline->GetStages()) {
+                if (!stage) {
+                    continue;
+                }
+                for (const auto& resource : stage->images) {
+                    const auto sharp = resource.GetSharp(*stage);
+                    BbEngine::GxTrace::NoteResource(sample, BbEngine::GxTrace::ResourceImage, &sharp, resource.is_r128 == false);
+                }
+                for (const auto& resource : stage->buffers) {
+                    if (resource.IsSpecial()) {
+                        continue;
+                    }
+                    const auto sharp = resource.GetSharp(*stage);
+                    BbEngine::GxTrace::NoteResource(sample, BbEngine::GxTrace::ResourceBuffer, &sharp, false);
+                }
+                for (const auto& resource : stage->samplers) {
+                    const auto sharp = resource.GetSharp(*stage);
+                    BbEngine::GxTrace::NoteResource(sample, BbEngine::GxTrace::ResourceSampler, &sharp, false);
+                }
+            }
+        }
     }
     if (pipelined && FilterDrawPasses()) {
         PostDraw(pipeline, used_prepared, is_indexed, index_offset);

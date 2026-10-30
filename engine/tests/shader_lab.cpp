@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <chrono>
+#include "lifter/bridge.h"
+#include "lifter/gcn.h"
+#include "lifter/lift.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -350,6 +354,14 @@ bool ApplyLabProfile(Profile& profile) {
         {"flatbuf_storage", &profile.flatbuf_storage},
         {"early_fragment_tests", &profile.early_fragment_tests},
         {"supports_fragment_shader_barycentric", &profile.supports_fragment_shader_barycentric},
+        {"supports_amd_shader_explicit_vertex_parameter", &profile.supports_amd_shader_explicit_vertex_parameter},
+        {"needs_integer_interpolation_fix", &profile.needs_integer_interpolation_fix},
+        {"needs_buffer_offsets", &profile.needs_buffer_offsets},
+        {"needs_clip_distance_emulation", &profile.needs_clip_distance_emulation},
+        {"supports_shader_stencil_export", &profile.supports_shader_stencil_export},
+        {"supports_trinary_minmax", &profile.supports_trinary_minmax},
+        {"supports_native_cube_calc", &profile.supports_native_cube_calc},
+        {"supports_image_load_store_lod", &profile.supports_image_load_store_lod},
         {"fragment_exact_fp", &profile.fragment_exact_fp},
         {"manual_interpolation_all", &profile.manual_interpolation_all},
     };
@@ -2716,6 +2728,197 @@ int RunCurves(const fs::path& self, const fs::path& dir, const fs::path& report)
 
 }
 
+int LiftCache(const fs::path& dir, const fs::path& report, const fs::path& spv_dir, int rounds) {
+    const auto profile_bytes = ReadAll(dir / "profile.bin");
+    Profile profile{};
+    if (profile_bytes.size() != sizeof(Profile)) {
+        std::fprintf(stderr, "%s: profile of another engine\n", (dir / "profile.bin").string().c_str());
+        return 3;
+    }
+    std::memcpy(&profile, profile_bytes.data(), sizeof(Profile));
+    if (!ApplyLabProfile(profile)) {
+        return 2;
+    }
+    if (!spv_dir.empty()) {
+        fs::create_directories(spv_dir / "old");
+        fs::create_directories(spv_dir / "new");
+    }
+    std::ofstream csv(report);
+    csv << "name,stage,gcn_dwords,old_ns,new_ns,old_words,new_words,blocks,loops,selections,phis,phis_folded,nodes,live,exec_selects,decline\n";
+    Pools pools;
+    std::map<std::string, u32> declines;
+    u32 total = 0, lifted = 0;
+    unsigned long long total_old = 0, total_new = 0, words_old = 0, words_new = 0;
+    for (const auto& name : SpvNames(dir)) {
+        unsigned long long pgm = 0;
+        size_t perm = 0;
+        if (std::sscanf(name.c_str(), "0x%llx_%zu", &pgm, &perm) != 2) {
+            continue;
+        }
+        StageSpecialization spec;
+        size_t meta_perm = ~size_t{};
+        const auto meta = ReadAll(MetaPath(dir, pgm, perm));
+        LoadedCapture cap;
+        if (meta.empty() ||
+            !Vulkan::ReadShaderMetaSpec(std::vector<u8>(meta.begin(), meta.end()), spec, meta_perm) ||
+            meta_perm != perm || cap.Load(dir / (name + Native::StateExtension)) || cap.code.empty()) {
+            continue;
+        }
+        Gcn::fetch_override = cap.fetch.empty() && cap.header.fetch_sgpr != ~0u && spec.fetch_shader_data
+                                  ? &*spec.fetch_shader_data
+                                  : nullptr;
+        unsigned long long best_old = ~0ull, best_new = ~0ull;
+        std::vector<u32> old_spv;
+        Lifter::Output lifted_out;
+        for (int round = 0; round < rounds; ++round) {
+            ShaderParams params = cap.Params();
+            Info info(HwStage(cap.header.hw_stage), SwStage(cap.header.sw_stage), params);
+            RuntimeInfo runtime_info = cap.Runtime();
+            if (const char* planes = std::getenv("BB_LAB_UCP"); planes && info.hw_stage == HwStage::Vertex) {
+                runtime_info.hw.vs.user_clip_plane_mask = u32(std::strtoul(planes, nullptr, 0));
+            }
+            const RuntimeInfo before = runtime_info;
+            const auto t0 = std::chrono::steady_clock::now();
+            const auto program = TranslateProgram(cap.code, pools, info, runtime_info, profile);
+            Backend::Bindings bindings = spec.start;
+            old_spv = Backend::SPIRV::EmitSPIRV(profile, runtime_info, program, bindings);
+            const auto t1 = std::chrono::steady_clock::now();
+            const Lifter::Input input = Lifter::MakeInput(info, before, profile, spec.start, cap.code);
+            const auto t2 = std::chrono::steady_clock::now();
+            lifted_out = Lifter::Lift(input);
+            if (lifted_out.ok() && lifted_out.uses_tone_curve != info.uses_tone_curve) {
+                lifted_out.decline = "tone curve: the two compilers disagree";
+                lifted_out.spirv.clear();
+            }
+            const auto t3 = std::chrono::steady_clock::now();
+            best_old = std::min<unsigned long long>(best_old, std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+            best_new = std::min<unsigned long long>(best_new, std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count());
+        }
+        ++total;
+        const auto& st = lifted_out.stats;
+        csv << name << ',' << cap.header.hw_stage << ',' << cap.code.size() << ',' << best_old << ','
+            << best_new << ',' << old_spv.size() << ',' << lifted_out.spirv.size() << ',' << st.blocks << ','
+            << st.loops << ',' << st.selections << ',' << st.phis << ',' << st.phis_folded << ',' << st.nodes
+            << ',' << st.nodes_live << ',' << st.selects_for_exec << ',' << lifted_out.decline << ',' << lifted_out.decline_pc << ',' << lifted_out.last_pc << '\n';
+        if (lifted_out.ok()) {
+            ++lifted;
+            total_old += best_old;
+            total_new += best_new;
+            words_old += old_spv.size();
+            words_new += lifted_out.spirv.size();
+            if (!spv_dir.empty()) {
+                std::ofstream(spv_dir / "old" / (name + ".spv"), std::ios::binary).write(reinterpret_cast<const char*>(old_spv.data()), old_spv.size() * 4);
+                std::ofstream(spv_dir / "new" / (name + ".spv"), std::ios::binary).write(reinterpret_cast<const char*>(lifted_out.spirv.data()), lifted_out.spirv.size() * 4);
+            }
+        } else {
+            ++declines[lifted_out.decline];
+        }
+    }
+    std::printf("%u states, %u lifted\n", total, lifted);
+    std::printf("over the lifted: recompiler %.1f ms, lifter %.1f ms; SPIR-V %llu words against %llu\n",
+                total_old / 1e6, total_new / 1e6, words_old, words_new);
+    for (const auto& [why, count] : declines) {
+        std::printf("%5u %s\n", count, why.c_str());
+    }
+    return 0;
+}
+
+int LiftFiles(const fs::path& dir, const fs::path& report, const fs::path& spv_dir) {
+    if (!spv_dir.empty()) {
+        fs::create_directories(spv_dir);
+    }
+    std::ofstream csv(report);
+    csv << "name,stage,dwords,ns,words,buffers,images,samplers,flat,decline,pc\n";
+    std::map<std::string, u32> declines;
+    u32 total = 0, lifted = 0;
+    unsigned long long total_ns = 0, total_words = 0, total_dwords = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        const auto ext = entry.path().extension().string();
+        if (ext.size() != 4 || ext[0] != '.') {
+            continue;
+        }
+        const auto bytes = ReadAll(entry.path());
+        std::vector<u32> code(bytes.size() / 4);
+        std::memcpy(code.data(), bytes.data(), code.size() * 4);
+        Lifter::Input in;
+        in.discover = true;
+        in.code = code;
+        const auto decoded = Lifter::Decode(code);
+        bool has_lds_write = false, has_ring_store = false, exports_pos = false, exports_color = false, has_interp = false;
+        for (const auto& inst : decoded.insts) {
+            has_lds_write |= inst.enc == Lifter::Enc::Ds && (inst.op == Lifter::Op::DS_WRITE_B32 || inst.op == Lifter::Op::DS_WRITE2_B32);
+            has_ring_store |= inst.enc == Lifter::Enc::Mubuf && inst.glc && inst.slc;
+            exports_pos |= inst.enc == Lifter::Enc::Exp && inst.target >= 12 && inst.target < 16;
+            exports_color |= inst.enc == Lifter::Enc::Exp && inst.target < 10;
+            has_interp |= inst.enc == Lifter::Enc::Vintrp;
+        }
+        const auto kind = ext.substr(1);
+        if (kind == "ppo") {
+            in.stage = Lifter::Stage::Fragment;
+        } else if (kind == "cpo") {
+            in.stage = Lifter::Stage::Compute;
+        } else if (kind == "hpo") {
+            in.stage = Lifter::Stage::Hull;
+        } else if (kind == "dpo") {
+            in.stage = Lifter::Stage::Domain;
+        } else if (kind == "gpo") {
+            in.stage = Lifter::Stage::Geometry;
+        } else if (kind == "vpo") {
+            in.stage = has_lds_write ? Lifter::Stage::Local : has_ring_store ? Lifter::Stage::Export : Lifter::Stage::Vertex;
+        } else {
+            in.stage = has_lds_write && !exports_color && !exports_pos ? Lifter::Stage::Local
+                       : exports_color || has_interp ? Lifter::Stage::Fragment
+                       : exports_pos ? Lifter::Stage::Vertex
+                                     : Lifter::Stage::Compute;
+        }
+        in.num_user_sgprs = 16;
+        in.num_input_vgprs = 3;
+        for (u32 reg = 0; reg < 16; ++reg) {
+            in.ud_push[reg] = s32(reg);
+        }
+        in.opt.khr_barycentric = true;
+        in.opt.uniform_dword_layout = true;
+        in.opt.szinp_ok = true;
+        for (u32 i = 0; i < 32; ++i) {
+            in.ps_inputs.push_back({u8(i), false, false, 0});
+        }
+        in.z_export_format = 9;
+        in.mrtz_mask = 15;
+        in.workgroup_size = {1, 1, 1};
+        in.tess.ls_stride = 64;
+        in.tess.hs_cp_stride = 64;
+        in.tess.output_vertices = 3;
+        in.tess.domain = 1;
+        in.gs.in_vertices = 3;
+        in.gs.output_vertices = 4;
+        in.gs.invocations = 1;
+        in.gs.out_primitive = 2;
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto out = Lifter::Lift(in);
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+        ++total;
+        csv << entry.path().filename().string() << ',' << int(in.stage) << ',' << code.size() << ',' << ns << ',' << out.spirv.size() << ','
+            << out.buffers.size() << ',' << out.images.size() << ',' << out.samplers.size() << ',' << out.flat_table.size() << ','
+            << out.decline << ',' << out.last_pc << '\n';
+        if (out.ok()) {
+            ++lifted;
+            total_ns += ns;
+            total_words += out.spirv.size();
+            total_dwords += code.size();
+            if (!spv_dir.empty()) {
+                std::ofstream(spv_dir / (entry.path().stem().string() + ".spv"), std::ios::binary).write(reinterpret_cast<const char*>(out.spirv.data()), out.spirv.size() * 4);
+            }
+        } else {
+            ++declines[out.decline];
+        }
+    }
+    std::printf("%u programs, %u lifted in %.1f ms, %llu dwords of GCN to %llu words of SPIR-V\n", total, lifted, total_ns / 1e6, total_dwords, total_words);
+    for (const auto& [why, count] : declines) {
+        std::printf("%5u %s\n", count, why.c_str());
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::vector<char*> args;
     for (int i = 0; i < argc; ++i) {
@@ -2743,6 +2946,13 @@ int main(int argc, char** argv) {
         });
     }
 #endif
+    if (argc >= 3 && std::strcmp(argv[1], "--lift-files") == 0) {
+        return LiftFiles(argv[2], argc >= 4 ? fs::path(argv[3]) : fs::path("lab-lift-files.csv"), g_spv_dir);
+    }
+    if (argc >= 3 && std::strcmp(argv[1], "--lift") == 0) {
+        return LiftCache(argv[2], argc >= 4 ? fs::path(argv[3]) : fs::path("lab-lift.csv"), g_spv_dir,
+                         argc >= 5 ? std::max(1, std::atoi(argv[4])) : 1);
+    }
     if (argc >= 3 && std::strcmp(argv[1], "--check-cache") == 0) {
         return CheckCache(argv[2]);
     }

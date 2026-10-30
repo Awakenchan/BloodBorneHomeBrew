@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "bbport_copy.h"
+#include "engine/gx_objects.h"
 #include "bbport_sections.h"
 #include "bbport_toggles.h"
 #include "bbport_free_check.h"
@@ -45,6 +46,9 @@ using Binding = TextureCache::BindingType;
 
 void TraceOverlap(const ImageInfo& requested, Binding binding, ImageId id, const Image* candidate,
                   std::string_view action, std::string_view reason, int mip = -1, int slice = -1) {
+    if (BbEngine::GxObjects::On()) {
+        BbEngine::GxObjects::NoteOverlap(action.data(), action.size());
+    }
     if (!ImageOverlapLogging()) {
         return;
     }
@@ -1156,6 +1160,31 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
     ASSERT(info.guest_address != 0);
 
+    if (BbEngine::GxObjects::TexturesOwned() && desc.type <= BindingType::RenderTarget &&
+        info.num_samples == 1 && info.pixel_format != vk::Format::eUndefined) {
+        BbEngine::GxObjects::TextureExtent whole;
+        if (BbEngine::GxObjects::TextureAt(info.guest_address, &whole) &&
+            whole.width == info.size.width && whole.height == info.size.height &&
+            whole.levels <= info.mips_layout.size() && whole.levels >= info.resources.levels &&
+            whole.layers >= info.resources.layers &&
+            (whole.levels > info.resources.levels || whole.layers > info.resources.layers)) {
+            ImageInfo wide = info;
+            wide.resources.levels = whole.levels;
+            wide.resources.layers = whole.layers;
+            wide.UpdateSize();
+            const u32 before = info.mips_layout[0].size / std::max<u32>(info.resources.layers, 1);
+            const u32 after = wide.mips_layout[0].size / std::max<u32>(wide.resources.layers, 1);
+            if (before != after || wide.mips_layout[0].pitch != info.mips_layout[0].pitch) {
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenOtherLayout);
+            } else if (wide.guest_size > whole.room) {
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenTooLarge);
+            } else {
+                desc.info = wide;
+                BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::Widened);
+            }
+        }
+    }
+
     std::scoped_lock lock{mutex};
 
     u64 key_hash = info.guest_address ^ info.guest_size << 17 ^ u64(info.pixel_format) << 40 ^
@@ -1196,6 +1225,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         }
         if (cached.view_slice > 0) {
             desc.view_info.range.base.layer += cached.view_slice;
+        }
+        if (BbEngine::GxObjects::On()) {
+            BbEngine::GxObjects::NoteImage(info.guest_address, info.guest_size, ImageUid(cached.image_id), info.size.width, info.size.height,
+                                           static_cast<u32>(info.pixel_format));
         }
         return cached.image_id;
     }
@@ -1293,6 +1326,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         .view_mip = view_mip,
         .view_slice = view_slice,
     };
+    if (BbEngine::GxObjects::On()) {
+        BbEngine::GxObjects::NoteImage(info.guest_address, info.guest_size, ImageUid(image_id), info.size.width, info.size.height,
+                                       static_cast<u32>(info.pixel_format));
+    }
     return image_id;
 }
 

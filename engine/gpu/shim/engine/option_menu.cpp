@@ -18,9 +18,9 @@
 #include <string>
 #include <vector>
 
-extern "C" int runtime_file_translate(const char*, char*, std::size_t);
-extern "C" int runtime_file_mount(const char*, const char*);
-extern "C" void runtime_file_unmount(const char*);
+extern "C" int sys_file_translate(const char*, char*, std::size_t);
+extern "C" int sys_file_mount(const char*, const char*);
+extern "C" void sys_file_unmount(const char*);
 
 namespace BbEngine::Options {
 namespace {
@@ -260,7 +260,7 @@ bool MountAssets(const char* assets, const char* game) {
             const std::string guest = "/app0/" + relative.generic_string();
             char resolved[512]{};
             std::error_code e;
-            if (!fs::is_regular_file(prepared) || runtime_file_translate(guest.c_str(), resolved, sizeof resolved) ||
+            if (!fs::is_regular_file(prepared) || sys_file_translate(guest.c_str(), resolved, sizeof resolved) ||
                 !(fs::equivalent(resolved, merged / relative, e) || fs::equivalent(resolved, dump / relative, e))) {
                 host_log("pc-options off: %s is not the file the PC menus were made from", relative.generic_string().c_str());
                 return false;
@@ -280,8 +280,8 @@ bool MountAssets(const char* assets, const char* game) {
     }
     if (files.size() < 2 || files.size() > 24) return false;
     for (const auto& [guest, host] : files) {
-        if (runtime_file_mount(guest.c_str(), host.c_str())) {
-            for (const auto& done : g_mounted) runtime_file_unmount(done.c_str());
+        if (sys_file_mount(guest.c_str(), host.c_str())) {
+            for (const auto& done : g_mounted) sys_file_unmount(done.c_str());
             g_mounted.clear();
             return false;
         }
@@ -365,7 +365,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
     }
     if (!MountAssets(assets, game)) return false;
     if (!MenuMemory::Install(image, size)) {
-        for (const auto& path : g_mounted) runtime_file_unmount(path.c_str());
+        for (const auto& path : g_mounted) sys_file_unmount(path.c_str());
         g_mounted.clear();
         return false;
     }

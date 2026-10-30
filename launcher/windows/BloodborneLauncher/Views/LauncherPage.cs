@@ -488,6 +488,7 @@ namespace BloodborneLauncher.Views
         protected SettingRow Add(SettingRow row, Panel? into = null)
         {
             (into ?? Body).Children.Add(row);
+            LastRow = row;
             row.Searchable = true;
             row.Section = _group;
             _searchRows.Add(row);
@@ -498,6 +499,7 @@ namespace BloodborneLauncher.Views
 
         /// <summary>Every row put in with Add, in page order: the settings search's index of this
         /// page, built as the page is (no walk through the page's tree at each search).</summary>
+        protected SettingRow? LastRow { get; private set; }
         private readonly List<SettingRow> _searchRows = new();
 
         /// <summary>

@@ -205,7 +205,7 @@ static void scan_addons(void) {
         scan_folder(folder);
     }
     char root[PATH_SIZE];
-    DIR *titles = snprintf(root, sizeof(root), "%s/addcont", runtime_file_user_dir()) < (int)sizeof(root) ? opendir(root) : NULL;
+    DIR *titles = snprintf(root, sizeof(root), "%s/addcont", sys_file_user_dir()) < (int)sizeof(root) ? opendir(root) : NULL;
     if (titles) {
         for (struct dirent *title; (title = readdir(titles));) {
             char path[PATH_SIZE];

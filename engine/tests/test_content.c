@@ -19,11 +19,6 @@ static int failures;
 #define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); ++failures; } } while (0)
 #define CODE(call) ((uint32_t)(call))
 
-const char *runtime_file_user_dir(void) {
-    const char *dir = getenv("TEST_USER_DIR");
-    return dir ? dir : "no-such-user-dir";
-}
-
 static void *find(const char *nid) {
     const SysExport *e = sys_find(nid, NULL);
     return e ? e->function : NULL;
@@ -61,6 +56,8 @@ int main(int argc, char **argv) {
         fputs("FAIL: AppContent or Sysmodule export missing\n", stderr);
         return 1;
     }
+    const char *user = getenv("TEST_USER_DIR");
+    if (user) sys_file_configure(".", user);
     const char *mode = argc > 1 ? argv[1] : "";
     if (!strcmp(mode, "--missing")) {
         load(0xB4);

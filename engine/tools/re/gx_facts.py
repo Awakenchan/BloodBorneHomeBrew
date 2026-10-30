@@ -72,7 +72,22 @@ CREATORS = {
     'shader 0x120 c': (0x21672d0, 0x120),
     'shader 0x120 d': (0x21673e0, 0x120),
     'CreateDeferredContext': (0x21676c0, 0xdae0),
+    'CreateBlendState': (0x21658e0, 0x128),
+    'CreateDepthStencilState': (0x21659a0, 0x38),
+    'CreateRasterizerState': (0x2165a80, 0x24),
+    'CreateSamplerState': (0x2165b40, 0x40),
 }
+EMPTY_SETTERS = {
+    'RSSetState': 0x2169290,
+    'OMSetBlendState': 0x21693f0,
+    'OMSetDepthStencilState': 0x2169400,
+}
+COUNT_SETTERS = {
+    'RSSetViewports': (0x21692a0, 0x26d3350),
+    'RSSetScissorRects': (0x21692b0, 0x26d3360),
+}
+PENDING_ON_CONTEXT = 0xb730
+DRAW_WRAPPER = 0x21a23d0
 VIEWS = {
     'CreateDepthStencilView': (0x2166610, 0x40, 0x60, 0x535f420),
     'CreateRenderTargetView': (0x21667a0, 0x20, 0x50, 0x535f440),
@@ -113,6 +128,16 @@ def rip_targets(e, f):
             if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP:
                 out.add(i.address + i.size + op.mem.disp)
     return out
+
+
+BIND = 0x26bc320
+BIND_CALLS = {'the vertex buffer flush': 0x26cfcf0, 'the ring allocator': 0x26addc0, 'the rename lookup': 0x26ae840,
+              'setPrimitiveSetup': 0x1075960, 'setTessellation': 0x10756b0, 'the output flush': 0x26d2790,
+              'the shader table': 0x26d04e0, 'setShaderStages': 0x1076030, 'the fetch pointer': 0x1076390,
+              'setVsShader': 0x1075480, 'setPsShader': 0x10753c0, 'the prefetch': 0x1073f50,
+              'the pixel semantics': 0x10873a0, 'setPsInputs': 0x1075000}
+USER_DATA_BASES = 0x48d15c0
+USER_DATA_VALUES = (0x2e40, 0x2c0c, 0x2c4c, 0x2c8c, 0x2ccc, 0x2d0c, 0x2d4c)
 
 
 def main(path):
@@ -205,6 +230,18 @@ def main(path):
     check(f in calls(CREATORS['CreateGeometryShaderWithStreamOutput'][0]) or
           any(f in calls(c) for c in calls(CREATORS['CreateGeometryShaderWithStreamOutput'][0])),
           '  stream-output creator goes through it')
+
+    for name, f in EMPTY_SETTERS.items():
+        check(e.u8(f) == 0xc3, f'{name} at 0x{f:x} only returns: the caller writes the pending state')
+    for name, (f, inner) in COUNT_SETTERS.items():
+        check(any(f <= j < f + 0x10 for j in e.jumps_to(inner)), f'{name} at 0x{f:x} passes its count to 0x{inner:x}')
+    check(PENDING_ON_CONTEXT in immediates(e, DRAW_WRAPPER), f'0x{DRAW_WRAPPER:x} passes context+0x{PENDING_ON_CONTEXT:x} as the pending state')
+
+    bind = calls(BIND)
+    for name, f in BIND_CALLS.items():
+        check(f in bind, f'bind 0x{BIND:x} calls {name} 0x{f:x}')
+    check(all(e.u8(USER_DATA_BASES + 2 * i) == (v & 0xff) for i, v in enumerate(USER_DATA_VALUES)),
+          f'user-data registers by stage at 0x{USER_DATA_BASES:x}')
 
     print(f"\n{len(fails)} failed")
     return 1 if fails else 0

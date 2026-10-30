@@ -20,6 +20,7 @@ struct Hook {
 };
 bool Prepare(Hook& hook, std::uint8_t* image, std::size_t size, std::size_t offset,
              std::span<const std::uint8_t> expected, Callback callback);
+std::uint8_t* OriginalStub(const Hook& hook);
 void Discard(Hook& hook);
 std::uint8_t* TailStub(Callback callback, std::uint64_t resume);
 void FreeStub(std::uint8_t* stub);

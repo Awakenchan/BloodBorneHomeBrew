@@ -16,6 +16,7 @@
 #include "common/path_util.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "lifter/bridge.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/recompiler.h"
@@ -992,7 +993,16 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
     Shader::Native::Capture(info, runtime_before, code, profile);
     Shader::Native::StoreState(info, runtime_before, code, perm_idx);
+    const auto binding_before = binding;
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    if (Lifter::GetMode() != Lifter::Mode::Off) {
+        auto lifted = Lifter::Lift(Lifter::MakeInput(info, runtime_before, profile, binding_before, code));
+        if (lifted.ok() && lifted.uses_tone_curve == info.uses_tone_curve) {
+            spv = std::move(lifted.spirv);
+        } else {
+            LOG_INFO(Render_Vulkan, "Lifter declined {:#x}: {}", info.pgm_hash, lifted.decline);
+        }
+    }
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;

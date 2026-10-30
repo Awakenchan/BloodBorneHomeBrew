@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include "sys/sys.h"
 #include "runtime.h"
 #include "sys/sys.h"
 #include <stdlib.h>
@@ -16,14 +17,14 @@ typedef int32_t (ABI *CountOp)(uint32_t,int32_t);
 typedef int32_t (ABI *Wait)(uint32_t,int32_t,uint32_t *);
 typedef int32_t (ABI *Delete)(uint32_t);
 typedef int32_t (ABI *Cancel)(uint32_t,int32_t,int32_t *);
-#define GET(t,n) ((t)runtime_resolve(n,0))
+#define GET(t,n) ((t)sys_import_resolve(n,0))
 static Create create;
 static CountOp poll_sem,signal_sem;
 static Wait wait_sem;
 static Delete delete_sem;
 static Cancel cancel_sem;
 static void setup(void) {
-    runtime_start(1);
+    sys_imports_start(1);
     create=GET(Create,"188x57JYp0g#p#J");
     poll_sem=GET(CountOp,"12wOHk8ywb0#p#J");
     signal_sem=GET(CountOp,"4czppHBiriw#p#J");
@@ -31,8 +32,8 @@ static void setup(void) {
     delete_sem=GET(Delete,"R1Jvn8bSCW8#p#J");
     cancel_sem=GET(Cancel,"4DM06U2BNEY#p#J");
     assert(create && poll_sem && signal_sem && wait_sem && delete_sem && cancel_sem);
-    assert(!runtime_resolve("AAAAAAAAAAA#p#J",0));
-    assert(!runtime_resolve("188x57JYp0g#p#J",1));
+    assert(!sys_import_resolve("AAAAAAAAAAA#p#J",0));
+    assert(!sys_import_resolve("188x57JYp0g#p#J",1));
 }
 static void lifecycle(void) {
     struct { uint32_t handle,canary; } s={0,0xdeadbeef};

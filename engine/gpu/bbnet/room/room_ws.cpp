@@ -48,6 +48,18 @@ void NonBlocking(Sock s) { fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
 
 using Clock = std::chrono::steady_clock;
 
+constexpr auto kPingEvery = std::chrono::seconds(10);
+constexpr auto kDeadAfter = std::chrono::seconds(35);
+constexpr auto kClosePingEvery = std::chrono::seconds(2);
+constexpr auto kCloseDeadAfter = std::chrono::seconds(9);
+constexpr std::size_t kPacedBytesPerSecond = 12000;
+constexpr std::size_t kMostPacedQueued = 512;
+#ifdef _WIN32
+constexpr int kSendBuffer = 16384;
+#else
+constexpr int kSendBuffer = 8192;
+#endif
+
 struct Url {
     bool tls = true;
     std::string host;
@@ -204,6 +216,7 @@ bool WebSocket::Connect(const std::string& text, int timeout_s, std::string& err
     }
     int on = 1;
     ::setsockopt(impl_->sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on), sizeof on);
+    ::setsockopt(impl_->sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&kSendBuffer), sizeof kSendBuffer);
 
     if (url.tls) {
         impl_->ctx = SSL_CTX_new(TLS_client_method());
@@ -310,19 +323,30 @@ bool WebSocket::Send(const void* data, std::size_t size, bool binary) {
     Frame(frame, binary ? 2 : 1, static_cast<const std::uint8_t*>(data), size);
     {
         std::lock_guard lock(queue_mutex_);
+        backlog_ += frame.size();
         queue_.push_back(std::move(frame));
     }
     Wake();
     return true;
 }
 
-bool WebSocket::SendLossy(const void* data, std::size_t size, std::size_t most_queued) {
+bool WebSocket::SendLossy(const void* data, std::size_t size, std::size_t most_backlog) {
+    if (!open_ || backlog_.load() >= most_backlog) return false;
+    return Send(data, size, true);
+}
+
+bool WebSocket::SendPaced(const void* data, std::size_t size) {
     if (!open_) return false;
+    std::vector<std::uint8_t> frame;
+    frame.reserve(size + 14);
+    Frame(frame, 2, static_cast<const std::uint8_t*>(data), size);
     {
         std::lock_guard lock(queue_mutex_);
-        if (queue_.size() >= most_queued) return false;
+        if (paced_.size() >= kMostPacedQueued) return false;
+        paced_.push_back(std::move(frame));
     }
-    return Send(data, size, true);
+    Wake();
+    return true;
 }
 
 void WebSocket::Close() {
@@ -334,24 +358,34 @@ void WebSocket::Run(const Handler& handler) {
     Impl& s = *impl_;
     auto last_rx = Clock::now();
     auto last_ping = Clock::now();
+    auto next_paced = Clock::now();
     std::vector<std::uint8_t> buffer(65536);
     bool closed = false;
     while (!closed && !closing_) {
+        bool paced_waiting = false;
         {
             std::lock_guard lock(queue_mutex_);
+            if (s.out_at == s.out.size()) {
+                s.out.clear();
+                s.out_at = 0;
+            }
             while (!queue_.empty()) {
-                if (s.out_at == s.out.size()) {
-                    s.out.clear();
-                    s.out_at = 0;
-                }
                 s.out.insert(s.out.end(), queue_.front().begin(), queue_.front().end());
                 queue_.pop_front();
             }
+            if (!paced_.empty() && s.out_at == s.out.size() && Clock::now() >= next_paced) {
+                s.out.insert(s.out.end(), paced_.front().begin(), paced_.front().end());
+                next_paced = Clock::now() + std::chrono::microseconds(paced_.front().size() * 1000000 / kPacedBytesPerSecond);
+                backlog_ += paced_.front().size();
+                paced_.pop_front();
+            }
+            paced_waiting = !paced_.empty();
         }
         while (s.out_at < s.out.size() && !closed) {
             const int n = s.Write(s.out.data() + s.out_at, static_cast<int>(s.out.size() - s.out_at), closed);
             if (n <= 0) break;
             s.out_at += static_cast<std::size_t>(n);
+            backlog_ -= std::min<std::size_t>(backlog_.load(), static_cast<std::size_t>(n));
         }
         if (closed) break;
 
@@ -363,7 +397,7 @@ void WebSocket::Run(const Handler& handler) {
             FD_SET(s.sock, &reads);
             FD_SET(s.wake, &reads);
             if (s.out_at < s.out.size()) FD_SET(s.sock, &writes);
-            timeval tv{1, 0};
+            timeval tv{paced_waiting ? 0 : 1, paced_waiting ? 20000 : 0};
             ::select(static_cast<int>(std::max(s.sock, s.wake) + 1), &reads, &writes, nullptr, &tv);
             if (FD_ISSET(s.wake, &reads)) {
                 char drain[64];
@@ -428,11 +462,13 @@ void WebSocket::Run(const Handler& handler) {
         if (at) s.in.erase(s.in.begin(), s.in.begin() + static_cast<std::ptrdiff_t>(at));
 
         const auto now = Clock::now();
-        if (now - last_ping > std::chrono::seconds(10)) {
+        const bool close_watch = watch_closely_.load();
+        const auto ping_every = close_watch ? std::chrono::steady_clock::duration(kClosePingEvery) : std::chrono::steady_clock::duration(kPingEvery);
+        if (now - last_rx > ping_every && now - last_ping > ping_every) {
             Frame(s.out, 9, nullptr, 0);
             last_ping = now;
         }
-        if (now - last_rx > std::chrono::seconds(35)) closed = true;
+        if (now - last_rx > (close_watch ? kCloseDeadAfter : kDeadAfter)) closed = true;
     }
     if (!closed) {
         {

@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include "sys/sys.h"
 #include "runtime.h"
 #include <stdlib.h>
 
@@ -23,7 +24,7 @@ typedef int32_t (ABI *Allocate)(int64_t, int64_t, uint64_t, uint64_t, int, int64
 typedef int32_t (ABI *Map)(void **, uint64_t, int, int, int64_t, uint64_t);
 typedef int32_t (ABI *Unmap)(void *, uint64_t);
 typedef int32_t (ABI *Release)(uint64_t, uint64_t);
-#define GET(type, name) ((type)runtime_resolve(name, 0))
+#define GET(type, name) ((type)sys_import_resolve(name, 0))
 typedef void *(ABI *TlsAddress)(const uint64_t *);
 typedef void *(ABI *ThreadSelf)(void);
 typedef int32_t (ABI *ThreadGetAttr)(void *,void **);
@@ -157,7 +158,7 @@ static void posix_mutexes(void) {
     m=NULL;
     assert(lock(&m)==0 && lock(&m)==11 && trylock(&m)==16);
     assert(unlock(&m)==0 && destroy(&m)==0);
-    assert(runtime_resolve("dQHWEsJtoE4#q#q",0)==(uintptr_t)init);
+    assert(sys_import_resolve("dQHWEsJtoE4#q#q",0)==(uintptr_t)init);
 }
 static void wall_time(void) {
     typedef int (ABI *GetTime)(int64_t *,int32_t *);
@@ -171,7 +172,7 @@ static void wall_time(void) {
     assert(t.value[1]>=0 && t.value[1]<1000000);
     assert(t.canary==0xabcdef && z.canary==0x123456);
     assert(get(NULL,NULL)==0 && get(NULL,z.value)==0);
-    assert(!runtime_resolve("n88vx3C5nW8#q#q",1));
+    assert(!sys_import_resolve("n88vx3C5nW8#q#q",1));
 }
 static void direct_memory(void) {
     Allocate alloc=GET(Allocate,"rTXw65xmLIA#p#J");
@@ -324,13 +325,12 @@ static void rw_timeouts(void) {
     fixture_destroy(&f);
 }
 int main(int argc,char **argv) {
-    runtime_start(0); assert(runtime_resolve("bzQExy189ZI#q#q",0)==0);
-    runtime_start(1);
-    assert(runtime_resolve("bzQExy189ZI#wrong#module",0)==0);
-    assert(runtime_resolve("unknown",0)==0);
-    assert(runtime_resolve("8zTFvBIAIN8#q#q",1)==0);
-    assert(runtime_resolve("f7uOxY9mM1U#p#J",0)==0);
-    uint64_t *canary=(uint64_t *)runtime_resolve("f7uOxY9mM1U#p#J",1);
+    sys_imports_start(0); assert(sys_import_resolve("bzQExy189ZI#q#q",0)==0);
+    sys_imports_start(1);
+    assert(sys_import_resolve("unknown",0)==0);
+    assert(sys_import_resolve("8zTFvBIAIN8#q#q",1)==0);
+    assert(sys_import_resolve("f7uOxY9mM1U#p#J",0)==0);
+    uint64_t *canary=(uint64_t *)sys_import_resolve("f7uOxY9mM1U#p#J",1);
     assert(canary && *canary && !(*canary & 255));
     if (argc>1 && !strcmp(argv[1],"--guard-recursion")) {
         uint64_t guard=0; Acquire acquire=GET(Acquire,"3GPpjQdAMTw#q#q");

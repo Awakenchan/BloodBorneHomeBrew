@@ -196,8 +196,15 @@ int main(int argc, char** argv) {
             VkPushConstantRange push{VK_SHADER_STAGE_ALL, 0,
                                      std::min<uint32_t>(256, props.limits.maxPushConstantsSize)};
             VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-            plci.setLayoutCount = 1;
-            plci.pSetLayouts = &set_layout;
+            VkDescriptorSetLayoutBinding motion_binding{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, nullptr};
+            VkDescriptorSetLayoutCreateInfo motion_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            motion_info.bindingCount = 1;
+            motion_info.pBindings = &motion_binding;
+            VkDescriptorSetLayout motion_layout;
+            CHECK(vkCreateDescriptorSetLayout(device, &motion_info, nullptr, &motion_layout));
+            const VkDescriptorSetLayout set_layouts[2] = {set_layout, motion_layout};
+            plci.setLayoutCount = 2;
+            plci.pSetLayouts = set_layouts;
             plci.pushConstantRangeCount = 1;
             plci.pPushConstantRanges = &push;
             VkPipelineLayout layout;
@@ -296,10 +303,10 @@ int main(int argc, char** argv) {
                 VkPipelineInfoKHR pinfo{VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
                 pinfo.pipeline = pipeline;
                 uint32_t n = 0;
-                get_props(device, &pinfo, &n, nullptr);
+                if (get_props) get_props(device, &pinfo, &n, nullptr);
                 std::vector<VkPipelineExecutablePropertiesKHR> execs(
                     n, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
-                get_props(device, &pinfo, &n, execs.data());
+                if (get_props) get_props(device, &pinfo, &n, execs.data());
                 for (uint32_t i = 0; i < n; ++i) {
                     VkPipelineExecutableInfoKHR einfo{VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
                     einfo.pipeline = pipeline;
@@ -327,6 +334,7 @@ int main(int argc, char** argv) {
             if (module) vkDestroyShaderModule(device, module, nullptr);
             if (partner) vkDestroyShaderModule(device, partner, nullptr);
             vkDestroyPipelineLayout(device, layout, nullptr);
+            vkDestroyDescriptorSetLayout(device, motion_layout, nullptr);
             vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
         };
         std::atomic<size_t> next{0};

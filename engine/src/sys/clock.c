@@ -129,7 +129,7 @@ uint64_t runtime_tsc_frequency(void) {
 void runtime_sleep_stats(uint64_t *calls, uint64_t *ns) {
     *calls = atomic_exchange(&sleep_calls, 0);
     *ns = atomic_exchange(&sleep_total_ns, 0);
-    runtime_file_stream_report();
+    sys_file_stream_report();
 }
 
 static void sleep_ns(uint64_t ns) {

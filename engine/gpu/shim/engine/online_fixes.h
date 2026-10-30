@@ -22,4 +22,7 @@ void StopSummon();
 void GoToHost();
 bool Summoning();
 int PartyRole();
+bool Spectating();
+void SpectateNext();
+bool SpectatedName(std::string& name, int& choices);
 }

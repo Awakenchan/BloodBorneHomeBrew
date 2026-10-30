@@ -174,6 +174,15 @@ bool Prepare(Hook& hook, std::uint8_t* image, std::size_t size, std::size_t offs
     return true;
 }
 
+std::uint8_t* OriginalStub(const Hook& hook) {
+    if (!hook.site || !hook.stub) return nullptr;
+    return Pages().Make([&](std::uint8_t* page) {
+        Emitter e(page);
+        e.Copy(hook.site, hook.bytes);
+        e.JumpTo(reinterpret_cast<std::uint64_t>(hook.site + hook.bytes));
+    });
+}
+
 void Discard(Hook& hook) {
     Pages().Free(hook.stub);
     hook = {};

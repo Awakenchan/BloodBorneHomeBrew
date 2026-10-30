@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gpu/shim/engine/shared_progress.h"
+#include "gpu/shim/engine/boss_rewards.h"
 #include <chrono>
 #include <cstdio>
 
@@ -54,6 +55,16 @@ int main() {
     Check(presence.Here(t).empty(), "a hunter not seen for 10 s is no longer present");
     ledger.Record(9404, presence.Here(t));
     Check(ledger.For("staytorn").size() == 3 && ledger.For("j3loo").size() == 3, "an event with nobody there is kept from everyone");
+
+    Check(BossRewards::IsBossLot(15000) && BossRewards::IsBossLot(80000300) && BossRewards::IsBossLot(3601800), "the first, last and a middle boss lot are known");
+    Check(!BossRewards::IsBossLot(0) && !BossRewards::IsBossLot(14000) && !BossRewards::IsBossLot(2100900), "pickups and other lots are not boss lots");
+    Check(BossRewards::IsTrophyEvent(12411800) && !BossRewards::IsTrophyEvent(12100000), "Gascoigne's event carries a trophy, an ending does not count");
+    BossRewards::Given<FakeClock> given{std::chrono::minutes(10)};
+    const FakeClock::time_point start{};
+    Check(given.First(31000, start), "the first drop of a lot is given");
+    Check(!given.First(31000, start + std::chrono::seconds(5)), "the host's frame after the guest's own event gives nothing");
+    Check(given.First(21000, start + std::chrono::seconds(5)), "another boss's lot is its own");
+    Check(given.First(31000, start + std::chrono::minutes(11)), "a later fight gives the lot again");
 
     if (failures) return 1;
     std::printf("shared-progress-test: ok\n");

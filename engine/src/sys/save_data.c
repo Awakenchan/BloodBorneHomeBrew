@@ -138,7 +138,7 @@ static void turn_sound_on_in_saves(void) {
     const char *setting = getenv("BB_SOUND_HACK");
     if ((setting && setting[0] == '0') || !is_bloodborne()) return;
     char users[PATH_SIZE];
-    snprintf(users, sizeof(users), "%s/savedata", runtime_file_user_dir());
+    snprintf(users, sizeof(users), "%s/savedata", sys_file_user_dir());
     DIR *dir = opendir(users);
     if (!dir) return;
     for (struct dirent *user; (user = readdir(dir));) {
@@ -179,7 +179,7 @@ static int make_folders(const char *path) {
 }
 
 static void title_folder(int32_t user, const char *title, char *out, size_t size) {
-    snprintf(out, size, "%s/savedata/%d/%s", runtime_file_user_dir(), user, title && *title ? title : title_id);
+    snprintf(out, size, "%s/savedata/%d/%s", sys_file_user_dir(), user, title && *title ? title : title_id);
 }
 
 static int safe_name(const char *name, size_t limit) {
@@ -279,7 +279,7 @@ static SYS_ABI int32_t save_mount(const MountRequest *request, MountResult *resu
     memset(result, 0, sizeof(*result));
     snprintf(result->point.data, sizeof(result->point.data), "/savedata%d", slot & 15);
     result->status = exists ? 0 : 1;
-    runtime_file_mount(result->point.data, folder);
+    sys_file_mount(result->point.data, folder);
     ++mount_count;
     host_unlock(&lock);
     printf("Runtime: save data '%s' mounted at %s (%s%s)\n", dir->data, result->point.data,
@@ -292,7 +292,7 @@ static SYS_ABI int32_t save_umount(const MountPoint *point) {
     host_lock(&lock);
     int slot = mount_slot(point);
     if (slot >= 0) {
-        runtime_file_unmount(point->data);
+        sys_file_unmount(point->data);
         mounts[slot].used = 0;
     }
     host_unlock(&lock);

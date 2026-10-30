@@ -157,7 +157,7 @@ int Host(int game_port, int http_port) {
     dungeon.record[3] = 0x1d0a5a00u;
     dungeon.flags = {12900166u, 72900202u};
     for (int i = 0; i < 10; ++i) {
-        BbRoom::SendTravel(2412951);
+        BbRoom::SendTravel(2412951, {0x49, 0x4e, 0x46, 0x45});
         std::vector<std::uint32_t> flags = {12411800u, 72410201u, 1062u | 0x80000000u};
         for (std::uint32_t id = 0; flags.size() < 3600; ++id) flags.push_back(12400000u + id);
         BbRoom::SendProgress(flags);
@@ -207,9 +207,11 @@ int Guest(int game_port, int http_port, bool early) {
         if (n == 5 && std::string(buffer, 5) == "back!") {
             if (!SwapVitals("GuestHunter", "HostHunter")) return Fail("no vitals from the host");
             std::uint32_t lamp = 0;
-            for (int k = 0; k < 40 && !BbRoom::TakeTravel(lamp); ++k)
+            std::vector<std::uint8_t> world_flags;
+            for (int k = 0; k < 40 && !BbRoom::TakeTravel(lamp, &world_flags); ++k)
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             if (lamp != 2412951) return Fail("no travel from the host");
+            if (world_flags.size() != 4 || world_flags[0] != 0x49) return Fail("no world flags with the travel");
             std::printf("guest: the host travels to lamp %u\n", lamp);
             std::vector<std::uint32_t> flags;
             for (int k = 0; k < 40 && flags.empty(); ++k) {

@@ -39,6 +39,19 @@ namespace BloodborneLauncher.Views
                 });
             _role = ComboRow(SymbolRegular.Crown24, L.T("Role"), L.T("One player hosts, the others join the host's world"),
                 Choices.SeamlessRoles, () => Ini.Get("seamless_role", "guest"), v => { Ini.Set("seamless_role", v); ShowRoom(); });
+            _connection = ComboRow(SymbolRegular.PlugConnected24, L.T("Connection"),
+                L.T("Server: Lantern's co-op server, nothing to set up. Direct P2P: no server, guests connect straight to the host's PC for the lowest latency; they need to reach it over the same network, a VPN such as Tailscale or Radmin, or a forwarded port"),
+                Choices.SeamlessConnections, () => Ini.Get("seamless_direct") == "1" ? "direct" : "server",
+                v => { Ini.Set("seamless_direct", v == "direct" ? "1" : "0"); ShowRoom(); });
+            _directAddress = RowOf(TextRow(SymbolRegular.Globe24, L.T("Your address for guests"),
+                L.T("What guests connect to, written into your invite code: your VPN or public address. Empty: your address on this network"),
+                L.T("This network"), () => Ini.Get("seamless_direct_address"), v => Ini.Set("seamless_direct_address", v.Trim()), width: 220));
+            _directPort = RowOf(TextRow(SymbolRegular.Router24, L.T("Direct port"),
+                L.T("TCP port of your direct room. Forward this one if guests come over the internet, and allow Lantern Engine if Windows asks"),
+                DirectPort, () => Ini.Get("seamless_direct_port"), v => Ini.Set("seamless_direct_port", v.Trim()), width: 120));
+            _directHost = RowOf(TextRow(SymbolRegular.Globe24, L.T("Host's address"),
+                L.T("The host's address, or address:port. The invite code fills this in"),
+                L.T("From the invite code"), () => Ini.Get("seamless_direct_host"), v => Ini.Set("seamless_direct_host", v.Trim()), width: 220));
             IniText(SymbolRegular.Person24, L.T("Plate name"), L.T("Your name on the plate above your hunter and in the party list (up to 16 characters, spaces and symbols allowed)"), "Hunter", "seamless_player", 220);
             IniText(SymbolRegular.Crown24, L.T("Host title"),
                 L.T("The line above the host's name on plates in your game. Empty: only the name. The game's own is Beckoner"),
@@ -129,6 +142,10 @@ namespace BloodborneLauncher.Views
         private readonly Button _copy;
         private readonly Button _paste;
         private readonly SettingRow _newRoom;
+        private readonly FrameworkElement _connection;
+        private readonly SettingRow _directAddress;
+        private readonly SettingRow _directPort;
+        private readonly SettingRow _directHost;
         private const string InvitePrefix = "LANTERN-ROOM:";
 
         private static string RandomText(int length)
@@ -136,6 +153,32 @@ namespace BloodborneLauncher.Views
             const string letters = "abcdefghjkmnpqrstuvwxyz23456789";
             var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(length);
             return new string(bytes.Select(b => letters[b % letters.Length]).ToArray());
+        }
+
+        private const string DirectPort = "38765";
+
+        private SettingRow RowOf(FrameworkElement _) => LastRow!;
+
+        private void SelectConnection(int index)
+        {
+            if (_connection is Segmented segmented) segmented.Select(index, notify: false);
+            else if (_connection is System.Windows.Controls.ComboBox box) box.SelectedIndex = index;
+        }
+
+        private static string NetworkAddress()
+        {
+            foreach (var card in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (card.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up ||
+                    card.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback ||
+                    card.GetIPProperties().GatewayAddresses.Count == 0)
+                    continue;
+                foreach (var entry in card.GetIPProperties().UnicastAddresses)
+                {
+                    if (entry.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork) return entry.Address.ToString();
+                }
+            }
+            return "";
         }
 
         private void EnsureHostRoom()
@@ -160,6 +203,10 @@ namespace BloodborneLauncher.Views
             _copy.Visibility = host ? Visibility.Visible : Visibility.Collapsed;
             _paste.Visibility = host ? Visibility.Collapsed : Visibility.Visible;
             _newRoom.Visibility = host ? Visibility.Visible : Visibility.Collapsed;
+            var direct = Ini.Get("seamless_direct") == "1";
+            _directAddress.Visibility = host && direct ? Visibility.Visible : Visibility.Collapsed;
+            _directPort.Visibility = host && direct ? Visibility.Visible : Visibility.Collapsed;
+            _directHost.Visibility = !host && direct ? Visibility.Visible : Visibility.Collapsed;
             SetHint(_roomHint, host
                 ? L.T("You host your own room: copy the code and send it to friends")
                 : Ini.Get("seamless_room").Length > 0
@@ -171,7 +218,22 @@ namespace BloodborneLauncher.Views
         {
             EnsureHostRoom();
             var parts = new List<string> { Ini.Get("seamless_host_room"), S.SeamlessHostPassword };
-            if (Ini.Get("seamless_server").Length > 0) parts.Add(Ini.Get("seamless_server"));
+            if (Ini.Get("seamless_direct") == "1")
+            {
+                var address = Ini.Get("seamless_direct_address").Trim();
+                if (address.Length == 0) address = NetworkAddress();
+                if (address.Length == 0)
+                {
+                    Prompt.Tell(L.T("Invite code"), L.T("No network address found on this PC. Type your VPN or public address under Direct connection."));
+                    return;
+                }
+                var port = Ini.Get("seamless_direct_port").Trim();
+                parts.Add("ws://" + address + ":" + (port.Length > 0 ? port : DirectPort));
+            }
+            else if (Ini.Get("seamless_server").Length > 0 && !Ini.Get("seamless_server").StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
+            {
+                parts.Add(Ini.Get("seamless_server"));
+            }
             var code = InvitePrefix + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(string.Join('\n', parts)))
                 .TrimEnd('=').Replace('+', '-').Replace('/', '_');
             Ini.Set("seamless_role", "host");
@@ -207,7 +269,11 @@ namespace BloodborneLauncher.Views
             }
             Ini.Set("seamless_room", parts[0]);
             S.SeamlessPassword = parts[1];
-            Ini.Set("seamless_server", parts.Length > 2 ? parts[2] : "");
+            var direct = parts.Length > 2 && parts[2].StartsWith("ws://", StringComparison.OrdinalIgnoreCase);
+            Ini.Set("seamless_server", parts.Length > 2 && !direct ? parts[2] : "");
+            Ini.Set("seamless_direct", direct ? "1" : "0");
+            Ini.Set("seamless_direct_host", direct ? parts[2][5..] : "");
+            SelectConnection(direct ? 1 : 0);
             Ini.Set("seamless_role", "guest");
             if (_role is Segmented segmented) segmented.Select(0, notify: false);
             else if (_role is System.Windows.Controls.ComboBox box) box.SelectedIndex = 0;
@@ -333,6 +399,7 @@ namespace BloodborneLauncher.Views
         {
             _online.IsChecked = Ini.Get("online_enabled") == "1";
             if (_linking is null) ShowLink();
+            ShowRoom();
         }
 
         private async Task TestAsync()

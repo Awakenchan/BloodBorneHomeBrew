@@ -95,6 +95,15 @@ vk::ExternalMemoryHandleTypeFlagBits ChunkHandleType() {
 
 bool PcModelGpu(const Vulkan::Instance& instance) {
     static const bool ok = [&] {
+        if (instance.GetVendorID() == 0x1002 && !instance.IsVertexInputDynamicState()) {
+            const char* force = std::getenv("BB_GUEST_IN_PLACE_LEGACY_AMD");
+            if (!(force && force[0] == '1')) {
+                std::printf("Guest memory: AMD's legacy driver (Polaris, Vega, older APUs) draws "
+                            "wrong lights and vertices with the PC memory model "
+                            "(BB_GUEST_IN_PLACE_LEGACY_AMD=1 keeps it on)\n");
+                return false;
+            }
+        }
         if (instance.GetVendorID() != 0x1002) {
             std::printf("Guest memory: the PC memory model on this GPU (vendor 0x%04x) is new; "
                         "\"Write fault sites\" name writers its hooks miss\n",
@@ -162,7 +171,7 @@ bool Usable(const Vulkan::Instance& instance) {
 
 void Install(const Vulkan::Instance& instance) {
     const char* in_place = std::getenv("BB_GUEST_IN_PLACE");
-    if (!(in_place && in_place[0] == '1') || !Usable(instance)) {
+    if (!(in_place && in_place[0] == '1') || !PcModelGpu(instance) || !Usable(instance)) {
         return;
     }
     std::printf("Guest memory: the GPU imports the game's memory in %llu MiB chunks as it uses "

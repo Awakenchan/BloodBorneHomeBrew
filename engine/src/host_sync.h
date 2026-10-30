@@ -95,6 +95,14 @@ typedef pthread_cond_t HostCond;
 #define HOST_COND_INIT PTHREAD_COND_INITIALIZER
 static inline void host_cond_init(HostCond *c) { pthread_cond_init(c, NULL); }
 static inline void host_cond_wait(HostCond *c, HostMutex *m) { pthread_cond_wait(c, m); }
+static inline int host_cond_timedwait(HostCond *c, HostMutex *m, uint64_t ns) {
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    ns += (uint64_t)t.tv_nsec;
+    t.tv_sec += (time_t)(ns / 1000000000);
+    t.tv_nsec = (long)(ns % 1000000000);
+    return pthread_cond_timedwait(c, m, &t);
+}
 static inline void host_cond_signal(HostCond *c) { pthread_cond_signal(c); }
 static inline void host_cond_broadcast(HostCond *c) { pthread_cond_broadcast(c); }
 

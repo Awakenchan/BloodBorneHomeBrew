@@ -3,14 +3,19 @@
 
 #pragma once
 
+#include <cstddef>
 #include "common/types.h"
-#include "core/libraries/kernel/equeue.h"
 
 namespace Core::Loader {
 class SymbolsResolver;
 }
 
+namespace Libraries::Kernel {}
+
 namespace Libraries::GnmDriver {
+
+using OrbisKernelEqueue = s64;
+struct OrbisKernelEvent;
 
 using namespace Kernel;
 

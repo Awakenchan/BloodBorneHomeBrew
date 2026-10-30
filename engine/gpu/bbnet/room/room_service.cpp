@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "room_service.h"
+#include "room_host.h"
 
 #include <atomic>
 #include <chrono>
@@ -39,6 +40,7 @@ inline void CloseSocket(SocketHandle s) { close(s); }
 #include <httplib.h>
 #include <openssl/evp.h>
 
+#include "room_announce.h"
 #include "room_link.h"
 
 namespace BbRoom {
@@ -47,16 +49,31 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12, kBring = 13, kVoice = 14 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12, kBring = 13, kVoice = 14, kBossLot = 15, kBossTrophy = 16, kPiece = 17, kPartyCall = 18, kTravelFlags = 19 };
 constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4 + 4;
 constexpr std::size_t kBatchBytes = 16000;
 constexpr std::size_t kBundleBytes = 60000;
-constexpr auto kBundleWindow = std::chrono::milliseconds(25);
 constexpr std::size_t kLargestPortrait = 128 * 1024;
+constexpr std::size_t kPieceBytes = 1200;
+constexpr std::size_t kPieceHead = 4;
+constexpr std::size_t kMostVoiceBacklog = 2048;
 
 std::string Env(const char* name) {
     const char* v = std::getenv(name);
     return v ? v : "";
+}
+
+bool DirectRoom() {
+    static const bool direct = Env("BB_ROOM_SERVER").rfind("ws://", 0) == 0;
+    return direct;
+}
+
+std::chrono::milliseconds BundleWindow() {
+    static const std::chrono::milliseconds window = [] {
+        const std::string set = Env("BB_ROOM_BUNDLE_MS");
+        return std::chrono::milliseconds(set.empty() ? (DirectRoom() ? 2 : 8) : std::atoi(set.c_str()));
+    }();
+    return window;
 }
 
 void Log(const char* format, ...) __attribute__((format(printf, 1, 2)));
@@ -119,6 +136,12 @@ struct Channel {
     std::map<int, Clock::time_point> ritual;
 };
 
+struct Pieces {
+    std::uint8_t id = 0;
+    std::uint8_t next = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
 struct State {
     Link link;
     std::atomic<int> game_port{0};
@@ -152,17 +175,26 @@ struct State {
     Clock::time_point bring_at{};
     std::deque<std::pair<int, std::vector<std::uint8_t>>> voice;
     Link voice_link;
+    LocalRoom local_room;
     std::mutex voice_mu;
     bool voice_on = false;
     std::thread voice_thread;
     std::atomic<bool> voice_run{false};
     std::uint32_t travel = 0;
     Clock::time_point travel_at;
+    std::vector<std::uint8_t> travel_flags;
     std::vector<std::uint32_t> progress;
+    std::vector<std::int32_t> boss_lots;
+    std::vector<std::int32_t> boss_trophies;
+    std::vector<std::pair<int, PartyCall>> party_calls;
     std::vector<Dungeon> dungeons;
     std::vector<std::uint32_t> chalices;
     bool chalices_new = false;
     std::map<int, std::vector<std::uint8_t>> portraits;
+    std::map<int, Pieces> pieces;
+    std::uint8_t next_pieces = 0;
+    std::mutex announce_mu;
+    AnnouncementQueue announcements;
 };
 
 State& S() {
@@ -867,21 +899,17 @@ void BridgeToGame(int slot, const std::uint8_t* data, std::size_t size) {
 }
 
 void SendBundle(std::map<int, std::vector<std::uint8_t>>& pending) {
-    std::vector<std::uint8_t> frame{kBundle};
-    const auto flush = [&] {
-        if (frame.size() > 1) S().link.Send(0, frame.data(), frame.size());
-        frame.assign(1, kBundle);
-    };
+    std::vector<std::uint8_t> frame;
     for (auto& [slot, bytes] : pending) {
         if (bytes.empty()) continue;
-        if (frame.size() + 5 + bytes.size() > kBundleBytes) flush();
+        frame.assign(1, kBundle);
         frame.push_back(static_cast<std::uint8_t>(slot));
         const auto n = static_cast<std::uint32_t>(bytes.size());
         frame.insert(frame.end(), reinterpret_cast<const std::uint8_t*>(&n), reinterpret_cast<const std::uint8_t*>(&n) + 4);
         frame.insert(frame.end(), bytes.begin(), bytes.end());
+        S().link.SendGame(slot, frame.data(), frame.size());
         bytes.clear();
     }
-    flush();
 }
 
 void BridgeLoop() {
@@ -929,7 +957,7 @@ void BridgeLoop() {
                         held += 2 + static_cast<std::size_t>(n);
                     }
                 }
-                if (until == Clock::time_point{} && held) until = Clock::now() + kBundleWindow;
+                if (until == Clock::time_point{} && held) until = Clock::now() + BundleWindow();
             }
             if (until == Clock::time_point{}) break;
             if (Clock::now() >= until || held >= kBundleBytes) break;
@@ -985,6 +1013,12 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         S().travel_at = Clock::now();
         return;
     }
+    if (kind == kTravelFlags) {
+        if (sender != S().link.HostSlot() || data.size() < 2 || data.size() > 1 + 4096) return;
+        std::lock_guard lock(S().vitals_mu);
+        S().travel_flags.assign(data.begin() + 1, data.end());
+        return;
+    }
     if (kind == kProgress) {
         if (data.size() < 1 || (data.size() - 1) % 4 || sender != S().link.HostSlot()) return;
         std::lock_guard lock(S().vitals_mu);
@@ -993,6 +1027,28 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
             std::memcpy(&id, data.data() + at, 4);
             S().progress.push_back(id);
         }
+        return;
+    }
+    if (kind == kBossLot) {
+        if (data.size() != 5 || sender != S().link.HostSlot()) return;
+        std::int32_t lot = 0;
+        std::memcpy(&lot, data.data() + 1, 4);
+        std::lock_guard lock(S().vitals_mu);
+        if (S().boss_lots.size() < 64) S().boss_lots.push_back(lot);
+        return;
+    }
+    if (kind == kBossTrophy) {
+        if (data.size() != 5 || sender != S().link.HostSlot()) return;
+        std::int32_t trophy = 0;
+        std::memcpy(&trophy, data.data() + 1, 4);
+        std::lock_guard lock(S().vitals_mu);
+        if (S().boss_trophies.size() < 64) S().boss_trophies.push_back(trophy);
+        return;
+    }
+    if (kind == kPartyCall) {
+        if (data.size() != 2) return;
+        std::lock_guard lock(S().vitals_mu);
+        if (S().party_calls.size() < 16) S().party_calls.emplace_back(sender, PartyCall(data[1]));
         return;
     }
     if (kind == kDungeon) {
@@ -1018,6 +1074,30 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         if (data.size() != 1 || sender != S().link.HostSlot()) return;
         std::lock_guard lock(S().vitals_mu);
         S().bring_at = Clock::now();
+        return;
+    }
+    if (kind == kPiece) {
+        if (data.size() <= kPieceHead) return;
+        const std::uint8_t id = data[1], index = data[2], count = data[3];
+        std::vector<std::uint8_t> whole;
+        {
+            std::lock_guard lock(S().vitals_mu);
+            Pieces& p = S().pieces[sender];
+            if (index == 0) {
+                p = Pieces{};
+                p.id = id;
+            }
+            if (p.id != id || p.next != index || p.bytes.size() + data.size() > kLargestPortrait) {
+                S().pieces.erase(sender);
+                return;
+            }
+            p.bytes.insert(p.bytes.end(), data.begin() + kPieceHead, data.end());
+            ++p.next;
+            if (p.next < count) return;
+            whole = std::move(p.bytes);
+            S().pieces.erase(sender);
+        }
+        if (!whole.empty() && whole[0] == kPortrait) OnFrame(sender, whole);
         return;
     }
     if (kind == kPortrait) {
@@ -1156,6 +1236,13 @@ void LinkLoop() {
                 Log("could not join the room (%s): it may be full (5 players), or your connection already has another "
                     "room open (one room per player); retrying",
                     S().link.LastError().empty() ? "refused" : S().link.LastError().c_str());
+                break;
+            case Event::Kind::Announcement:
+                if (AnnouncementServer(Env("BB_ROOM_SERVER"))) {
+                    const std::string words(e.data.begin(), e.data.end());
+                    std::lock_guard lock(S().announce_mu);
+                    if (S().announcements.Offer(e.id, words, Clock::now())) Log("server announcement: %s", CleanAnnouncement(words).c_str());
+                }
                 break;
             }
         }
@@ -1342,23 +1429,32 @@ std::vector<Vitals> Party(int max_age_ms) {
     return out;
 }
 
-void SendTravel(std::uint32_t lamp) {
+void SendTravel(std::uint32_t lamp, const std::vector<std::uint8_t>& world_flags) {
     if (!S().started.load() || !S().link.Connected()) return;
+    if (!world_flags.empty()) {
+        std::vector<std::uint8_t> flags_frame(1 + world_flags.size());
+        flags_frame[0] = kTravelFlags;
+        std::memcpy(flags_frame.data() + 1, world_flags.data(), world_flags.size());
+        S().link.Send(0, flags_frame.data(), flags_frame.size());
+    }
     std::uint8_t frame[5] = {kTravel};
     std::memcpy(frame + 1, &lamp, 4);
     S().link.Send(0, frame, sizeof frame);
     Log("travelling to lamp %u: the party follows", lamp);
 }
 
-bool TakeTravel(std::uint32_t& lamp) {
+bool TakeTravel(std::uint32_t& lamp, std::vector<std::uint8_t>* world_flags) {
     std::lock_guard lock(S().vitals_mu);
     if (!S().travel) return false;
+    std::vector<std::uint8_t> flags;
+    flags.swap(S().travel_flags);
     if (Clock::now() - S().travel_at > std::chrono::seconds(120)) {
         S().travel = 0;
         return false;
     }
     lamp = S().travel;
     S().travel = 0;
+    if (world_flags) *world_flags = std::move(flags);
     return true;
 }
 
@@ -1373,6 +1469,41 @@ void SendProgress(const std::vector<std::uint32_t>& flags, int target) {
 std::vector<std::uint32_t> TakeProgress() {
     std::lock_guard lock(S().vitals_mu);
     return std::exchange(S().progress, {});
+}
+
+void SendBossLot(std::int32_t lot, int target) {
+    if (!S().started.load() || !S().link.Connected()) return;
+    std::uint8_t frame[5] = {kBossLot};
+    std::memcpy(frame + 1, &lot, 4);
+    S().link.Send(target, frame, sizeof frame);
+}
+
+void SendBossTrophy(std::int32_t trophy, int target) {
+    if (!S().started.load() || !S().link.Connected()) return;
+    std::uint8_t frame[5] = {kBossTrophy};
+    std::memcpy(frame + 1, &trophy, 4);
+    S().link.Send(target, frame, sizeof frame);
+}
+
+void SendPartyCall(PartyCall call, int target) {
+    if (!S().started.load() || !S().link.Connected()) return;
+    const std::uint8_t frame[2] = {kPartyCall, std::uint8_t(call)};
+    S().link.Send(target, frame, sizeof frame);
+}
+
+std::vector<std::pair<int, PartyCall>> TakePartyCalls() {
+    std::lock_guard lock(S().vitals_mu);
+    return std::exchange(S().party_calls, {});
+}
+
+std::vector<std::int32_t> TakeBossTrophies() {
+    std::lock_guard lock(S().vitals_mu);
+    return std::exchange(S().boss_trophies, {});
+}
+
+std::vector<std::int32_t> TakeBossLots() {
+    std::lock_guard lock(S().vitals_mu);
+    return std::exchange(S().boss_lots, {});
 }
 
 void PutDungeonForm(std::uint64_t channel, const std::vector<std::uint8_t>& data) {
@@ -1436,7 +1567,17 @@ void SendPortrait(const std::vector<std::uint8_t>& packed) {
     std::vector<std::uint8_t> frame(1 + packed.size());
     frame[0] = kPortrait;
     std::memcpy(frame.data() + 1, packed.data(), packed.size());
-    S().link.Send(0, frame.data(), frame.size());
+    const std::size_t count = (frame.size() + kPieceBytes - 1) / kPieceBytes;
+    if (count > 255) return;
+    const std::uint8_t id = ++S().next_pieces;
+    std::vector<std::uint8_t> piece;
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t at = i * kPieceBytes;
+        const std::size_t size = std::min(kPieceBytes, frame.size() - at);
+        piece.assign({kPiece, id, static_cast<std::uint8_t>(i), static_cast<std::uint8_t>(count)});
+        piece.insert(piece.end(), frame.begin() + static_cast<std::ptrdiff_t>(at), frame.begin() + static_cast<std::ptrdiff_t>(at + size));
+        if (!S().link.SendPaced(0, piece.data(), piece.size())) return;
+    }
 }
 
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakePortraits() {
@@ -1462,11 +1603,19 @@ void Start(int game_p2p_port) {
     S().http_port = std::atoi(Env("BB_ROOM_HTTP_PORT").c_str());
     if (S().http_port <= 0 || S().http_port > 65535) S().http_port = game_p2p_port + 1;
     S().link.SetHost(S().host);
+    if (const int local = std::atoi(Env("BB_ROOM_LOCAL_PORT").c_str()); S().host && local > 0) {
+        std::string error;
+        if (!S().local_room.Start(local, Derive(Env("BB_ROOM_NAME"), Env("BB_ROOM_PASSWORD")).room_id, error)) {
+            Log("direct room not opened: %s", error.c_str());
+            return;
+        }
+        Log("direct room open on this PC, port %d: guests connect straight to this game, no server", local);
+    }
     if (!S().link.Start(Env("BB_ROOM_SERVER"), Env("BB_ROOM_NAME"), Env("BB_ROOM_PASSWORD"))) {
         Log("no room server or room name: seamless co-op is off");
         return;
     }
-    Log("joining room on %s as %s (%s), game server on 127.0.0.1:%d", Env("BB_ROOM_SERVER").c_str(),
+    Log("joining room on %s as %s (%s), game server on 127.0.0.1:%d", DirectRoom() ? "a direct connection" : Env("BB_ROOM_SERVER").c_str(),
         S().player.c_str(), S().host ? "host" : "guest", S().http_port);
     std::thread(LinkLoop).detach();
     std::thread(BridgeLoop).detach();
@@ -1567,7 +1716,7 @@ void SendVoice(const std::vector<std::uint8_t>& packet) {
     std::vector<std::uint8_t> frame(1 + packet.size());
     frame[0] = kVoice;
     std::memcpy(frame.data() + 1, packet.data(), packet.size());
-    S().voice_link.SendLossy(0, frame.data(), frame.size(), 4);
+    S().voice_link.SendLossy(0, frame.data(), frame.size(), kMostVoiceBacklog);
 }
 
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakeVoice() {
@@ -1591,6 +1740,11 @@ bool TakeBring() {
     const bool fresh = Clock::now() - S().bring_at < std::chrono::seconds(10);
     S().bring_at = {};
     return fresh;
+}
+
+bool CurrentAnnouncement(std::string& text, float& alpha) {
+    std::lock_guard lock(S().announce_mu);
+    return S().announcements.Current(Clock::now(), text, alpha);
 }
 
 bool CurrentNotice(std::string& text) {

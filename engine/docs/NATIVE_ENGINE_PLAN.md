@@ -6,67 +6,52 @@ details are in `GX_NATIVE_PLAN.md`, the module-by-module rewrite in `OWN_CODE_PL
 
 ## Progress (updated with every step)
 
-Last update: 2026-10-30, phase J step 5d.
-
-**System library imports** the game and its modules need from us (537 in all, from
-`tools/re/import_census.py`; libc and Fios2 are the game's own Sony modules and not counted):
-
-| Served by | Imports | Share |
-|---|---|---|
-| **Lantern, `src/sys/`** | **226** | **42%** |
-| bbport's C runtime, `src/runtime_*.c` | 49 | 9% |
-| shadPS4, `gpu/shadps4/core/libraries` | 77 | 14% |
-| Online (The Hunter's Dream, shadNet; the user's call) | 165 | 31% |
-| Served by the game's libc module (Fios2's libc imports) or left unresolved | 20 | 4% |
-
-**Lines of code** in the system layer: ours 6,410 (`src/sys/`, 23 files); bbport's runtime left
-2,675 (was ~8,300 before phase J).
-
-Known inherited issue, kept as it was for now (both old and new behave the same): when gapless
-playback ends inside an ATRAC9 superframe, Ajm decodes the superframe's remaining frames without
-checking that the input buffer holds them, so a short buffer is read past its end. The game passes
-whole superframes, so it does not happen in play; fix it on its own later with a test.
+Last update: 2026-10-30, phase J at its end state for this branch: every system library but GnmDriver and online is ours. Keep this section short: what is true now, one line
+per step. Details belong in the commit that did the step.
 
 | Phase | State |
 |---|---|
-| A. Tools (Ghidra, full dump, GX facts) | done 2026-10-29: 158,440 functions decompiled, 162 GX facts checked |
-| B. GX trace | next for the renderer |
-| C–I. Renderer | not started |
-| J. System libraries | in progress: Rtc (10), services and dialogs (65), AppContent and Sysmodule (6), `gettimeofday` (1), Pad (9), AudioOut (6), Ajm (12), SaveData (11), semaphores (5), rwlocks (9), mutexes and condition variables (30), threads, thread-specific data and once (38), clocks, sleep, signals and process calls (24) |
+| A. Tools (Ghidra, full dump, GX facts) | done 2026-10-29 |
+| B. GX trace | done 2026-10-30 on this branch: 0 differences over 5.36 million draws in three areas (a boss still to check) |
+| C. GX objects | done 2026-10-30 on this branch: every bound object known over 2.2 million draws |
+| D. Draws from GX | started: shader resources proven to be in GX's slots; the resource bind is Lantern's for 90% of binds behind `LANTERN_GX_DRAWS=1`, 0 differences (`GX_NATIVE_PLAN.md`) |
+| E. Buffers and textures by object | started: GX and YEBIS textures are in the object table and 97% of image lookups map to one; a texture's description sets its image's mips and layers behind `LANTERN_GX_TEXTURES=1` |
+| F, H-I. Renderer | not started |
+| G. Shaders | lifter built behind `LANTERN_LIFTER`, off by default: all 9,847 programs lift, 0 different from the recompiler on the dev cache for every family profile; not yet run in the game (`native_shader_compiler.md`) |
+| J. System libraries | done on this branch except GnmDriver (waits for the GX path) and online (the user's call); steps 6a-9 not played by a person yet: one unattended boot on copied saves, offline, reached the game (60 FPS, 847 draws a frame, two lamp warps) |
 
-Phase J log:
+**System library imports** the game and its modules need from us (537, from
+`tools/re/import_census.py`; libc and Fios2 are the game's own Sony modules and not counted):
 
-| Step | Libraries | Functions | Checked against the old code | In game |
-|---|---|---|---|---|
-| 1 | Rtc | 10 | 2,000,000 random calls, 0 differences | played, works (2026-10-30) |
-| 2 | UserService, SystemService, NpTrophy, the five dialogs, ImeDialog, PlayGo, DiscMap, Mouse, Voice, AudioIn, AppContent, Sysmodule, Posix `gettimeofday` | 72 | 347-line scripted transcript, identical | played, works (2026-10-30) |
-| 3 | Pad, AudioOut, Ajm | 27 | Pad: 90,000 reads on two SDL virtual controllers (hot-swap, touchpads, keyboard, menu remaps, overlay capture, pad-file injection, three configs), 0 differences. AudioOut: every port's processed audio byte-identical over 4 runs, 7.1-to-stereo fold included. Ajm: 41 real ATRAC9 streams from the game's sound banks, ~8,500 decode jobs with random layouts, identical. Planted bugs caught in all three | played, works (2026-10-30) |
-| 4 | SaveData | 11 | A scripted save session on copies of a real save folder (mounts, new saves, params, icons, search with patterns and every sort, delete, save-data memory, the sound-flag fix, bad names, 16-slot limit): transcript and the final 52 files (30 MB) identical. Planted bugs caught | played, works (2026-10-30) |
-| 5a | Semaphores, rwlocks | 14 | Scripted transcript with real waiting threads (queue order, partial signals, timeouts and the time left, cancel and delete wake-ups, deadlock, EBUSY, EPERM, destroyed and bogus handles): identical. Stress on 8 threads: 0 rwlock violations, 120,000 semaphore items balanced, like the old. Faster: semaphore stress 26 ms (old 97), lookups among 3,000 objects 7 ms (old 257), about 1 probe each instead of 59-77 list steps. Planted bugs caught | played, works (2026-10-30) |
-| 5b | Mutexes, condition variables (libkernel and Posix) | 30 | 256-line scripted transcript with real threads (every type's self-lock, recursion depth, foreign unlock, timed locks, destroy while held or waited on, static initializers, cond waits on unowned and foreign-held mutexes, signal/broadcast counts, recursive mutex 3 deep in a cond wait, every Posix code): identical to the old Windows code on Windows and on Linux. Stress: 8 threads, 1.6 M locks, and a 200,000-item cond queue, balanced. Faster on Windows (medians of 10): contended 54 ms (old 66), cond queue 13.5 ms (old 20), uncontended the same; Linux within noise. 10 of 13 planted bugs caught, the other 3 equivalent there or new checks the old code lacked (the unit test covers those) | played, works (2026-10-30), see below |
-| 5c | Threads (create, join, detach, exit, self, priorities, affinity, names, attributes), thread-specific data, once, `__error` (libkernel and Posix) | 38 | 174-line scripted transcript with real threads (every attribute setter and getter with good and bad values, destroyed and bogus handles, create and join results, exit from nested calls, join self, main, twice, detached and detached-later threads, per-thread errno, key destructors at thread exit, 255-key limit, once among 8 threads, the audio-priority threads, the Posix codes, the engine's own spawn calls): identical to the old code on Windows and Linux. Faster: thread lookups 9 ms for 1.28 M (old 65 ms; about 2 probes instead of 51 list steps), lookups among 3,000 live attributes 9 ms (old 2.5 s). 10 of 12 planted bugs caught, the other 2 cannot be seen through any import (a default nothing reads back, a freed attribute left in the registry) | played, works (2026-10-30), see below |
-| 5d | Clocks, sleep, time zone, process time, TSC, `time`, page size, pid, yield, `_exit`, debug exceptions, signals and masks, `getrusage`, `sysctl` (libkernel, Posix, LibcInternal) | 24 | 293-line transcript (every clock id with good and bad pointers, kernel and Posix error forms and errno, the coarse clock's zero nanoseconds, sleeps and the sleep counters, nanosleep's checks, signals and every mask operation, rusage, every sysctl branch, the host-to-guest errno map for 141 values): identical to the old code on Windows and on Linux. 12 of 12 planted bugs caught. The five functions the game never imports (no NID) are no longer exported; the engine's own process-time and TSC helpers keep their names | in test (2026-10-30) |
-
-Step 5b in-game test (2026-10-30, played by the user, Windows, game on a hard disk):
-
-| Check | Result |
+| Served by | Imports |
 |---|---|
-| Boot to the title screen, load a save | works; first load 53.1 s (cold disk cache, fresh package), in game 67.8 s after start |
-| Change area, travel by lamp | works; second load 12.9 s |
-| Save, quit to the title, load again | works; save data mounted and written, no errors |
-| Sound, music, pad | work, no stutter or hang |
-| Length | about 3 minutes; no `Freeze:` or `STOP` lines |
-| Exit | clean shutdown in 732 ms, exit code 0 (the runtime counter lines are not printed on this exit path, as before 5b) |
+| **Lantern, `src/sys/`** | **302** (56%) |
+| shadPS4, `gpu/shadps4/core/libraries/gnmdriver`: GnmDriver (waits for the GX path) | 50 |
+| Online, `gpu/bbnet`: Net, NetCtl, Http, Ssl, Np* (The Hunter's Dream and shadNet: the user's call; offline, `src/sys/net_offline.c` answers) | 165 |
+| The game's libc module, or unresolved | 20 |
 
-Step 5c in-game test (2026-10-30, played by the user, Windows, offline):
+Phase J log (steps 1-5d played by the user, work; 6a-9 had one unattended boot, not played yet):
 
-| Check | Result |
-|---|---|
-| Boot, load a save | works; 74 game threads started through the new code; first load 12.2 s, in game 32.2 s after start |
-| Change area | works; the next load 49.6 s, read-bound on the hard disk (the loaders reading 30-100% of the time at 8-34 MB/s), not threads |
-| Sound, music, pad | work; the audio threads ran at normal priority because the launcher's audio priority setting is off by default (`BB_AUDIO_THREAD_PRIORITY=0`), as before |
-| Online (summon or join, leave) | works: a seamless co-op session on this build (06:32-06:39, Play online on), clean shutdown, exit code 0 |
-| Exit | clean shutdown in 328 ms, exit code 0, no `STOP` or `Freeze:` lines |
+| Step | Moved to `src/sys/` | Imports | Checked against the old code |
+|---|---|---|---|
+| 1 | Rtc | 10 | 2,000,000 random calls |
+| 2 | Services, dialogs, PlayGo, DiscMap, Mouse, Voice, AudioIn, AppContent, Sysmodule, `gettimeofday` | 72 | 347-line transcript |
+| 3 | Pad, AudioOut, Ajm | 27 | 90,000 pad reads, audio bytes, ~8,500 ATRAC9 jobs |
+| 4 | SaveData | 11 | scripted session, final 52 files |
+| 5a | Semaphores, rwlocks | 14 | threaded transcript, stress |
+| 5b | Mutexes, condition variables | 30 | 256-line transcript, stress, Windows and Linux |
+| 5c | Threads, thread-specific data, once, `__error` | 38 | 174-line transcript, Windows and Linux |
+| 5d | Clocks, sleep, signals, process calls | 24 | 293-line transcript, Windows and Linux |
+| 6a | Files; `src/runtime_file.c` and the switch are gone | 24 | 1,378-line transcript (1,367 on Linux; every path, flag and error, bad and standard fds, bounced reads, listings, mods, fixes, mount limits, fd limit, loader stats, prefetch): identical apart from the line naming the path. 72 of 73 planted bugs caught, the other changes nothing (`/hostapp` and `/app0` are one folder). Close during reads under stress, clean under TSan |
+| 6b | Kernel memory; `src/runtime_memory.c` is gone | 16 | 3 seeds of 44,884-line transcripts identical; 2,000 regions: allocate 560 to 2 us, 8 reader threads 18 to 255 million lookups a second, one reader 40 to 50 million, clamp 107 to 60 ns; map and release no slower; 80 planted bugs, none that changes behaviour missed; ThreadSanitizer clean |
+| 7 | C start-up; `src/runtime.c` and `src/runtime_services.c` are gone (the rest moved to `src/host.c`, `wait_stats.c`, `blocked.c`) | 9 | unit test, the whole suite on Windows and Linux |
+| 8a | Event queue; shadPS4's equeue is gone, and with it the kernel service thread | 3 | 3 seeds of 40,008-line transcripts identical; empty poll about equal (92 ns), trigger and poll 100 to 70 ns; 32 planted bugs caught; ThreadSanitizer clean |
+| 8b | VideoOut, state machine in `src/sys/video_out.c`, presenter in `gpu/shim/lantern_video_out.cpp` | 8 | unit test with a fake presenter, 60 planted bugs (the old driver needs the whole renderer, so no old program); ThreadSanitizer clean |
+| 9 | AvPlayer, players in `src/sys/av_player.c`, FFmpeg in `gpu/shim/lantern_av_decode.cpp`; shadPS4's avplayer and videodec are gone | 16 | the game's own movie: all 4,905 video frames and 7,675 audio frames identical, plus 2 tail frames the old one lost, CPU equal (115% of a core); stress of 34 starts, 102 million calls; 74 planted bugs; ThreadSanitizer clean |
+
+Known inherited issue, kept for now: when gapless playback ends inside an ATRAC9 superframe, Ajm
+decodes the superframe's remaining frames without checking that the input buffer holds them. The
+game passes whole superframes, so it does not happen in play; fix it on its own with a test.
 
 ## What we are today
 
@@ -211,47 +196,14 @@ shadPS4's `shader_recompiler`. That is about 100k inherited lines.
 
 ### J. Our own system libraries: started 2026-10-30
 
-`tools/re/import_census.py` lists the eboot's 701 imports by library and which file serves each
-(`--list` names the functions). libc (216) and Fios2 (17) are the game's own Sony modules
-(`sce_module/*.prx`), linked and run natively, so they are not ours to write. The rest:
+`tools/re/import_census.py` lists the imports by library and which file serves each (`--list` names
+the functions). Our libraries live in `src/sys/`, one file per Sony library, each a table keyed by
+NID (`SYS_LIBRARY`); `runtime_resolve` asks `sys_resolve` first. Each is checked against the old one
+before the old one goes: a scratch program runs both on the same script or random input, planted
+bugs must show, and a unit test stays in `build.sh --test`.
 
-| Served by | Libraries | Functions |
-|---|---|---|
-| **Lantern, `src/sys/`** (moved in steps 1-5d) | Rtc, the service and dialog libraries, Pad, AudioOut, Ajm, SaveData, semaphores, rwlocks, mutexes, condition variables, threads, thread-specific data, clocks, sleep, signals, process | 226 |
-| bbport's C runtime, `src/runtime_*.c` | kernel and Posix: memory (16), files (24), the C library start-up in `runtime.c` (9) | 49 |
-| shadPS4, `gpu/shadps4/core/libraries` | GnmDriver 50, AvPlayer 16, VideoOut 8, kernel equeue 3 | 77 |
-| online, `gpu/bbnet` | Net, NetCtl, Http, Ssl, Np* | 165 (The Hunter's Dream and shadNet: the user's call) |
-
-Our libraries live in `src/sys/`, one file per Sony library, each a table keyed by NID
-(`SYS_LIBRARY`). `runtime_resolve` asks `sys_resolve` first, so a library moves by adding its file
-and deleting the old one. Each is checked against the old one before the old one goes: a scratch
-program links both and compares them on random input (Rtc: 2,000,000 checks, 0 differences), and a
-unit test stays (`tests/test_sys_rtc.c`, in `build.sh --test`).
-
-Order, small and testable first, stability-critical once the pattern is proven:
-
-1. **Rtc** (10): done, `src/sys/rtc.c`.
-2. **Services and dialogs** (72): done, `src/sys/` (user and system services, trophies, dialogs,
-   ImeDialog, PlayGo, DiscMap, Mouse, Voice, AudioIn, AppContent, Sysmodule, `gettimeofday`).
-3. **Pad, AudioOut, Ajm** (27): done, `src/sys/pad*.c`, `audio_out.c`, `ajm.c` (LibAtrac9 stays as a
-   library).
-4. **SaveData** (11): done, `src/sys/save_data.c`.
-5. Kernel synchronisation, in three parts: **semaphores and rwlocks** (14): done, `src/sys/semaphore.c`,
-   `rwlock.c`, hash-table registries in place of the old lists; **mutexes and condition variables** (30):
-   done, `src/sys/mutex.c`, our types, owners and error codes over SRWLOCK and CONDITION_VARIABLE on Windows
-   and plain pthread objects on Linux, so both behave the same (the old Linux code used glibc's typed
-   mutexes: a held normal mutex could be destroyed and a recursive mutex held more than once was never
-   released by a cond wait); a mutex a cond waiter still uses is not destroyed (EBUSY), a cond destroyed
-   with waiters is freed by the last one out, and the lock counters are per thread instead of one shared
-   racy line; **threads** (38, with thread-specific data, once and `__error`): done, `src/sys/thread.c`,
-   hash-table registries for threads and attributes in place of the old lists (the `BB_THREAD_FRONT`
-   move-to-front switch is gone with them); the engine's own `runtime_thread_spawn` and friends, which the
-   online code calls, keep their names. **Clocks, sleep, signals and process calls** (24): done,
-   `src/sys/clock.c` and `process.c`; `runtime_kernel.c` keeps only the engine's wait and sampler
-   diagnostics.
-6. Kernel memory and files: the largest and riskiest (fault handling, the guest address space).
-7. shadPS4's: VideoOut and equeue (with our presenter), AvPlayer, then GnmDriver (shrinks as the GX
-   path lands; after I only what GX calls at start).
+What is left: GnmDriver shrinks as the GX path lands (after I only what GX calls at start), and
+`gpu/shadps4/common` goes with `video_core` and `shader_recompiler`, its only users.
 
 Every step needs an in-game check by the user before the next one depends on it.
 

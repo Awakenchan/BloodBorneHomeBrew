@@ -23,10 +23,17 @@ struct Vitals {
 
 void SendVitals(const Vitals& own);
 std::vector<Vitals> Party(int max_age_ms);
-void SendTravel(std::uint32_t lamp);
-bool TakeTravel(std::uint32_t& lamp);
+void SendTravel(std::uint32_t lamp, const std::vector<std::uint8_t>& world_flags = {});
+bool TakeTravel(std::uint32_t& lamp, std::vector<std::uint8_t>* world_flags = nullptr);
 void SendProgress(const std::vector<std::uint32_t>& flags, int target = 0);
 std::vector<std::uint32_t> TakeProgress();
+void SendBossLot(std::int32_t lot, int target);
+std::vector<std::int32_t> TakeBossLots();
+void SendBossTrophy(std::int32_t trophy, int target);
+std::vector<std::int32_t> TakeBossTrophies();
+enum class PartyCall : std::uint8_t { Wipe = 1, Rejoin = 2 };
+void SendPartyCall(PartyCall call, int target = 0);
+std::vector<std::pair<int, PartyCall>> TakePartyCalls();
 
 struct Dungeon {
     std::uint64_t channel = 0;
@@ -46,6 +53,7 @@ bool Active();
 std::int64_t ConnectedForMs();
 bool SponsoredRelay();
 bool CurrentNotice(std::string& text);
+bool CurrentAnnouncement(std::string& text, float& alpha);
 std::vector<std::pair<int, std::string>> PartyMembers();
 bool Kick(int slot);
 bool LeaveParty();

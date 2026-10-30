@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "voice.h"
+#include "voice_gate.h"
 #include "bbport_settings.h"
 #include "../bbnet/room/room_service.h"
 #include <SDL3/SDL.h>
@@ -12,10 +13,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <set>
 #include <thread>
+#include <vector>
 
 namespace BbVoice {
 namespace {
@@ -25,11 +28,13 @@ constexpr int kRate = 48000;
 constexpr int kFrame = 1920;
 constexpr int kBitrate = 16000;
 constexpr int kMaxFrameBytes = 255;
-constexpr float kVadLevel = 0.02f;
-constexpr auto kVadHold = std::chrono::milliseconds(400);
 constexpr auto kTalkingFor = std::chrono::milliseconds(300);
-constexpr int kPrebufferBytes = kRate * 2 * 60 / 1000;
-constexpr int kMostQueuedBytes = kRate * 2 / 5;
+constexpr int kBytesPerMs = kRate * 2 / 1000;
+constexpr int kLeastPrebufferMs = 60;
+constexpr int kMostPrebufferMs = 240;
+constexpr int kPrebufferStepMs = 40;
+constexpr auto kSameSpurt = std::chrono::milliseconds(250);
+constexpr int kMostQueuedBytes = kBytesPerMs * 700;
 constexpr int kMostConcealed = 2;
 constexpr std::size_t kLongestName = 32;
 
@@ -38,6 +43,8 @@ struct Remote {
     SDL_AudioStream* stream = nullptr;
     std::uint16_t last = 0;
     bool started = false;
+    int prebuffer_ms = kLeastPrebufferMs;
+    Clock::time_point last_frame{};
 };
 
 std::atomic<bool> g_started{false};
@@ -46,6 +53,14 @@ std::atomic<bool> g_speaking{false};
 std::mutex g_mu;
 std::map<std::string, Clock::time_point> g_heard;
 std::set<std::string> g_muted;
+
+bool OldGate() {
+    static const bool old = [] {
+        const char* v = std::getenv("BB_VOICE_GATE");
+        return v && std::strcmp(v, "old") == 0;
+    }();
+    return old;
+}
 
 bool Wanted() {
     static const bool off = [] {
@@ -79,9 +94,11 @@ void Drop(Remote& r) {
 void Play(Remote& r, const std::uint8_t* data, int size, std::uint16_t seq, std::int16_t* pcm) {
     const auto gap = std::uint16_t(seq - r.last);
     if (r.started && (gap == 0 || gap > 0x8000)) return;
+    const auto now = Clock::now();
     if (SDL_GetAudioStreamQueued(r.stream) > kMostQueuedBytes) SDL_ClearAudioStream(r.stream);
     if (SDL_GetAudioStreamQueued(r.stream) == 0) {
-        std::vector<std::int16_t> quiet(kPrebufferBytes / 2, 0);
+        if (r.started && now - r.last_frame < kSameSpurt) r.prebuffer_ms = std::min(r.prebuffer_ms + kPrebufferStepMs, kMostPrebufferMs);
+        std::vector<std::int16_t> quiet(std::size_t(r.prebuffer_ms * kBytesPerMs / 2), 0);
         SDL_PutAudioStreamData(r.stream, quiet.data(), int(quiet.size() * 2));
     } else if (r.started && gap > 1) {
         for (int i = 0; i < std::min<int>(gap - 1, kMostConcealed); ++i) {
@@ -91,6 +108,7 @@ void Play(Remote& r, const std::uint8_t* data, int size, std::uint16_t seq, std:
     }
     r.last = seq;
     r.started = true;
+    r.last_frame = now;
     const int n = opus_decode(r.decoder, data, size, pcm, kFrame, 0);
     if (n > 0) SDL_PutAudioStreamData(r.stream, pcm, n * 2);
 }
@@ -105,7 +123,9 @@ void Loop() {
     OpusEncoder* encoder = nullptr;
     std::map<std::string, Remote> remotes;
     std::uint16_t seq = 0;
+    VoiceGate gate;
     Clock::time_point loud{};
+    std::deque<std::vector<std::int16_t>> pre_roll;
     bool told_mic = false;
     std::int16_t pcm[kFrame];
     std::int16_t decoded[kFrame];
@@ -139,7 +159,7 @@ void Loop() {
             opus_encoder_ctl(encoder, OPUS_SET_BITRATE(kBitrate));
             opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(5));
             opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-            opus_encoder_ctl(encoder, OPUS_SET_DTX(1));
+            opus_encoder_ctl(encoder, OPUS_SET_DTX(0));
         }
         if (s.voice_mic_muted) {
             if (mic) SDL_DestroyAudioStream(mic);
@@ -160,27 +180,40 @@ void Loop() {
         const std::string own = BbRoom::PlayerName().substr(0, kLongestName);
         while (mic && SDL_GetAudioStreamAvailable(mic) >= int(sizeof pcm)) {
             SDL_GetAudioStreamData(mic, pcm, sizeof pcm);
-            const auto now = Clock::now();
             bool send = false;
             if (s.voice_push_to_talk) {
                 send = PushToTalkHeld();
+            } else if (OldGate()) {
+                const auto now = Clock::now();
+                if (Level(pcm, kFrame) >= VoiceGate::kLoudSpeech) loud = now;
+                send = now - loud < std::chrono::milliseconds(400);
             } else {
-                if (Level(pcm, kFrame) >= kVadLevel) loud = now;
-                send = now - loud < kVadHold;
+                send = gate.Step(Level(pcm, kFrame));
             }
             g_speaking = send;
-            if (!send) continue;
-            const int bytes = opus_encode(encoder, pcm, kFrame, frame, sizeof frame);
-            ++seq;
-            if (bytes <= 2) continue;
-            std::vector<std::uint8_t> packet;
-            packet.reserve(4 + own.size() + bytes);
-            packet.push_back(std::uint8_t(own.size()));
-            packet.insert(packet.end(), own.begin(), own.end());
-            packet.push_back(std::uint8_t(seq));
-            packet.push_back(std::uint8_t(seq >> 8));
-            packet.insert(packet.end(), frame, frame + bytes);
-            BbRoom::SendVoice(packet);
+            const auto encode_and_send = [&](const std::int16_t* samples) {
+                const int bytes = opus_encode(encoder, samples, kFrame, frame, sizeof frame);
+                ++seq;
+                if (bytes <= 2) return;
+                std::vector<std::uint8_t> packet;
+                packet.reserve(4 + own.size() + bytes);
+                packet.push_back(std::uint8_t(own.size()));
+                packet.insert(packet.end(), own.begin(), own.end());
+                packet.push_back(std::uint8_t(seq));
+                packet.push_back(std::uint8_t(seq >> 8));
+                packet.insert(packet.end(), frame, frame + bytes);
+                BbRoom::SendVoice(packet);
+            };
+            if (!send) {
+                pre_roll.emplace_back(pcm, pcm + kFrame);
+                if (pre_roll.size() > VoiceGate::kPreRollFrames) pre_roll.pop_front();
+                continue;
+            }
+            if (!s.voice_push_to_talk && !OldGate() && gate.JustOpened()) {
+                for (const auto& earlier : pre_roll) encode_and_send(earlier.data());
+            }
+            pre_roll.clear();
+            encode_and_send(pcm);
         }
         for (auto& [sender, data] : BbRoom::TakeVoice()) {
             if (data.empty() || data[0] == 0 || data[0] > kLongestName || data.size() < std::size_t(data[0]) + 4) continue;

@@ -17,10 +17,11 @@
 namespace BbRoom {
 
 struct Event {
-    enum class Kind { Connected, Joined, Left, Host, Data, Disconnected, Refused, GaveUp };
+    enum class Kind { Connected, Joined, Left, Host, Data, Disconnected, Refused, GaveUp, Announcement };
     Kind kind = Kind::Data;
     int slot = 0;
     std::vector<std::uint8_t> data;
+    std::uint64_t id = 0;
 };
 
 class Link {
@@ -34,7 +35,9 @@ public:
                const std::string& path = "room");
     void Stop();
     bool Send(int target, const std::uint8_t* data, std::size_t size);
-    bool SendLossy(int target, const std::uint8_t* data, std::size_t size, std::size_t most_queued);
+    bool SendLossy(int target, const std::uint8_t* data, std::size_t size, std::size_t most_backlog);
+    bool SendGame(int target, const std::uint8_t* data, std::size_t size);
+    bool SendPaced(int target, const std::uint8_t* data, std::size_t size);
     void SetHost(bool host);
     std::vector<Event> Drain();
     bool WaitEvent(int timeout_ms);
@@ -60,6 +63,7 @@ private:
     std::atomic<int> slot_{0};
     std::atomic<int> host_{0};
     std::atomic<bool> want_host_{false};
+    std::atomic<bool> lossy_targets_{false};
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<Event> events_;

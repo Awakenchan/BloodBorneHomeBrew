@@ -1,5 +1,5 @@
 // bbport co-op: the part of shadPS4's file table that the network library uses.
-// The runtime keeps game files in its own table (runtime_file.c); this one only holds
+// The runtime keeps game files in its own table (src/sys/file.c); this one only holds
 // sockets, epolls and resolvers, which the game addresses through sceNet* calls only.
 #pragma once
 #include <atomic>

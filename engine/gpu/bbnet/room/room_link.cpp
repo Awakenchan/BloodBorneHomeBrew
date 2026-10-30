@@ -9,6 +9,9 @@
 
 namespace BbRoom {
 
+constexpr int kLossyTarget = 0x80;
+constexpr std::size_t kMostGameBacklog = 8 * 1024;
+
 std::string RoomUrl(const std::string& server, const std::string& room_id, const std::string& path) {
     std::string base = server;
     while (!base.empty() && base.back() == '/') base.pop_back();
@@ -77,7 +80,7 @@ bool Link::Send(int target, const std::uint8_t* data, std::size_t size) {
     return socket && socket->Send(sealed.data(), sealed.size(), true);
 }
 
-bool Link::SendLossy(int target, const std::uint8_t* data, std::size_t size, std::size_t most_queued) {
+bool Link::SendLossy(int target, const std::uint8_t* data, std::size_t size, std::size_t most_backlog) {
     const int slot = slot_.load();
     if (!connected_ || !slot || target == slot || target < 0 || target > 255) return false;
     auto sealed = Seal(secret_.key, static_cast<std::uint8_t>(slot), data, size);
@@ -88,7 +91,36 @@ bool Link::SendLossy(int target, const std::uint8_t* data, std::size_t size, std
         std::lock_guard lock(socket_mutex_);
         socket = socket_;
     }
-    return socket && socket->SendLossy(sealed.data(), sealed.size(), most_queued);
+    return socket && socket->SendLossy(sealed.data(), sealed.size(), most_backlog);
+}
+
+bool Link::SendGame(int target, const std::uint8_t* data, std::size_t size) {
+    const int slot = slot_.load();
+    if (!connected_ || !slot || target == slot || target < 0 || target > 127) return false;
+    auto sealed = Seal(secret_.key, static_cast<std::uint8_t>(slot), data, size);
+    if (sealed.empty()) return false;
+    const int flagged = lossy_targets_.load() ? target | kLossyTarget : target;
+    sealed.insert(sealed.begin(), static_cast<std::uint8_t>(flagged));
+    std::shared_ptr<WebSocket> socket;
+    {
+        std::lock_guard lock(socket_mutex_);
+        socket = socket_;
+    }
+    return socket && socket->SendLossy(sealed.data(), sealed.size(), kMostGameBacklog);
+}
+
+bool Link::SendPaced(int target, const std::uint8_t* data, std::size_t size) {
+    const int slot = slot_.load();
+    if (!connected_ || !slot || target == slot || target < 0 || target > 127) return false;
+    auto sealed = Seal(secret_.key, static_cast<std::uint8_t>(slot), data, size);
+    if (sealed.empty()) return false;
+    sealed.insert(sealed.begin(), static_cast<std::uint8_t>(target));
+    std::shared_ptr<WebSocket> socket;
+    {
+        std::lock_guard lock(socket_mutex_);
+        socket = socket_;
+    }
+    return socket && socket->SendPaced(sealed.data(), sealed.size());
 }
 
 void Link::SetHost(bool host) {
@@ -128,10 +160,10 @@ void Link::Push(Event event) {
     cv_.notify_all();
 }
 
-constexpr auto kGiveUpAfter = std::chrono::minutes(2);
+constexpr auto kGiveUpAfter = std::chrono::minutes(10);
 
 void Link::Run() {
-    int backoff_ms = 500;
+    int backoff_ms = 100;
     auto reached = std::chrono::steady_clock::now();
     while (!stop_) {
         const bool welcomed = Session();
@@ -142,7 +174,7 @@ void Link::Run() {
             Push({Event::Kind::GaveUp, 0, {}});
             break;
         }
-        backoff_ms = welcomed ? 500 : std::min(backoff_ms * 2, 8000);
+        backoff_ms = welcomed ? 100 : std::min(backoff_ms * 2, 8000);
         std::unique_lock lock(mutex_);
         cv_.wait_for(lock, std::chrono::milliseconds(backoff_ms), [this] { return stop_.load(); });
     }
@@ -168,6 +200,7 @@ bool Link::Session() {
             Handle(message);
             if (!was && connected_) {
                 welcomed = true;
+                if (lossy_targets_.load()) socket->WatchClosely();
                 if (want_host_) {
                     const std::string text = R"({"t":"host"})";
                     socket->Send(text.data(), text.size(), false);
@@ -217,6 +250,7 @@ void Link::Handle(const std::string& text) {
         }
         slot_ = slot;
         host_ = message.value("host", 0);
+        lossy_targets_ = message.value("lossy", false);
         connected_ = true;
         Push({Event::Kind::Connected, slot, {}});
         for (const int m : members) Push({Event::Kind::Joined, m, {}});
@@ -236,6 +270,12 @@ void Link::Handle(const std::string& text) {
     } else if (type == "host") {
         host_ = slot;
         Push({Event::Kind::Host, slot, {}});
+    } else if (type == "announce" && message.contains("text") && message["text"].is_string() &&
+               message.contains("id") && message["id"].is_number_unsigned()) {
+        const std::string words = message["text"].get<std::string>();
+        Event event{Event::Kind::Announcement, 0, {words.begin(), words.end()}};
+        event.id = message["id"].get<std::uint64_t>();
+        Push(std::move(event));
     }
 }
 
