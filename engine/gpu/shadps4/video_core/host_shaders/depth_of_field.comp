@@ -1,0 +1,375 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+
+#if defined(CAMERA) || defined(KERNEL) || defined(FOCUS)
+layout(local_size_x = 1, local_size_y = 1) in;
+#else
+layout(local_size_x = 8, local_size_y = 8) in;
+#endif
+
+layout(std430, binding = 0) readonly buffer Constants { float cb[]; };
+layout(std430, binding = 1) readonly buffer VertexConstants { float vb[]; };
+layout(std430, binding = 2) buffer State {
+    vec4 ellipse;
+    vec4 camera;
+    vec4 focus;
+};
+layout(binding = 3) uniform sampler2D sharp;
+layout(binding = 4) uniform sampler2D depth;
+layout(binding = 5) uniform sampler2D prepared;
+layout(binding = 6) uniform sampler2D half_depth;
+layout(binding = 7) uniform sampler2D blurred;
+layout(r32f, binding = 8) uniform writeonly image2D depth_out;
+layout(rgba16f, binding = 9) uniform writeonly image2D prepared_out;
+layout(r32f, binding = 10) uniform writeonly image2D half_depth_out;
+layout(rgba16f, binding = 11) uniform writeonly image2D blurred_out;
+layout(rgba16f, binding = 12) uniform image2D scene_out;
+layout(r32f, binding = 13) uniform writeonly image2D near_tiles_out;
+layout(binding = 14) uniform sampler2D near_tiles;
+
+layout(push_constant) uniform Params {
+    uint constants_word;
+    uint vertex_word;
+    uvec2 size;
+    float intensity;
+    float delta_seconds;
+    uint reset_focus;
+} pc;
+
+bool finite(float v) { return !isnan(v) && !isinf(v); }
+float curve(float alpha) {
+    return cb[pc.constants_word + 76] * alpha + cb[pc.constants_word + 77];
+}
+bool compatible() {
+    return camera.w == 1.0 && ellipse.w == 1.0 &&
+           finite(cb[pc.constants_word + 76]) && cb[pc.constants_word + 76] > 0.0 &&
+           finite(cb[pc.constants_word + 77]);
+}
+float depth_weight(float a, float b) {
+    return clamp(1.0 - abs(a - b) / max(0.02 * min(a, b), 0.001), 0.0, 1.0);
+}
+
+float near_amount(float z) {
+    if (camera.w != 1.0 || focus.y != 1.0 || z <= 0.0 || !finite(z)) return 0.0;
+    // Keep a generous gameplay focus zone and the usual third-person subject
+    // distance sharp. Only genuine camera foreground receives the new blur.
+    float start = min(0.45 / focus.x, 2.5);
+    return smoothstep(0.0, 1.0,
+        clamp((1.0 / z - 1.0 / start) / (1.0 / 0.45 - 1.0 / start), 0.0, 1.0));
+}
+float foreground_strength(ivec2 p) {
+    vec2 uv = (vec2(p) + 0.5) / vec2(pc.size);
+    // A broad head-to-cloak safety region, not a player identity mask.
+    float half_width = mix(0.18, 0.50, smoothstep(0.0, 0.85, uv.y));
+    return smoothstep(0.88, 1.08, abs(uv.x - 0.5) / half_width);
+}
+float near_radius(float z, ivec2 p) {
+    return near_amount(z) * foreground_strength(p) *
+           (10.0 / 1080.0) * float(pc.size.y) * pc.intensity;
+}
+float max_near_radius() { return (10.0 / 1080.0) * float(pc.size.y) * pc.intensity; }
+int near_tile_size() { return max(1, int(ceil(max_near_radius())) + 1); }
+
+#if defined(NEAR_TILES)
+shared uint tile_radius[64];
+#endif
+
+#if defined(COMPOSITE)
+vec4 sharp_tap(vec2 position, float center_z) {
+    ivec2 base = ivec2(floor(position));
+    vec2 f = fract(position);
+    vec4 result = vec4(0.0);
+    for (int i = 0; i < 4; ++i) {
+        ivec2 o = ivec2(i & 1, i >> 1);
+        ivec2 p = clamp(base + o, ivec2(0), ivec2(pc.size) - 1);
+        vec4 value = texelFetch(sharp, p, 0);
+        float sample_z = texelFetch(depth, p, 0).r;
+        float q = curve(value.a);
+        vec2 bilinear = mix(1.0 - f, f, vec2(o));
+        float visibility = sample_z > 0.0
+            ? clamp(1.0 - max(center_z - sample_z, 0.0) / max(0.02 * center_z, 0.001), 0.0, 1.0)
+            : 0.0;
+        float w = finite(q) ? bilinear.x * bilinear.y * visibility * clamp(q - 1.0, 0.0, 1.0) : 0.0;
+        result += vec4(value.rgb * w, w);
+    }
+    return result;
+}
+#endif
+
+void main() {
+#if defined(CAMERA)
+    float z = cb[pc.constants_word + 14];
+    float w = cb[pc.constants_word + 15];
+    // The verified forward-Z inverse projection has h.z = 1.
+    bool valid = cb[pc.constants_word + 11] == 1.0 &&
+                 cb[pc.constants_word + 10] == 0.0 &&
+                 finite(z) && finite(w) && z < 0.0 && w > -z;
+    camera = vec4(z, w, 0.0, valid ? 1.0 : 0.0);
+#elif defined(KERNEL)
+    vec2 mean = vec2(0.0);
+    vec3 second = vec3(0.0);
+    float total = 0.0;
+    bool valid = true;
+    for (uint i = 0; i < 7; ++i) {
+        vec2 offset = vec2(vb[pc.vertex_word + 136 + 4 * i],
+                           vb[pc.vertex_word + 137 + 4 * i]);
+        float weight = cb[pc.constants_word + 616 + 4 * i];
+        valid = valid && finite(offset.x) && finite(offset.y) && finite(weight) &&
+                all(lessThanEqual(abs(offset), vec2(0.125))) &&
+                weight >= 0.0 && weight <= 1.0;
+        for (uint c = 1; c < 3; ++c)
+            valid = valid && abs(cb[pc.constants_word + 616 + 4 * i + c] - weight) < 0.0001;
+        mean += weight * offset;
+        second += weight * vec3(offset.x * offset.x, offset.x * offset.y,
+                                offset.y * offset.y);
+        total += weight;
+    }
+    valid = valid && abs(total - 1.0) < 0.01;
+    mean /= max(total, 0.0001);
+    second = second / max(total, 0.0001) -
+             vec3(mean.x * mean.x, mean.x * mean.y, mean.y * mean.y);
+    // A uniform disk's covariance is R^2/4. Cholesky preserves the stock
+    // kernel's rotation, anisotropy and second moment in normalized UV units.
+    float a = sqrt(max(second.x, 0.0));
+    float b = second.y / max(a, 1e-10);
+    float c = sqrt(max(second.z - b * b, 0.0));
+    valid = valid && a > 0.0 && c > 0.0 &&
+            all(lessThan(abs(mean), vec2(0.0001)));
+    ellipse = vec4(2.0 * a, 2.0 * b, 2.0 * c, valid ? 1.0 : 0.0);
+#elif defined(SNAPSHOT)
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, ivec2(pc.size)))) return;
+    vec2 uv = (vec2(p) + 0.5) / vec2(pc.size);
+    float d = textureLod(depth, uv, 0.0).r;
+    float denominator = camera.x * d + camera.y;
+    float z = camera.w == 1.0 && finite(d) && d >= 0.0 && d <= 1.0 &&
+              denominator > 0.0 ? 1.0 / denominator : 0.0;
+    imageStore(depth_out, p, vec4(z));
+#elif defined(FOCUS)
+    if (camera.w != 1.0) {
+        focus = vec4(0.0);
+        return;
+    }
+    float samples[49];
+    int count = 0;
+    // Upper-centre metering avoids the hunter's normal lower-centre silhouette.
+    for (int y = 0; y < 7; ++y) {
+        for (int x = 0; x < 7; ++x) {
+            vec2 uv = vec2(0.38 + float(x) * 0.04, 0.23 + float(y) * 0.03);
+            ivec2 p = clamp(ivec2(uv * vec2(pc.size)), ivec2(0), ivec2(pc.size) - 1);
+            float z = texelFetch(depth, p, 0).r;
+            if (finite(z) && z > 0.1 && z < 200.0) samples[count++] = z;
+        }
+    }
+    for (int i = 1; i < count; ++i) {
+        float value = samples[i];
+        int j = i;
+        while (j > 0 && samples[j - 1] > value) {
+            samples[j] = samples[j - 1];
+            --j;
+        }
+        samples[j] = value;
+    }
+    // Sparse foliage/sky must not drag focus to infinity or to a single leaf.
+    float target = 1.0 / clamp(count >= 12 ? samples[count / 2] : 30.0, 3.0, 40.0);
+    bool reset = pc.reset_focus != 0 || !finite(focus.x) || focus.y != 1.0 ||
+                 abs(focus.z - camera.x) > 0.01 || abs(focus.w - camera.y) > 0.01;
+    float inverse_focus = target;
+    if (!reset) {
+        inverse_focus = focus.x;
+        if (abs(target - inverse_focus) > 0.03 * inverse_focus)
+            inverse_focus = mix(inverse_focus, target,
+                1.0 - exp(-clamp(pc.delta_seconds, 0.0, 0.1) / 0.25));
+    }
+    focus = vec4(inverse_focus, 1.0, camera.x, camera.y);
+#elif defined(NEAR_TILES)
+    ivec2 origin = ivec2(gl_WorkGroupID.xy) * near_tile_size();
+    float radius = 0.0;
+    for (int y = int(gl_LocalInvocationID.y); y < near_tile_size(); y += 8) {
+        for (int x = int(gl_LocalInvocationID.x); x < near_tile_size(); x += 8) {
+            ivec2 p = origin + ivec2(x, y);
+            if (all(lessThan(p, ivec2(pc.size))))
+                radius = max(radius, near_radius(texelFetch(depth, p, 0).r, p));
+        }
+    }
+    uint index = gl_LocalInvocationIndex;
+    tile_radius[index] = floatBitsToUint(radius);
+    barrier();
+    for (uint stride = 32; stride > 0; stride >>= 1) {
+        if (index < stride) tile_radius[index] = max(tile_radius[index], tile_radius[index + stride]);
+        barrier();
+    }
+    if (index == 0)
+        imageStore(near_tiles_out, ivec2(gl_WorkGroupID.xy), vec4(uintBitsToFloat(tile_radius[0])));
+#elif defined(NEAR)
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, ivec2(pc.size))) ||
+        any(notEqual(textureSize(sharp, 0), ivec2(pc.size))) || pc.intensity <= 0.0 ||
+        focus.y != 1.0 || camera.w != 1.0) return;
+    float strength = foreground_strength(p);
+    if (strength == 0.0) return;
+    ivec2 tile = p / near_tile_size();
+    float search_radius = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            ivec2 s = tile + ivec2(x, y);
+            ivec2 count = (ivec2(pc.size) + near_tile_size() - 1) / near_tile_size();
+            if (all(greaterThanEqual(s, ivec2(0))) && all(lessThan(s, count)))
+                search_radius = max(search_radius, texelFetch(near_tiles, s, 0).r);
+        }
+    }
+    if (search_radius < 0.5) return;
+    float center_z = texelFetch(depth, p, 0).r;
+    if (center_z <= 0.0) return;
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int i = 0; i < 48; ++i) {
+        float angle = float(i) * 2.39996323;
+        vec2 disk = sqrt((float(i) + 0.5) / 48.0) * vec2(cos(angle), sin(angle));
+        vec2 position = vec2(p) + disk * search_radius;
+        ivec2 base = ivec2(floor(position));
+        vec2 f = fract(position);
+        for (int j = 0; j < 4; ++j) {
+            ivec2 o = ivec2(j & 1, j >> 1);
+            ivec2 s = clamp(base + o, ivec2(0), ivec2(pc.size) - 1);
+            float z = texelFetch(depth, s, 0).r;
+            float radius = near_radius(z, s);
+            float distance = length(vec2(s - p));
+            vec2 bilinear = mix(1.0 - f, f, vec2(o));
+            // Foreground may spread over farther layers, never over a closer occluder.
+            float visibility = z > 0.0
+                ? 1.0 - smoothstep(0.02, 0.05, (z - center_z) / max(center_z, 0.001)) : 0.0;
+            // Focused sources must not replace existing far bokeh with sharp colour.
+            float coverage = clamp(radius - distance + 0.5, 0.0, 1.0) * min(radius, 1.0);
+            float w = bilinear.x * bilinear.y * coverage * visibility *
+                      search_radius * search_radius / max(radius * radius, 0.25);
+            sum += texelFetch(sharp, s, 0).rgb * w;
+            total += w;
+        }
+    }
+    if (total <= 0.0001) return;
+    vec4 current = imageLoad(scene_out, p);
+    float opacity = strength *
+        max(near_amount(center_z) * min(pc.intensity, 1.0), clamp(total / 48.0, 0.0, 1.0));
+    imageStore(scene_out, p, vec4(mix(current.rgb, sum / total, opacity), current.a));
+#elif defined(PREPARE)
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(prepared_out)))) return;
+    vec4 values[4];
+    float distances[4];
+    float closest = 1e30;
+    for (int i = 0; i < 4; ++i) {
+        ivec2 s = min(2 * p + ivec2(i & 1, i >> 1), ivec2(pc.size) - 1);
+        bool sized = all(equal(textureSize(sharp, 0), ivec2(pc.size)));
+        values[i] = sized ? texelFetch(sharp, s, 0) : vec4(0.0);
+        distances[i] = sized ? texelFetch(depth, s, 0).r : 0.0;
+        if (distances[i] > 0.0) closest = min(closest, distances[i]);
+    }
+    vec4 sum = vec4(0.0);
+    float total = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        float w = distances[i] > 0.0 ? depth_weight(closest, distances[i]) : 0.0;
+        float q = curve(values[i].a);
+        // Negative/near and unknown curves stay on the original Yebis path.
+        if (!finite(q) || !compatible()) w = 0.0;
+        sum += w * vec4(values[i].rgb, finite(q) ? clamp(q - 1.0, 0.0, 1.0) : 0.0);
+        total += w;
+    }
+    imageStore(prepared_out, p, total > 0.0 ? sum / total : vec4(0.0));
+    imageStore(half_depth_out, p, vec4(total > 0.0 ? closest : 0.0));
+#elif defined(GATHER)
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(blurred_out)))) return;
+    vec4 center = texelFetch(prepared, p, 0);
+    float z = texelFetch(half_depth, p, 0).r;
+    vec3 sum = center.rgb;
+    float total = 1.0;
+    if (center.a > 0.0 && z > 0.0 && compatible()) {
+        vec2 dimensions = vec2(pc.size) * 0.5;
+        float radius = sqrt(center.a) * pc.intensity;
+        for (int i = 0; i < 48; ++i) {
+            float angle = float(i) * 2.39996323;
+            vec2 disk = sqrt((float(i) + 0.5) / 48.0) * vec2(cos(angle), sin(angle));
+            vec2 offset = vec2(ellipse.x * disk.x,
+                               ellipse.y * disk.x + ellipse.z * disk.y) * dimensions * radius;
+            ivec2 s = clamp(ivec2(round(vec2(p) + offset)), ivec2(0),
+                           textureSize(prepared, 0) - 1);
+            vec4 value = texelFetch(prepared, s, 0);
+            float sample_z = texelFetch(half_depth, s, 0).r;
+            // Far blur must not pull a sharp foreground silhouette into the background.
+            float w = value.a > 0.0 && sample_z > 0.0
+                ? clamp(1.0 - max(z - sample_z, 0.0) / max(0.02 * z, 0.001), 0.0, 1.0)
+                : 0.0;
+            sum += w * value.rgb;
+            total += w;
+        }
+    }
+    imageStore(blurred_out, p, vec4(sum / total, center.a));
+#elif defined(COMPOSITE)
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, ivec2(pc.size)))) return;
+    if (any(notEqual(textureSize(sharp, 0), ivec2(pc.size)))) return;
+    vec4 source = texelFetch(sharp, p, 0);
+    vec4 stock = imageLoad(scene_out, p);
+    vec3 fallback = mix(source.rgb, stock.rgb, min(pc.intensity, 1.0));
+    if (pc.intensity == 0.0 || !compatible()) {
+        imageStore(scene_out, p, vec4(fallback, stock.a));
+        return;
+    }
+    float q = curve(source.a);
+    float z = texelFetch(depth, p, 0).r;
+    if (!finite(q) || q <= 1.0 || z <= 0.0) {
+        imageStore(scene_out, p, vec4(fallback, stock.a));
+        return;
+    }
+    vec2 h = (vec2(p) + 0.5) * 0.5 - 0.5;
+    ivec2 base = ivec2(floor(h));
+    vec2 f = fract(h);
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    float amount = clamp(q - 1.0, 0.0, 1.0);
+    for (int i = 0; i < 4; ++i) {
+        ivec2 o = ivec2(i & 1, i >> 1);
+        ivec2 s = clamp(base + o, ivec2(0), textureSize(blurred, 0) - 1);
+        vec4 value = texelFetch(blurred, s, 0);
+        float sample_z = texelFetch(half_depth, s, 0).r;
+        vec2 bilinear = mix(1.0 - f, f, vec2(o));
+        float w = bilinear.x * bilinear.y * depth_weight(z, sample_z) *
+                  clamp(1.0 - abs(value.a - amount) * 4.0, 0.0, 1.0);
+        sum += w * value.rgb;
+        total += w;
+    }
+    vec3 result = total > 0.0001 ? sum / total : fallback;
+    float confidence = smoothstep(0.0, 0.75, total);
+    float edge = 0.0;
+    const ivec2 neighbors[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0),
+                                       ivec2(0, -1), ivec2(0, 1));
+    for (int i = 0; i < 4; ++i) {
+        ivec2 s = clamp(p + neighbors[i], ivec2(0), ivec2(pc.size) - 1);
+        float sample_z = texelFetch(depth, s, 0).r;
+        float sample_q = curve(texelFetch(sharp, s, 0).a);
+        if (sample_z > 0.0 && finite(sample_q)) {
+            edge = max(edge, smoothstep(0.005, 0.02, abs(z - sample_z) / max(z, 0.001)));
+            edge = max(edge, smoothstep(0.1, 0.5,
+                       abs(amount - clamp(sample_q - 1.0, 0.0, 1.0))));
+        }
+    }
+    if (edge > 0.0) {
+        // Thin moving surfaces cannot be represented reliably by one depth per
+        // 2x2 block. Repair only these pixels from full-resolution, masked bilinear taps.
+        vec4 repair = vec4(source.rgb, 1.0);
+        for (int i = 0; i < 24; ++i) {
+            float angle = float(i) * 2.39996323;
+            vec2 disk = sqrt((float(i) + 0.5) / 24.0) * vec2(cos(angle), sin(angle));
+            vec2 offset = vec2(ellipse.x * disk.x,
+                               ellipse.y * disk.x + ellipse.z * disk.y) *
+                          vec2(pc.size) * sqrt(amount) * pc.intensity;
+            repair += sharp_tap(vec2(p) + offset, z);
+        }
+        result = mix(result, repair.rgb / repair.a, edge);
+        confidence = mix(confidence, 1.0, edge);
+    }
+    // Keep the downstream alpha contract exactly, including stock near/fallback pixels.
+    imageStore(scene_out, p, vec4(mix(fallback, result, confidence), stock.a));
+#endif
+}

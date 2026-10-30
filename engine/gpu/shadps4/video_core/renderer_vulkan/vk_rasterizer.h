@@ -20,6 +20,7 @@
 #include "video_core/renderer_vulkan/vk_contact_shadow.h"
 #include "video_core/renderer_vulkan/vk_point_shadow.h"
 #include "video_core/renderer_vulkan/vk_volumetric_light.h"
+#include "video_core/renderer_vulkan/vk_depth_of_field.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
@@ -570,6 +571,7 @@ private:
     std::unique_ptr<ContactShadow> contact_shadow; // bbport: screen-space contact shadows
     std::unique_ptr<PointShadow> point_shadow;     // bbport: screen-space point light shadows
     std::unique_ptr<VolumetricLight> volumetric_light;
+    std::unique_ptr<DepthOfField> depth_of_field;
     bool scene_started = false;
     /// bbport: the scene depth of the frame before (SkipUncompiledDraw).
     VideoCore::ImageId previous_scene_depth{};

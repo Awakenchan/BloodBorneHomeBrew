@@ -1,5 +1,8 @@
 # Temporal upscaling and frame generation — frame analysis and plan
 
+The map-driven DOF filter and its stock fallback are described in
+[depth-of-field.md](depth-of-field.md). It preserves the current upscaler/DOF ordering.
+
 ## Native TAA and missing FSR 4 assets (2026-10-01)
 
 `upscaler=taa` / `BB_UPSCALER=taa` is a separate native-resolution temporal AA

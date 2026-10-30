@@ -91,6 +91,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
                                                  *camera_motion);
     volumetric_light = std::make_unique<VolumetricLight>(instance, scheduler, texture_cache,
                                                        runtime, *scene_targets);
+    depth_of_field = std::make_unique<DepthOfField>(instance, scheduler, texture_cache,
+                                                 runtime, *scene_targets);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets, *hdr_native);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -654,6 +656,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // main camera (shadow passes bind the same layout with the light's camera).
     if (std::popcount(key.mrt_mask) >= 5 && db_desc.first) {
         volumetric_light->Reset();
+        depth_of_field->Reset();
     }
     gbuffer_draw = camera_motion->Enabled() && std::popcount(key.mrt_mask) >= 5 && db_desc.first;
     if (gbuffer_draw) {
@@ -1938,6 +1941,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const auto& regs = Regs();
     // bbport: the pass copying a finished frame to a display buffer; the previous draw's
     // target is that frame.
+    if (regs.color_buffers[0] &&
+        FrameCapture::IsDisplayBuffer(regs.color_buffers[0].Address())) {
+        depth_of_field->Reset();
+    }
     if (camera_motion->Enabled() && regs.color_buffers[0] &&
         FrameCapture::IsDisplayBuffer(regs.color_buffers[0].Address())) {
         scene_started = false;
@@ -2159,6 +2166,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     }
     if (pipeline->GetGraphicsKey().mrt_mask &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {
+        static_assert(offsetof(Shader::PushData, motion_param) == 120);
+        const float intensity =
+            BbSettings::Get().graphics_ssr_intensity.load(std::memory_order_relaxed);
+        push_data.motion_param = std::bit_cast<u32>(
+            std::clamp(std::isfinite(intensity) ? intensity : 1.0f, 0.0f, 3.0f));
         // The composite reads the scene-size reflection when this frame's trace made one.
         // image_infos holds the 8 images, then the 4 samplers.
         if (const auto full = ssr_temporal->FullResult();
@@ -2233,6 +2245,43 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             cmdbuf.endQuery(query.pool, query.index);
         }
     });
+    if (ps_info && cb_descs[0].first &&
+        (ps_info->pgm_hash == 0xf55643de || ps_info->pgm_hash == 0xfbe7c4b6 ||
+         ps_info->pgm_hash == 0xe80526cc || ps_info->pgm_hash == 0x9e1cb278)) {
+        const auto first_buffer = [&](const Shader::Info& info) {
+            u32 first = 0;
+            for (const auto* stage : pipeline->GetStages()) {
+                if (stage == &info) break;
+                if (stage) first += u32(stage->buffers.size());
+            }
+            return first;
+        };
+        const u32 pixel = first_buffer(*ps_info), vertex = first_buffer(vs_info);
+        if (!ps_info->buffers.empty() && pixel < buffer_infos.size()) {
+            const auto& constants = buffer_infos[pixel];
+            const u32 offset = push_data.buf_offsets[pixel];
+            if (ps_info->pgm_hash == 0xf55643de) {
+                depth_of_field->Camera(constants, offset);
+            } else if (ps_info->pgm_hash == 0xfbe7c4b6 &&
+                       ps_info->images.size() == 3 && image_infos.size() >= 3) {
+                depth_of_field->Encode(cb_descs[0].first, image_infos[1]);
+            } else if (ps_info->pgm_hash == 0xe80526cc &&
+                       vs_info.pgm_hash == 0x7e956bc3 &&
+                       !vs_info.buffers.empty() && vertex < buffer_infos.size()) {
+                depth_of_field->Kernel(
+                    texture_cache.GetImage(cb_descs[0].first).info.guest_address,
+                    constants, offset, buffer_infos[vertex], push_data.buf_offsets[vertex]);
+            } else if (ps_info->pgm_hash == 0x9e1cb278 &&
+                       vs_info.pgm_hash == 0xd3ca03f3 &&
+                       ps_info->images.size() == 2 && image_infos.size() >= 2 &&
+                       state.num_color_attachments == 1 && state.num_layers == 1) {
+                depth_of_field->Composite(
+                    cb_descs[0].first, ps_info->images[0].GetSharp(*ps_info).Address(),
+                    ps_info->images[1].GetSharp(*ps_info).Address(), image_infos[0],
+                    constants, offset);
+            }
+        }
+    }
     // Run after the actual draw, while its descriptors still identify this camera and pass.
     if (ps_info && ps_info->pgm_hash == 0xf55643de && cb_descs[0].first &&
         buffer_infos.size() >= 2 && image_infos.size() >= 2) {

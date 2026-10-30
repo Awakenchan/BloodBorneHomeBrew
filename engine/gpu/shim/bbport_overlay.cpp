@@ -569,6 +569,32 @@ void PictureSection() {
         moved |= vignette != s.graphics_vignette;
     }
     slider("Ambient occlusion strength", "Сила затенения (AO)", s.graphics_ao_strength, 0.0f, 1.0f);
+    if (const char* label = Item("SSR intensity", "Интенсивность SSR")) {
+        Slider(label, s.graphics_ssr_intensity, 0.0f, 3.0f, "%.2fx",
+               ImGuiSliderFlags_AlwaysClamp);
+        Hint(BbSettings::MenuText(
+            "Live reflection strength after temporal stabilization and material roughness. "
+            "0 hides reflections, 1 is the default, 3 triples their strength. "
+            "Does not change roughness response or hit confidence. Requires screen-space "
+            "reflections and modern SSR; independent of Picture tuning.",
+            "Сила отражений после временной стабилизации и учёта шероховатости. "
+            "0 скрывает отражения, 1 — по умолчанию, 3 — тройная сила. "
+            "Не меняет зависимость от шероховатости и достоверность попаданий. Требует "
+            "экранных отражений и нового SSR; не зависит от настройки изображения."));
+    }
+    if (const char* label = Item("Depth of field intensity", "Интенсивность глубины резкости")) {
+        Slider(label, s.graphics_dof_intensity, 0.0f, 3.0f, "%.2fx",
+               ImGuiSliderFlags_AlwaysClamp);
+        Hint(BbSettings::MenuText(
+            "Live multiplier applied after each map's authored DOF settings. "
+            "0 removes blur, 1 preserves the default, 3 triples the modern blur radii. "
+            "Scales near autofocus blur too, without changing focus distances. Requires Depth of field and modern DOF; "
+            "independent of Picture tuning. Stock fallback blur can be reduced, not amplified.",
+            "Множитель после исходных настроек DOF каждой карты. "
+            "0 убирает размытие, 1 сохраняет исходный вид, 3 утраивает радиусы нового размытия. "
+            "Также меняет ближнее размытие с автофокусом, не меняя дистанции фокусировки. Требует DOF и нового фильтра; "
+            "не зависит от настройки изображения. Исходное резервное размытие можно уменьшить, но не усилить."));
+    }
     if (const char* label = Item("Volumetric fog intensity", "Интенсивность объёмного тумана")) {
         Slider(label, s.graphics_volumetric_intensity, 0.0f, 3.0f, "%.2fx",
                ImGuiSliderFlags_AlwaysClamp);
@@ -609,6 +635,8 @@ void PictureSection() {
             Store(s.graphics_gi_strength, 6.0f, true);
             Store(s.graphics_volumetric_intensity, 1.0f, true);
             Store(s.graphics_point_fog_intensity, 1.0f, true);
+            Store(s.graphics_dof_intensity, 1.0f, true);
+            Store(s.graphics_ssr_intensity, 1.0f, true);
             Store(s.graphics_shadow_scale, 1.0f, true);
         }
     }

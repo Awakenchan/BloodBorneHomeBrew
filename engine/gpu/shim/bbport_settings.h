@@ -57,6 +57,7 @@ inline constexpr Effect Effects[] = {
     {"effect_volumetric_light", "Volumetric lighting (prototype)", "Volumetric lighting (prototype)", true},
 };
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
+inline constexpr int EffectDof = 1;
 /// Indirect lighting: applied live by the renderer, no restart.
 inline constexpr int EffectGi = 5;
 /// Contact shadows: applied live by the renderer, no restart.
@@ -166,6 +167,8 @@ struct Values {
     std::atomic<float> graphics_ao_strength{1},graphics_gi_strength{6},graphics_shadow_scale{1},graphics_bloom{1},graphics_saturation{1};
     std::atomic<float> graphics_volumetric_intensity{1};
     std::atomic<float> graphics_point_fog_intensity{1};
+    std::atomic<float> graphics_dof_intensity{1};
+    std::atomic<float> graphics_ssr_intensity{1};
     std::atomic<float> graphics_fog{1},graphics_brightness{1},graphics_contrast{1},graphics_hue{0};
     std::atomic<float> camera_fov_scale{1.0f}, camera_distance_scale{1.0f}, camera_height_scale{1.0f};
     std::atomic<int> model_lod{0};

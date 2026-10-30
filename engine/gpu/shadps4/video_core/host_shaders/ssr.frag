@@ -20,6 +20,8 @@
 // about every pixel, refines each hit by bisection, drops the circular screen vignette that
 // faded reflections out toward the corners, and instead fades only when the hit is near the
 // screen border.
+// Normal stabilization and bracketed hit validation match ssr_trace.comp; see
+// engine/tests/test_ssr_geometry.py for policy and shader-path parity checks.
 
 #version 450
 #extension GL_EXT_scalar_block_layout : require
@@ -66,11 +68,13 @@ vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
 
 float sceneDepth(vec2 uv) { return textureLod(sampler2D(img0, samp0), uv, 0.0).x; }
 
-vec3 viewPos(vec2 uv) {
-    vec4 cp = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, sceneDepth(uv), 1.0);
+vec3 viewPosAt(vec2 uv, float depth) {
+    vec4 cp = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
     vec4 vp = vec4(dot(row(0), cp), dot(row(4), cp), dot(row(8), cp), dot(row(12), cp));
     return vp.xyz / vp.w;
 }
+
+vec3 viewPos(vec2 uv) { return viewPosAt(uv, sceneDepth(uv)); }
 
 vec3 viewNormal(vec2 uv) {
     vec3 ne = normalize(textureLod(sampler2D(img1, samp1), uv, 0.0).xyz * 2.0 - 1.0);
@@ -78,20 +82,24 @@ vec3 viewNormal(vec2 uv) {
                 dot(vec3(cb(40), cb(41), cb(42)), ne));
 }
 
-// The reflection normal. The G-buffer normal carries high-frequency normal-map detail that
-// makes the reflection shimmer as the camera pans, so it is averaged over the neighbourhood and
-// blended toward the geometric normal rebuilt from the depth buffer.
+// Stabilize within the same surface, without borrowing normals across depth/material edges.
 vec3 stableNormal(vec2 uv) {
     vec2 t = 1.0 / vec2(textureSize(sampler2D(img0, samp0), 0));
-    vec3 n = viewNormal(uv);
+    vec3 center = normalize(viewNormal(uv));
+    vec3 p = viewPos(uv);
+    vec3 n = center;
     for (int i = 0; i < 8; ++i) {
         const vec2 k[8] = vec2[8](vec2(-1, -1), vec2(0, -1), vec2(1, -1), vec2(-1, 0), vec2(1, 0),
                                   vec2(-1, 1), vec2(0, 1), vec2(1, 1));
-        n += viewNormal(uv + k[i] * t * 1.5);
+        vec2 s = uv + k[i] * t * 1.5;
+        vec3 sample_n = normalize(viewNormal(s));
+        float dz = abs(viewPos(s).z - p.z) / max(p.z, 0.001);
+        float weight = (1.0 - smoothstep(0.01, 0.03, dz)) *
+                       smoothstep(0.8, 0.95, dot(center, sample_n));
+        n += sample_n * weight;
     }
     n = normalize(n);
 
-    vec3 p = viewPos(uv);
     vec3 px = viewPos(uv + vec2(t.x, 0.0));
     vec3 nx = viewPos(uv - vec2(t.x, 0.0));
     vec3 py = viewPos(uv + vec2(0.0, t.y));
@@ -104,8 +112,11 @@ vec3 stableNormal(vec2 uv) {
         if (dot(g, p) > 0.0) {
             g = -g;
         }
-        if (dot(g, n) > 0.8) {
-            n = normalize(mix(n, g, GEO_BLEND));
+        float continuity = max(abs(dx.z), abs(dy.z)) / max(p.z, 0.001);
+        float weight = (1.0 - smoothstep(0.01, 0.03, continuity)) *
+                       smoothstep(0.9, 0.98, dot(g, center));
+        if (weight > 0.0) {
+            n = normalize(mix(n, g, GEO_BLEND * weight));
         }
     }
     return n;
@@ -165,6 +176,7 @@ vec4 trace(vec2 uv0, vec3 N) {
     vec3 start = vec3(uv0, d0);
     float hitT = -1.0;
     float prevT = 0.0;
+    float prevDiff = 0.0;
     for (int i = 1; i <= steps; ++i) {
         vec3 p = start + stepV * float(i);
         if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z >= 1.0) {
@@ -175,28 +187,38 @@ vec4 trace(vec2 uv0, vec3 N) {
         }
         float s = sceneDepth(p.xy);
         float diff = p.z - s;
-        if (diff >= 0.0 && diff < thick) {
-            hitT = float(i);
-            break;
+        if (prevDiff < 0.0 && diff >= 0.0 && diff < thick && s < 1.0) {
+            float lo = prevT;
+            float hi = float(i);
+            for (int k = 0; k < REFINE; ++k) {
+                float mid = 0.5 * (lo + hi);
+                vec3 candidate = start + stepV * mid;
+                if (candidate.z - sceneDepth(candidate.xy) >= 0.0) hi = mid;
+                else lo = mid;
+            }
+            vec3 candidate = start + stepV * hi;
+            float surface_depth = sceneDepth(candidate.xy);
+            vec3 surface = viewPosAt(candidate.xy, surface_depth);
+            vec3 ray = viewPosAt(candidate.xy, candidate.z);
+            vec3 delta = surface - P;
+            float distance_along_ray = dot(delta, R);
+            float tolerance = clamp(0.002 * abs(surface.z), 0.02, 0.2);
+            float off_ray = length(delta - R * distance_along_ray);
+            if (surface_depth < 1.0 && !any(isnan(surface)) && !any(isinf(surface)) &&
+                distance_along_ray > max(0.02, 0.001 * abs(P.z)) &&
+                abs(surface.z - ray.z) <= tolerance && off_ray <= tolerance) {
+                hitT = hi;
+                break;
+            }
         }
         prevT = float(i);
+        prevDiff = diff;
     }
     if (hitT < 0.0) {
         return vec4(0.0);
     }
 
-    float lo = prevT;
-    float hi = hitT;
-    for (int k = 0; k < REFINE; ++k) {
-        float mid = 0.5 * (lo + hi);
-        vec3 p = start + stepV * mid;
-        if (p.z - sceneDepth(p.xy) >= 0.0) {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    vec3 hp = start + stepV * hi;
+    vec3 hp = start + stepV * hitT;
     float hs = sceneDepth(hp.xy);
 
     vec4 hc = vec4(hp.x * 2.0 - 1.0, 1.0 - hp.y * 2.0, hs, 1.0);

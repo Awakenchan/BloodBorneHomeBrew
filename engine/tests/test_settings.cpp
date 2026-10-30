@@ -7,6 +7,7 @@
 #include <chrono>
 #include <sstream>
 #include <string>
+#include <utility>
 #include "gpu/shim/bbport_settings.h"
 
 static std::string Read(const char* path) {
@@ -32,6 +33,10 @@ int main() {
 
     BbSettings::Load();
     auto& s = BbSettings::Get();
+    assert(s.graphics_dof_intensity == 1.0f);
+    assert(s.graphics_ssr_intensity == 1.0f);
+    s.graphics_ssr_intensity = 2.25f;
+    s.graphics_dof_intensity = 1.75f;
     assert(s.upscaler == BbSettings::UpscalerFsr3 && !s.show_fps && s.menu_x < 0.0f);
     s.show_fps = true;
     s.upscaler = BbSettings::UpscalerFsr411;
@@ -41,6 +46,8 @@ int main() {
     BbSettings::Save();
 
     const std::string saved = Read(path);
+    assert(saved.find("graphics_dof_intensity=1.75\n") != std::string::npos);
+    assert(saved.find("graphics_ssr_intensity=2.25\n") != std::string::npos);
     assert(saved.find("# launcher\nupscaler=fsr411\nkey.cross=X, Space\npad.circle=a\nshow_fps=1\n"
                       "fullscreen_hint=1\n") == 0);
     assert(saved.find("menu_pos=0.6250,0.1250\n") != std::string::npos);
@@ -49,7 +56,10 @@ int main() {
 
     s.menu_x = -1.0f;
     s.menu_y = -1.0f;
+    s.graphics_ssr_intensity = 0.0f;
     BbSettings::Load();
+    assert(s.graphics_ssr_intensity == 2.25f);
+    assert(s.graphics_dof_intensity == 1.75f);
     assert(s.menu_x == 0.625f && s.menu_y == 0.125f && s.upscaler == BbSettings::UpscalerFsr411);
     s.upscaler = BbSettings::UpscalerDlss;
     BbSettings::Save();
@@ -82,8 +92,22 @@ int main() {
     s.rebirth=false;s.graphics_bloom=1.0f;
     BbSettings::Load();
     assert(s.change_appearance && s.rebirth && s.graphics_controls && s.graphics_bloom==0.7f && s.graphics_shadow_scale==1.4f);
-    { std::ofstream file(path); file << "camera_fov_scale=nan\ncamera_distance_scale=-10\ncamera_height_scale=inf\n"; }
+    { std::ofstream file(path); file << "graphics_dof_intensity=nan\ncamera_fov_scale=nan\ncamera_distance_scale=-10\ncamera_height_scale=inf\n"; }
     BbSettings::Load();
+    assert(s.graphics_dof_intensity == 1.0f);
+    { std::ofstream file(path); file << "graphics_dof_intensity=10\n"; }
+    BbSettings::Load();
+    assert(s.graphics_dof_intensity == 3.0f);
+    { std::ofstream file(path); file << "graphics_dof_intensity=-1\n"; }
+    BbSettings::Load();
+    assert(s.graphics_dof_intensity == 0.0f);
+    for (const auto& [input, expected] :
+         {std::pair{"nan", 1.0f}, {"inf", 1.0f}, {"10", 3.0f}, {"-1", 0.0f},
+          {"0", 0.0f}, {"1", 1.0f}, {"3", 3.0f}}) {
+        { std::ofstream file(path); file << "graphics_ssr_intensity=" << input << "\n"; }
+        BbSettings::Load();
+        assert(s.graphics_ssr_intensity == expected);
+    }
     assert(s.camera_fov_scale == 1.0f && s.camera_distance_scale == 0.5f && s.camera_height_scale == 1.0f);
     { std::ofstream file(path); file << "menu_language=pt_BR\n"; }
     BbSettings::Load();
