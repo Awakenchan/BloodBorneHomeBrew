@@ -776,9 +776,10 @@ bool Rpc(const Json& request, Json& reply, std::string& error, int timeout_ms) {
         Localize(reply);
         return true;
     }
-    const int host = HostSlotWait(std::min(timeout_ms, 10000));
+    const bool start = StrOf(request, "p") == "/mp/matching2/context_start" && Env("BB_ROOM_START_WAITS_HOST") != "1";
+    const int host = HostSlotWait(start ? 0 : std::min(timeout_ms, 10000));
     if (!host) {
-        error = "no host in the room";
+        error = start ? "no host in the room yet; this hunter is introduced when the host comes" : "no host in the room";
         return false;
     }
     std::uint32_t id;

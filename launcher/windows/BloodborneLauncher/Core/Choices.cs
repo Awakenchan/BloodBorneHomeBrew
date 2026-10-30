@@ -266,7 +266,7 @@
 
         public static readonly Choice[] OnlineServers =
         {
-            new(L.T("The Hunter's Dream"), "huntersdream"),
+            new(L.T("The Hunter's Dream"), "huntersdream"), new("SuperMedo", SuperMedo.Id),
         };
 
         public static readonly Choice[] NamePlates =

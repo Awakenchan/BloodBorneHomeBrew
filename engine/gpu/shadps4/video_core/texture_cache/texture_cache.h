@@ -11,6 +11,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <memory>
+#include <unordered_map>
 #include <unordered_set>
 #include <boost/container/small_vector.hpp>
 #include <deque>
@@ -473,6 +475,13 @@ private:
     /// bbport: for an image with the game's button icons, its data with keycaps over them in
     /// `data`; false when there is none to draw (engine/key_prompts.h).
     bool KeyPromptData(const Image& image, std::vector<u8>& data);
+    void NoteUiTexture(Image& image);
+public:
+    Image* UiReplacement(const Image& image);
+private:
+    std::unordered_map<u64, std::unique_ptr<Image>> ui_images;
+    std::unordered_set<u64> ui_missing;
+    u64 ui_bytes = 0;
 
     /// Removes the image and any views/surface metas that reference it.
     void DeleteImage(ImageId image_id);

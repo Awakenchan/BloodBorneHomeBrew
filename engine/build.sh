@@ -89,11 +89,11 @@ if [[ ! -f out/gpu/build.ninja || $(cat out/gpu/bb-configure.txt 2>/dev/null) !=
 fi
 echo "GPU library: PGO $pgo, LTO ${BB_LTO:-ON}, march ${BB_MARCH:-default}"
 # A failed GPU build must stop here: an older libbbgpu.so would otherwise be used silently.
-if ! ninja -C out/gpu ${BB_JOBS:+-j "$BB_JOBS"} bbgpu bb-engine-assets bb-shader-lab > out/gpu-build.log 2>&1; then
+if ! ninja -C out/gpu ${BB_JOBS:+-j "$BB_JOBS"} bbgpu bb-engine-assets bb-ui-4k bb-shader-lab > out/gpu-build.log 2>&1; then
     grep -v '^\[' out/gpu-build.log | tail -40 >&2
     echo 'GPU library build failed (full log: out/gpu-build.log)' >&2; exit 1
 fi
-cp -f out/gpu/bb-engine-assets* out/
+cp -f out/gpu/bb-engine-assets* out/gpu/bb-ui-4k* out/
 # The cache recompile after a compiler change (start/main.cpp RecompileGpuCache).
 cp -f out/gpu/bb-shader-lab* out/ 2>/dev/null || true
 # The GPU cache's identity (start/main.cpp ResetStaleGpuCache): a hash of the sources that decide

@@ -29,7 +29,7 @@ bin=$root/engine/out
 rm -rf out/package
 mkdir -p "$bin/gpu"
 install -m755 out/bb-probe out/bb-gpu-capabilities packaging/linux/bb-start "$bin/"
-for tool in bb-engine-assets bb-shader-lab; do
+for tool in bb-engine-assets bb-ui-4k bb-shader-lab; do
     [[ ! -f out/$tool ]] || install -m755 "out/$tool" "$bin/"
 done
 install -m755 out/gpu/libbbgpu.so "$bin/gpu/"

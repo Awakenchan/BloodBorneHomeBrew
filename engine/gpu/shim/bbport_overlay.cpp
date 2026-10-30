@@ -1634,12 +1634,12 @@ void CoopSection() {
     const bool summoning = Online::Summoning();
     if (host) {
         if (ImGui::Button(summoning ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
-                                    : BbSettings::MenuText("Start session", "Начать сеанс"))) {
+                                    : BbSettings::MenuText("Start summon", "Начать призыв"))) {
             if (summoning) Online::StopSummon();
             else Online::StartSummon();
         }
-        Hint(BbSettings::MenuText("Rings the Beckoning Bell for you every 10 s until the party is full. Friends press Join host.",
-                                  "Звонит в Манящий колокол каждые 10 с, пока отряд не заполнится. Друзья нажимают «Присоединиться»."));
+        Hint(BbSettings::MenuText("Summons your friends' signs until the party is full. No bell needed; friends press Send sign.",
+                                  "Призывает знаки друзей, пока отряд не заполнится. Колокол не нужен; друзья нажимают «Отправить знак»."));
         const auto members = BbRoom::PartyMembers();
         if (members.empty()) {
             ImGui::TextDisabled("%s", BbSettings::MenuText("Nobody in your world yet.", "В вашем мире пока никого."));
@@ -1672,13 +1672,13 @@ void CoopSection() {
         if (ImGui::Button(BbSettings::MenuText("Return to your own world", "Вернуться в свой мир"))) BbRoom::LeaveParty();
         return;
     }
-    if (ImGui::Button(summoning ? BbSettings::MenuText("Stop summon", "Остановить призыв")
-                                : BbSettings::MenuText("Start summon", "Начать призыв"))) {
+    if (ImGui::Button(summoning ? BbSettings::MenuText("Take back the sign", "Убрать знак")
+                                : BbSettings::MenuText("Send sign", "Отправить знак"))) {
         if (summoning) Online::StopSummon();
         else Online::StartSummon();
     }
-    Hint(BbSettings::MenuText("Rings the Small Resonant Bell for you every 10 s until the host summons you.",
-                              "Звонит в Малый резонансный колокол каждые 10 с, пока хозяин не призовёт вас."));
+    Hint(BbSettings::MenuText("Puts your sign in the host's world until the host summons you. No bell needed.",
+                              "Ставит ваш знак в мире хозяина, пока он вас не призовёт. Колокол не нужен."));
 }
 
 enum Tab : int { TabUpscaling, TabDisplay, TabPicture, TabGameplay, TabInterface, TabCoop, TabCount };
@@ -2172,10 +2172,13 @@ void Ornament(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece&
     }
 }
 
-void Flourish(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, ImU32 tint) {
+void Flourish(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, ImU32 tint,
+              bool flip = false) {
     const float w = float(texture->Width), h = float(texture->Height);
     const float arm = float(piece.w) * kOrnamentArm, scroll = float(piece.w) * kOrnamentScroll;
-    const float u = float(piece.x), v0 = float(piece.y) / h, v1 = float(piece.y + piece.h) / h;
+    float v0 = float(piece.y) / h, v1 = float(piece.y + piece.h) / h;
+    if (flip) std::swap(v0, v1);
+    const float u = float(piece.x);
     const float height = b.y - a.y;
     const float curl = std::min(height * scroll / float(piece.h), (b.x - a.x) * 0.45f);
     const float line0 = u + arm * 0.45f, line1 = u + arm * 0.95f;
@@ -2796,10 +2799,10 @@ std::string CoopLabel(const CoopItem& item, bool chosen) {
     switch (item.kind) {
     case CoopKind::Summon:
         return Online::Summoning() ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
-                                   : BbSettings::MenuText("Start session", "Начать сеанс");
-    case CoopKind::Join:
-        return Online::Summoning() ? BbSettings::MenuText("Stop summon", "Остановить призыв")
                                    : BbSettings::MenuText("Start summon", "Начать призыв");
+    case CoopKind::Join:
+        return Online::Summoning() ? BbSettings::MenuText("Take back the sign", "Убрать знак")
+                                   : BbSettings::MenuText("Send sign", "Отправить знак");
     case CoopKind::GoTo:
         return BbSettings::MenuText("Go to the host", "К хозяину");
     case CoopKind::Member:
@@ -2868,10 +2871,11 @@ void CoopMenu() {
                                   IM_COL32(0, 0, 0, 40));
     draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, IM_COL32(4, 4, 6, 225), IM_COL32(0, 0, 0, 40), IM_COL32(0, 0, 0, 40),
                                   IM_COL32(4, 4, 6, 225));
-    const auto line = [&](float y, float half) {
+    const auto line = [&](float y, float half, bool flip) {
         if (art) {
             const float h = 18.0f * k;
-            Flourish(draw, gauge, art->header, ImVec2(cx - half, y - h * 0.5f), ImVec2(cx + half, y + h * 0.5f), IM_COL32(255, 255, 255, 235));
+            Flourish(draw, gauge, art->header, ImVec2(cx - half, y - h * 0.5f), ImVec2(cx + half, y + h * 0.5f), IM_COL32(255, 255, 255, 235),
+                     flip);
         } else {
             draw->AddLine(ImVec2(cx - half, y), ImVec2(cx + half, y), IM_COL32(200, 190, 170, 160), k);
         }
@@ -2884,7 +2888,7 @@ void CoopMenu() {
     const ImVec2 title_size = font->CalcTextSizeA(title_px, FLT_MAX, 0.0f, title);
     text(title_px, ImVec2(cx - title_size.x * 0.5f, top + 18.0f * k), parchment, title);
     float y = top + title_px + 34.0f * k;
-    line(y, 85.0f * k);
+    line(y, 85.0f * k, false);
     y += 22.0f * k;
     const ImGuiIO& io = ImGui::GetIO();
     const ImVec2 mouse = io.MousePos;
@@ -2942,7 +2946,7 @@ void CoopMenu() {
                                             "Enter / Крест: выбрать      Стрелки: двигаться      Esc / Круг: назад");
     const ImVec2 hint_size = font->CalcTextSizeA(hint_px, FLT_MAX, 0.0f, hint);
     text(hint_px, ImVec2(cx - hint_size.x * 0.5f, y + 6.0f * k), faded, hint);
-    line(y + hint_px + 22.0f * k, width * 0.5f - 30.0f * k);
+    line(y + hint_px + 22.0f * k, width * 0.5f - 30.0f * k, true);
 }
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {

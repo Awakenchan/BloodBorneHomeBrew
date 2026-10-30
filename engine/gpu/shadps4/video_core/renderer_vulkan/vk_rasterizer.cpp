@@ -4087,6 +4087,22 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     continue;
                 }
             }
+            if (image.ui_key && !is_storage && !binding.force_general && !binding.is_target) {
+                if (VideoCore::Image* ui = texture_cache.UiReplacement(image)) {
+                    barrier |= runtime.Transit(ui, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                               vk::PipelineStageFlagBits2::eAllCommands,
+                                               vk::AccessFlagBits2::eShaderRead);
+                    VideoCore::ImageViewInfo ui_view = desc.view_info;
+                    ui_view.format = ui->info.pixel_format;
+                    ui_view.type = AmdGpu::ImageType::Color2D;
+                    ui_view.range = {};
+                    auto& view = ui->FindView(ui_view, false);
+                    image.usage.texture = 1u;
+                    image_infos.emplace_back(VK_NULL_HANDLE, *view.image_view, ui->backing->state.layout);
+                    set_ok = false;
+                    continue;
+                }
+            }
             // The image is either bound as storage in a separate descriptor or bound as render
             // target in feedback loop. Depth images are excluded because they can't be bound as
             // storage and feedback loop doesn't make sense for them

@@ -27,7 +27,7 @@ namespace BloodborneLauncher.Core
         public static string ReleasesPage => $"https://github.com/{Repository}/releases";
 
         /// <summary>The engine build this launcher is made for (package.json "engine").</summary>
-        public const string EngineId = "lantern-room15-b21";
+        public const string EngineId = "lantern-room15-b22";
 
         public const string ExeName = "Lantern Engine.exe";
         /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>
@@ -454,7 +454,7 @@ namespace BloodborneLauncher.Core
             }
         }
 
-        private static async Task DownloadAsync(string url, string path, long expected, IProgress<double>? progress, string? sha256 = null)
+        internal static async Task DownloadAsync(string url, string path, long expected, IProgress<double>? progress, string? sha256 = null)
         {
             using var http = Client(TimeSpan.FromMinutes(30));
             using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);

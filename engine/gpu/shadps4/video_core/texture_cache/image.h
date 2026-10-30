@@ -172,6 +172,7 @@ public:
     ImageId depth_id{};
     u64 depth_uid{};
     u64 image_uid{};
+    u64 ui_key{};
 
     ImageInfo info;
     Vulkan::Runtime* runtime;

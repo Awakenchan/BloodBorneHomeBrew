@@ -278,4 +278,16 @@ void Start() {
 const Art* Ready() {
     return g_state.load() == 1 ? &g_art : nullptr;
 }
+
+bool InflateDcx(const std::vector<std::uint8_t>& file, std::vector<std::uint8_t>& out) {
+    return Inflate(file, out);
+}
+
+void DecodeBc7Block(const std::uint8_t* block, std::uint32_t out[16]) {
+    DecodeBc7(block, out);
+}
+
+int TileIndex(int x, int y) {
+    return Morton(x, y);
+}
 }

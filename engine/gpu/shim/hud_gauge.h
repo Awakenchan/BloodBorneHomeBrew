@@ -15,4 +15,8 @@ struct Art {
 
 void Start();
 const Art* Ready();
+
+bool InflateDcx(const std::vector<std::uint8_t>& file, std::vector<std::uint8_t>& out);
+void DecodeBc7Block(const std::uint8_t* block, std::uint32_t out[16]);
+int TileIndex(int x, int y);
 }

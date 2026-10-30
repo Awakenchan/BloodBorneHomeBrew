@@ -235,6 +235,7 @@ namespace BloodborneLauncher.Core
                 env["BB_THD_TOKEN"] = token;
                 env["BB_THD_ONLINE_ID"] = name;
             }
+            if (s.OnlinePassword is { Length: > 0 } shadnetPassword) env["BB_SHADNET_PASSWORD"] = shadnetPassword;
             env["BB_ROOM_PASSWORD"] = s.SeamlessPassword;
             env["BB_ROOM_HOST_PASSWORD"] = s.SeamlessHostPassword;
             // The client version the online backend reports to the server.

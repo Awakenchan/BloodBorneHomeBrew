@@ -46,7 +46,7 @@ Folders Locate() {
 
 std::optional<std::string> PlateTitle(const std::map<std::string, std::string>& settings, const char* key) {
     const auto set = Setting(settings, key);
-    if (!set) return Setting(settings, "name_plates") == "role" ? std::nullopt : std::optional<std::string>(std::string());
+    if (!set) return std::optional<std::string>(std::string());
     std::string title;
     for (const char c : *set)
         if (std::uint8_t(c) >= 0x20 && c != 0x7f) title.push_back(c);
@@ -437,6 +437,14 @@ int Main(std::vector<std::wstring> arguments) {
                 Log("Engine: Dream mirror prepared locally: %s", Utf8(asset).c_str());
             } catch (const std::exception& e) {
                 Log("Engine: Dream mirror skipped: %s", e.what());
+            }
+        }
+        if (Setting(settings, "ui_4k") != "0") {
+            std::error_code ui_error;
+            const fs::path ui = data / "engine-assets" / "ui-4k";
+            if (fs::is_regular_file(ui / "complete", ui_error)) {
+                SetEnv("BB_UI_4K", Utf8(ui));
+                Log("Engine: 4K menu textures from %s", Utf8(ui).c_str());
             }
         }
         if (is_on("change_appearance") || is_on("camera_controls") || is_on("rebirth") || is_on("graphics_controls") ||

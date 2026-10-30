@@ -1016,8 +1016,15 @@ namespace BloodborneLauncher
             var ini = ws.Ini;
             // A connected Hunter's Dream account plays in its own co-op pool (the engine's thd backend);
             // decided here, not only when the Online page is opened.
-            ini.Set("online_pool", s.HuntersDreamToken.Length > 0 && s.Str("hd_name").Length > 0 ? "huntersdream" : "");
-            if (!HuntersDream.OnlinePaused && ini.Get("online_enabled") == "1" && ini.Get("online_pool") != "huntersdream")
+            SuperMedo.Apply(ini, s);
+            if (!HuntersDream.OnlinePaused && ini.Get("online_enabled") == "1" && SuperMedo.Selected(ini) &&
+                ini.Get("seamless_enabled") != "1" && SuperMedo.Problem(ini, s) is { } medoProblem)
+            {
+                Prompt.Tell(L.T("Online"), medoProblem + L.T("\n\nOr turn \"Play online\" off to play offline."));
+                Show("online");
+                return;
+            }
+            if (!HuntersDream.OnlinePaused && ini.Get("online_enabled") == "1" && !SuperMedo.Selected(ini) && ini.Get("online_pool") != "huntersdream")
             {
                 // Online play is The Hunter's Dream's: without its account the engine stays offline.
                 Prompt.Tell(L.T("Online"), L.T("Connect your Hunter's Dream account on the Online page first (with Discord, or without it).") +
