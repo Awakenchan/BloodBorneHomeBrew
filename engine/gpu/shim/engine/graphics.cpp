@@ -66,7 +66,11 @@ constexpr std::uint8_t kPointShadowRadiusCode[] = {0xc5, 0xfa, 0x10, 0x05, 0x67,
 constexpr std::size_t kSpotShadowRadiusLoad = 0x22b7220, kSpotShadowRadiusLoadFallback = 0x22b7298;
 constexpr std::uint8_t kSpotShadowRadiusCode[] = {0xc5, 0xfa, 0x10, 0x05, 0x5c, 0x2a, 0x67, 0x02};
 constexpr std::uint8_t kSpotShadowRadiusFallbackCode[] = {0xc5, 0xfa, 0x10, 0x05, 0xe4, 0x29, 0x67, 0x02};
-constexpr float kOriginalLocalShadowRadius = 3.2f, kScaledLocalShadowRadius = 6.4f;
+constexpr float kOriginalLocalShadowRadius = 3.2f;
+
+int LocalShadowQuality() {
+    return std::clamp(BbSettings::Get().graphics_local_shadow_resolution.load(std::memory_order_relaxed), 0, 2);
+}
 
 constexpr std::size_t kYebisRecord = 0x21d4860;
 constexpr std::uint8_t kYebisRecordEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
@@ -321,7 +325,7 @@ bool InstallDirectionalShadows(std::uint8_t* image, std::size_t size) {
 }
 
 bool InstallLocalShadowSoftness(std::uint8_t* image, std::size_t size, bool point, bool spot) {
-    if (!point && !spot) return true;
+    if ((!point && !spot) || LocalShadowQuality() == 0) return true;
     const auto radius_matches = [&](std::size_t at) {
         return Matches(image, size, at, reinterpret_cast<const std::uint8_t*>(&kOriginalLocalShadowRadius),
                        sizeof kOriginalLocalShadowRadius);
@@ -339,22 +343,23 @@ bool InstallLocalShadowSoftness(std::uint8_t* image, std::size_t size, bool poin
         return false;
     }
     // The native 13-tap generator multiplies only XY offsets by this radius, not the
-    // normalized weights. At eight times stock resolution, a doubled radius gives
-    // one quarter of the stock UV footprint without spreading 13 taps too thinly.
+    // normalized weights. Both upgraded qualities keep a quarter-stock UV footprint.
+    const float radius = LocalShadowQuality() == 1 ? 3.2f : 6.4f;
     for (const auto at : {point ? kPointShadowRadius : 0, spot ? kSpotShadowRadius : 0}) {
-        if (at && !WriteCode(image + at, &kScaledLocalShadowRadius, sizeof kScaledLocalShadowRadius)) {
+        if (at && !WriteCode(image + at, &radius, sizeof radius)) {
             std::printf("Engine: local-shadow filter tuning incomplete: cannot write filter radius at %zx\n", at);
             return false;
         }
     }
-    std::printf("Engine: local-shadow filter radius 6.4 texels (point %s, spotlight %s); high-resolution maps kept\n",
-                point ? "on" : "unchanged", spot ? "on" : "unchanged");
+    std::printf("Engine: local-shadow filter radius %.1f texels (point %s, spotlight %s); high-resolution maps kept\n",
+                radius, point ? "on" : "unchanged", spot ? "on" : "unchanged");
     return true;
 }
 
 bool InstallLocalShadows(std::uint8_t* image, std::size_t size) {
     const char* enabled = std::getenv("BB_NATIVE_LOCAL_SHADOWS");
-    if (enabled && std::strcmp(enabled, "0") == 0) {
+    const int quality = LocalShadowQuality();
+    if (quality == 0 || (enabled && std::strcmp(enabled, "0") == 0)) {
         std::printf("Engine: native point-shadow resolution left at the game's settings\n");
         return false;
     }
@@ -365,20 +370,24 @@ bool InstallLocalShadows(std::uint8_t* image, std::size_t size) {
         std::printf("Engine: higher-resolution point shadows off: the pool code is not 1.09's\n");
         return false;
     }
-    // Replace only the point pool's base-size load with mov eax,2048. The native allocator
+    // Replace only the point pool's base-size load. The native allocator
     // derives all four tiers, cube faces, shared depth targets and render dimensions from it.
-    constexpr std::uint8_t resolution[] = {0xb8, 0x00, 0x08, 0x00, 0x00};
-    if (!WriteCode(image + kLocalShadowSize, resolution, sizeof resolution)) {
+    const std::uint32_t base = quality == 1 ? 1024u : 2048u;
+    std::array<std::uint8_t, 5> resolution{0xb8};
+    std::memcpy(resolution.data() + 1, &base, sizeof base);
+    if (!WriteCode(image + kLocalShadowSize, resolution.data(), resolution.size())) {
         std::printf("Engine: higher-resolution point shadows off: cannot write the pool size\n");
         return false;
     }
-    std::printf("Engine: native point-shadow faces 2048/1024/512/256; other pools untouched by point patch\n");
+    std::printf("Engine: native point-shadow faces %u/%u/%u/%u; other pools untouched by point patch\n",
+                base, base / 2, base / 4, base / 8);
     return true;
 }
 
 bool InstallSpotShadows(std::uint8_t* image, std::size_t size) {
     const char* enabled = std::getenv("BB_NATIVE_SPOT_SHADOWS");
-    if (enabled && std::strcmp(enabled, "0") == 0) {
+    const int quality = LocalShadowQuality();
+    if (quality == 0 || (enabled && std::strcmp(enabled, "0") == 0)) {
         std::printf("Engine: native spotlight shadow resolution left at the game's settings\n");
         return false;
     }
@@ -389,14 +398,16 @@ bool InstallSpotShadows(std::uint8_t* image, std::size_t size) {
         std::printf("Engine: higher-resolution spotlight shadows off: the pool code is not 1.09's\n");
         return false;
     }
-    // xor eax,eax; mov ah,16 sets EAX to 4096 in the original four-byte load's space.
+    // xor eax,eax; mov ah,8/16 sets EAX to 2048/4096 in the original four-byte load's space.
     // The following stores feed both dimensions; the native loop halves them for each tier.
-    constexpr std::uint8_t resolution[] = {0x31, 0xc0, 0xb4, 0x10};
+    const std::uint8_t resolution[] = {0x31, 0xc0, 0xb4, std::uint8_t(quality == 1 ? 8 : 16)};
     if (!WriteCode(image + kSpotShadowSize, resolution, sizeof resolution)) {
         std::printf("Engine: higher-resolution spotlight shadows off: cannot write the pool size\n");
         return false;
     }
-    std::printf("Engine: native spotlight shadow maps 4096/2048/1024/512; directional pool unchanged\n");
+    const unsigned base = quality == 1 ? 2048u : 4096u;
+    std::printf("Engine: native spotlight shadow maps %u/%u/%u/%u; directional pool unchanged\n",
+                base, base / 2, base / 4, base / 8);
     return true;
 }
 

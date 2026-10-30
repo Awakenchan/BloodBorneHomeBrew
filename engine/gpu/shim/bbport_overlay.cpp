@@ -661,6 +661,23 @@ void EffectsSection() {
             "Четыре каскада делят атлас. Требуется перезапуск Bloodborne; не зависит от настройки изображения. "
             "Ультра требует вчетверо больше памяти атласа, чем очень высокое. Точечные и прожекторные тени не меняются."));
     }
+    if (const char* label = Item("Local shadow resolution", "Разрешение локальных теней")) {
+        const char* levels[] = {BbSettings::MenuText("Default", "По умолчанию"),
+                                BbSettings::MenuText("High", "Высокое"),
+                                BbSettings::MenuText("Very high", "Очень высокое")};
+        int quality = std::clamp(s.graphics_local_shadow_resolution.load(), 0, 2);
+        if (ImGui::Combo(label, &quality, levels, 3))
+            Store(s.graphics_local_shadow_resolution, quality, true);
+        Hint(BbSettings::MenuText(
+            "Point-light faces / spotlight maps: Default uses original allocations (256 / 512 base); "
+            "High uses 4x dimensions (1024 / 2048 base); Very high keeps 8x dimensions (2048 / 4096 base). "
+            "Each pool retains four halving tiers. Requires restarting Bloodborne. "
+            "Independent of directional shadow resolution and Picture tuning.",
+            "Грани точечных теней / карты прожекторов: по умолчанию исходные размеры (256 / 512); "
+            "высокое — в 4 раза больше (1024 / 2048); очень высокое — в 8 раз больше (2048 / 4096). "
+            "Четыре уровня каждого пула сохраняют деление пополам. Требуется перезапуск Bloodborne. "
+            "Не зависит от разрешения направленных теней и настройки изображения."));
+    }
     if (const char* label = Item("Model detail", "Детализация моделей")) {
         const char* lods[] = {BbSettings::MenuText("Highest (-2)", "Максимальная (-2)"),
                               BbSettings::MenuText("Game default", "Как в игре"),

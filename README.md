@@ -73,7 +73,8 @@ excluding other working resources, and increases shadow rendering cost.
 After the native shadow blur chain, an atlas-safe eight-tap PCF resolve replaces
 only the final shadow alpha, preserving the packed depth in RGB. Each tap uses
 bilinearly interpolated depth comparisons with receiver-plane correction, rather
-than blurring shadow boundaries repeatedly in screen space.
+than blurring shadow boundaries repeatedly in screen space. Its 1.5-atlas-texel
+disk radius gives regular PCF edges a modest softness without changing PCSS.
 
 The optional **PCSS** effect uses the same cascade-safe comparisons, a
 receiver-plane-corrected blocker average, and a bias capped by the world-space
@@ -99,6 +100,22 @@ toggles still apply; disable those as well for the original directional filterin
 ### Higher-resolution native local-light shadows
 
 The game's original shadowcasting point lights use variance shadow maps, storing depth and squared-depth moments on six cube faces. BBFSS raises their native pool's base face size to 2048 pixels, producing **2048/1024/512/256** distance-quality tiers. The native allocator creates the larger faces and shared working targets, and the rendering and filtering passes consume their dimensions. This adds actual shadow silhouette detail rather than upscaling an existing low-resolution map.
+
+The separate **Game effects (restart required) > Local shadow resolution** dropdown
+controls point lights and spotlights together. It is saved as
+`graphics_local_shadow_resolution=0/1/2`; restart Bloodborne to apply it.
+
+| Quality | Point-light face tiers | Spotlight tiers |
+|---|---|---|
+| Default | Native allocations, normally 256/128/64/32 | Native allocations, normally 512/256/128/64 |
+| High (4x dimensions) | 1024/512/256/128 | 2048/1024/512/256 |
+| Very high (8x dimensions; selected by default) | 2048/1024/512/256 | 4096/2048/1024/512 |
+
+Default leaves the original allocation instructions and filter constants untouched,
+including any native profile-dependent sizing. High uses the original 3.2-texel
+filter radius; Very high uses 6.4 texels. Both upgraded qualities retain the same
+quarter-stock normalized filter footprint. Directional atlas quality and Picture
+tuning do not affect this setting.
 
 Native spotlight shadows receive the same eightfold increase per dimension: their original **512/256/128/64** tiers become **4096/2048/1024/512**. The spotlight allocator also derives both dimensions and the shared working targets from its base size.
 

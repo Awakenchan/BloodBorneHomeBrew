@@ -199,6 +199,43 @@ int main() {
               "spotlight filter UV footprint is one quarter of stock at every tier");
     }
     constexpr std::size_t range = 0xeac540, tail = 0xeac657;
+    // Both qualities must use matching sizes/softness, while Default changes no bytes.
+    std::memcpy(image.data() + size_at, read, 5);
+    std::memcpy(image.data() + spot_size, spot_read, 4);
+    reset_radii();
+    const auto local_original = image;
+    for (int quality = 0; quality < 3; ++quality) {
+        BbSettings::Get().graphics_local_shadow_resolution = quality;
+        const bool point = BbEngine::Graphics::InstallLocalShadows(image.data(), image.size());
+        const bool spot = BbEngine::Graphics::InstallSpotShadows(image.data(), image.size());
+        Check(point == (quality != 0) && spot == (quality != 0),
+              "local dropdown enables both upgrades only for High and Very high");
+        Check(BbEngine::Graphics::InstallLocalShadowSoftness(image.data(), image.size(), point, spot),
+              "selected local quality accepts matching softness");
+        if (quality == 0) {
+            Check(image == local_original, "Default keeps native allocation instructions and filters byte-for-byte");
+        } else {
+            const unsigned point_base = quality == 1 ? 1024 : 2048;
+            const unsigned spot_base = point_base * 2;
+            std::uint32_t immediate = 0;
+            std::memcpy(&immediate, image.data() + size_at + 1, 4);
+            Check(immediate == point_base && image[size_at] == 0xb8, "selected point base immediate");
+            Check(image[spot_size] == 0x31 && image[spot_size + 1] == 0xc0 &&
+                  image[spot_size + 2] == 0xb4 &&
+                  unsigned(image[spot_size + 3]) * 256 == spot_base, "selected spotlight base instruction");
+            for (unsigned i = 0; i < 4; ++i) {
+                Check(radius_at(point_radius) / float(point_base >> i) == 0.25f * 3.2f / float(256u >> i),
+                      "selected point tiers preserve quarter-stock normalized softness");
+                Check(radius_at(spot_radius) / float(spot_base >> i) == 0.25f * 3.2f / float(512u >> i),
+                      "selected spotlight tiers preserve quarter-stock normalized softness");
+            }
+        }
+        std::memcpy(image.data() + size_at, read, 5);
+        std::memcpy(image.data() + spot_size, spot_read, 4);
+        reset_radii();
+        Check(image == local_original, "local dropdown changes only sizes and successful light-type radii");
+    }
+    BbSettings::Get().graphics_local_shadow_resolution = 2;
     constexpr std::uint8_t range_entry[] = {
         0xc5, 0xf8, 0x28, 0x02, 0xc5, 0xf8, 0x29, 0x06, 0xc5, 0xf8, 0x28, 0x42, 0x10,
         0xc5, 0xf8, 0x29, 0x46, 0x10};

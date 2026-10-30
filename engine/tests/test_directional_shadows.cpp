@@ -320,7 +320,8 @@ int main() {
         const unsigned a = static_cast<unsigned*>(result.data)[i] >> 24;
         fractional += a > 0 && a < 255;
     }
-    assert(fractional >= H);
+    std::printf("Regular PCF fractional edge pixels: %u\n", fractional);
+    assert(fractional >= 2 * H && fractional <= 5 * H);
     // Quantify contact hardening using a straight edge and increasing separation.
     p.pcss = 1; p.bias = 0; p.light = 1; p.maximum = 2;
     const auto soft_pixels = [&] {

@@ -242,7 +242,7 @@ float pcss(vec2 uv0) {
     if (pcss_on == 0u) {
         float lit = 0.0;
         for (int i = 0; i < 8; ++i) {
-            vec2 off = vogel(i, 8, phi) * texel;
+            vec2 off = vogel(i, 8, phi) * (1.5 * texel);
             lit += compareBilinear(center + off, center, slope, bias);
         }
         return lit / 8.0;

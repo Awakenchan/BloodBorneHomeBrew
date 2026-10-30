@@ -34,6 +34,8 @@ int main() {
     BbSettings::Load();
     auto& s = BbSettings::Get();
     assert(s.graphics_shadow_resolution == 2);
+    assert(s.graphics_local_shadow_resolution == 2);
+    s.graphics_local_shadow_resolution = 1;
     s.graphics_shadow_resolution = 1;
     assert(s.graphics_dof_intensity == 1.0f);
     assert(s.graphics_ssr_intensity == 1.0f);
@@ -49,6 +51,7 @@ int main() {
 
     const std::string saved = Read(path);
     assert(saved.find("graphics_shadow_resolution=1\n") != std::string::npos);
+    assert(saved.find("graphics_local_shadow_resolution=1\n") != std::string::npos);
     assert(saved.find("graphics_dof_intensity=1.75\n") != std::string::npos);
     assert(saved.find("graphics_ssr_intensity=2.25\n") != std::string::npos);
     assert(saved.find("# launcher\nupscaler=fsr411\nkey.cross=X, Space\npad.circle=a\nshow_fps=1\n"
@@ -61,9 +64,11 @@ int main() {
     s.menu_y = -1.0f;
     s.graphics_ssr_intensity = 0.0f;
     s.graphics_shadow_resolution = 0;
+    s.graphics_local_shadow_resolution = 0;
     BbSettings::Load();
     assert(s.graphics_ssr_intensity == 2.25f);
     assert(s.graphics_shadow_resolution == 1);
+    assert(s.graphics_local_shadow_resolution == 1);
     assert(s.graphics_dof_intensity == 1.75f);
     assert(s.menu_x == 0.625f && s.menu_y == 0.125f && s.upscaler == BbSettings::UpscalerFsr411);
     s.upscaler = BbSettings::UpscalerDlss;
@@ -122,6 +127,16 @@ int main() {
         s.graphics_shadow_resolution = -1;
         BbSettings::Load();
         assert(s.graphics_shadow_resolution == expected);
+    }
+    for (const auto& [input, expected] :
+         {std::pair{"-1", 0}, {"0", 0}, {"1", 1}, {"2", 2}, {"99", 2}}) {
+        { std::ofstream file(path); file << "graphics_local_shadow_resolution=" << input << "\n"; }
+        BbSettings::Load();
+        assert(s.graphics_local_shadow_resolution == expected);
+        BbSettings::Save();
+        s.graphics_local_shadow_resolution = -1;
+        BbSettings::Load();
+        assert(s.graphics_local_shadow_resolution == expected);
     }
     assert(s.camera_fov_scale == 1.0f && s.camera_distance_scale == 0.5f && s.camera_height_scale == 1.0f);
     { std::ofstream file(path); file << "menu_language=pt_BR\n"; }
