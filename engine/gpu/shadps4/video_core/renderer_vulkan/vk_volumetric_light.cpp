@@ -15,6 +15,7 @@
 #include "video_core/host_shaders/volumetric_light_tint_comp.h"
 #include "video_core/host_shaders/volumetric_light_composite_comp.h"
 #include "video_core/host_shaders/volumetric_light_celestial_comp.h"
+#include "video_core/host_shaders/point_volumetric_comp.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -113,8 +114,14 @@ VolumetricLight::VolumetricLight(const Instance& instance_, Scheduler& scheduler
                           vk::DescriptorType::eCombinedImageSampler,
                           vk::DescriptorType::eStorageImage,
                           vk::DescriptorType::eStorageBuffer,
+                          vk::DescriptorType::eCombinedImageSampler,
                           vk::DescriptorType::eCombinedImageSampler},
                VOLUMETRIC_LIGHT_COMPOSITE_COMP, 2 * sizeof(u32));
+    CreatePass(point, {vk::DescriptorType::eStorageBuffer,
+                       vk::DescriptorType::eStorageBuffer,
+                       vk::DescriptorType::eCombinedImageSampler,
+                       vk::DescriptorType::eStorageImage},
+               POINT_VOLUMETRIC_COMP, 3 * sizeof(u32));
     CreatePass(celestial, {vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
                           vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
                           vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer},
@@ -125,8 +132,9 @@ VolumetricLight::~VolumetricLight() = default;
 
 bool VolumetricLight::Enabled() const {
     return enabled && !failed &&
-           BbSettings::Get().effects[BbSettings::EffectVolumetricLight].load(
-               std::memory_order_relaxed);
+           (BbSettings::Get().effects[BbSettings::EffectVolumetricLight].load(
+                std::memory_order_relaxed) ||
+            BbSettings::Get().graphics_point_fog_intensity.load(std::memory_order_relaxed) > 0.0f);
 }
 
 void VolumetricLight::CreatePass(Pass& pass, std::initializer_list<vk::DescriptorType> types,
@@ -162,11 +170,14 @@ void VolumetricLight::EnsureImage(u32 w, u32 h) {
         scheduler.DeferOperation(
             [image = std::move(fog), view = std::move(fog_view),
              repair_image = std::move(repair_fog), repair_image_view = std::move(repair_view),
+             point_image = std::move(point_fog), point_image_view = std::move(point_view),
              z = std::move(depth_snapshot), zv = std::move(depth_view)]() mutable {
                 view.reset();
                 image.Destroy();
                 repair_image_view.reset();
                 repair_image.Destroy();
+                point_image_view.reset();
+                point_image.Destroy();
                 zv.reset();
                 z.Destroy();
             });
@@ -202,6 +213,21 @@ void VolumetricLight::EnsureImage(u32 w, u32 h) {
     });
     repair_view = Check<"create volumetric repair view">(device.createImageViewUnique({
         .image = vk::Image(repair_fog), .viewType = vk::ImageViewType::e2D,
+        .format = vk::Format::eR16G16B16A16Sfloat, .subresourceRange = ColorRange,
+    }));
+    point_fog = VideoCore::UniqueImage(device, instance.GetAllocator());
+    point_fog.Create({
+        .imageType = vk::ImageType::e2D,
+        .format = vk::Format::eR16G16B16A16Sfloat,
+        .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+        .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                 vk::ImageUsageFlagBits::eTransferDst,
+        .initialLayout = vk::ImageLayout::eUndefined,
+    });
+    point_view = Check<"create point volumetric view">(device.createImageViewUnique({
+        .image = vk::Image(point_fog), .viewType = vk::ImageViewType::e2D,
         .format = vk::Format::eR16G16B16A16Sfloat, .subresourceRange = ColorRange,
     }));
     depth_snapshot = VideoCore::UniqueImage(device, instance.GetAllocator());
@@ -248,7 +274,9 @@ void VolumetricLight::Integrate(VideoCore::ImageId shadow_target,
     const float intensity = BbSettings::Get().graphics_volumetric_intensity.load(
         std::memory_order_relaxed);
     const float live_strength = strength *
-        std::clamp(std::isfinite(intensity) ? intensity : 1.0f, 0.0f, 3.0f);
+        std::clamp(std::isfinite(intensity) ? intensity : 1.0f, 0.0f, 3.0f) *
+        float(BbSettings::Get().effects[BbSettings::EffectVolumetricLight].load(
+            std::memory_order_relaxed));
     const Params params{in.constants_offset_word, steps, reach, density, live_strength,
                         anisotropy, 0.02f, 0.0f};
     const vk::DescriptorImageInfo di{*sampler, depth.imageView, depth.imageLayout};
@@ -257,6 +285,22 @@ void VolumetricLight::Integrate(VideoCore::ImageId shadow_target,
     const vk::DescriptorImageInfo repaired{{}, *repair_view, vk::ImageLayout::eGeneral};
     const vk::DescriptorImageInfo zout{{}, *depth_view, vk::ImageLayout::eGeneral};
     const vk::DescriptorBufferInfo state{direction_state->Handle(), 0, 112};
+    scheduler.Record([image = vk::Image(point_fog)](vk::CommandBuffer cmd) {
+        const vk::ImageMemoryBarrier2 barrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eClear,
+            .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image, .subresourceRange = ColorRange,
+        };
+        cmd.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+        cmd.clearColorImage(image, vk::ImageLayout::eGeneral,
+                            vk::ClearColorValue{std::array<float, 4>{}}, ColorRange);
+    });
     for (u32 pass_index = 0; pass_index < 2; ++pass_index) {
         const bool repairing = pass_index == 1;
         const auto& pass = repairing ? repair : integrate;
@@ -361,6 +405,50 @@ void VolumetricLight::Tint(const vk::DescriptorBufferInfo& lighting, u32 offset_
         std::printf("Volumetric lighting: resolved primary diffuse RGB, %u region records\n",
                     params[1]);
     }
+}
+
+void VolumetricLight::PointLights(const PointShadow::Inputs& in, u32 count) {
+    if (!ready || !Enabled()) return;
+    const float intensity = BbSettings::Get().graphics_point_fog_intensity.load(
+        std::memory_order_relaxed);
+    if (!(intensity > 0.0f) || !std::isfinite(intensity)) return;
+    const u32 constants_offset = in.offsets & 255u;
+    const u32 lights_offset = (in.offsets >> 8) & 255u;
+    if (!in.constants || !in.lights || count == 0 || count > 12 ||
+        in.constants_range < constants_offset + 64u ||
+        in.lights_range < lights_offset + count * 64u) {
+        failed = true;
+        std::printf("Point volumetric lighting: unexpected point-light buffer layout; off\n");
+        return;
+    }
+    struct PointParams { u32 offsets, count; float intensity; };
+    const PointParams params{in.offsets, count, std::clamp(intensity, 0.0f, 3.0f)};
+    scheduler.EndRendering();
+    const vk::DescriptorBufferInfo constants{in.constants, in.constants_offset, in.constants_range};
+    const vk::DescriptorBufferInfo lights{in.lights, in.lights_offset, in.lights_range};
+    const vk::DescriptorImageInfo depth{*sampler, *depth_view, vk::ImageLayout::eGeneral};
+    const vk::DescriptorImageInfo out{{}, *point_view, vk::ImageLayout::eGeneral};
+    scheduler.RecordCrumb(
+        {.name = "Unshadowed point volumetric integration"},
+        [params, constants, lights, depth, out, w = depth_width, h = depth_height,
+         pipeline = *point.pipeline, layout = *point.layout](vk::CommandBuffer cmd) {
+            Before(cmd);
+            const std::array<vk::WriteDescriptorSet, 4> writes{{
+                {.dstBinding = 0, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &constants},
+                {.dstBinding = 1, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &lights},
+                {.dstBinding = 2, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &depth},
+                {.dstBinding = 3, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &out},
+            }};
+            cmd.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
+            cmd.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, layout, 0, writes);
+            cmd.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(params), &params);
+            cmd.dispatch((w + 7) / 8, (h + 7) / 8, 1);
+            After(cmd);
+        });
 }
 
 void VolumetricLight::Scene(VideoCore::ImageId color) {
@@ -493,6 +581,7 @@ void VolumetricLight::Composite() {
     const vk::DescriptorImageInfo di{*sampler, *depth_view, vk::ImageLayout::eGeneral};
     const vk::DescriptorImageInfo out{{}, target_view, vk::ImageLayout::eGeneral};
     const vk::DescriptorImageInfo repaired{*sampler, *repair_view, vk::ImageLayout::eGeneral};
+    const vk::DescriptorImageInfo points{*sampler, *point_view, vk::ImageLayout::eGeneral};
     const vk::DescriptorBufferInfo state{direction_state->Handle(), 0, 112};
     struct CompositeParams { float anisotropy; u32 allow_celestial; };
     const CompositeParams params{anisotropy, candidates <= 4 ? 1u : 0u};
@@ -506,10 +595,10 @@ void VolumetricLight::Composite() {
     }
     scheduler.RecordCrumb(
         {.name = "Directional volumetric composite"},
-        [fi, di, out, repaired, state, params, w, h, pipeline = *composite.pipeline,
+        [fi, di, out, repaired, points, state, params, w, h, pipeline = *composite.pipeline,
          layout = *composite.layout](vk::CommandBuffer cmd) {
             Before(cmd);
-            const std::array<vk::WriteDescriptorSet, 5> writes{{
+            const std::array<vk::WriteDescriptorSet, 6> writes{{
                 {.dstBinding = 0, .descriptorCount = 1,
                  .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &fi},
                 {.dstBinding = 1, .descriptorCount = 1,
@@ -520,6 +609,8 @@ void VolumetricLight::Composite() {
                  .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &state},
                 {.dstBinding = 4, .descriptorCount = 1,
                  .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &repaired},
+                {.dstBinding = 5, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &points},
             }};
             cmd.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
             cmd.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(params), &params);

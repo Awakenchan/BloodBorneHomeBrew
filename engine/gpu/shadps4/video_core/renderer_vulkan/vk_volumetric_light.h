@@ -5,6 +5,7 @@
 
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_contact_shadow.h"
+#include "video_core/renderer_vulkan/vk_point_shadow.h"
 
 namespace Vulkan {
 
@@ -29,6 +30,7 @@ public:
         u32 model_offset, transform_offset, scene_offset;
     };
     void Celestial(const CelestialInputs& inputs);
+    void PointLights(const PointShadow::Inputs& inputs, u32 count);
     void Composite();
 
 private:
@@ -47,13 +49,15 @@ private:
     VideoCore::TextureCache& texture_cache;
     Runtime& runtime;
     SceneTargets& scene_targets;
-    Pass integrate, repair, tint, composite, celestial;
+    Pass integrate, repair, tint, composite, celestial, point;
     std::unique_ptr<VideoCore::Buffer> direction_state;
     vk::UniqueSampler sampler;
     VideoCore::UniqueImage fog;
     vk::UniqueImageView fog_view;
     VideoCore::UniqueImage repair_fog;
     vk::UniqueImageView repair_view;
+    VideoCore::UniqueImage point_fog;
+    vk::UniqueImageView point_view;
     VideoCore::UniqueImage depth_snapshot;
     vk::UniqueImageView depth_view;
     VideoCore::ImageId scene{};

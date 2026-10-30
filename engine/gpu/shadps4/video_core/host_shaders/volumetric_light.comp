@@ -140,7 +140,7 @@ void main() {
         direction_state.shadow_direction = vec4(direction, 0.0);
     }
 #endif
-    if (!(depth > 0.0 && depth <= 1.0)) return;
+    if (!(depth > 0.0 && depth <= 1.0) || strength <= 0.0) return;
     // A finite point establishes the sky ray without reconstructing the far plane.
     vec4 h = inv_projection * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0,
                                  sky ? 0.5 : depth, 1.0);
@@ -187,7 +187,14 @@ vec3 primary(uint id) {
     return rgb / max(1.0, max(rgb.r, max(rgb.g, rgb.b)));
 }
 
-shared vec3 atmosphere_rgb;
+bool brighter(vec4 a, vec4 b) {
+    if (a.w != b.w) return a.w > b.w;
+    if (a.r != b.r) return a.r > b.r;
+    if (a.g != b.g) return a.g > b.g;
+    return a.b > b.b;
+}
+
+shared vec4 atmosphere_candidates[64];
 
 void main() {
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
@@ -195,20 +202,27 @@ void main() {
     bool inside = all(lessThan(px, size));
     vec4 fog = vec4(0.0);
     if (inside) fog = imageLoad(fog_img, px);
-    if (gl_LocalInvocationIndex == 0u) {
-        // The receiving surface's LightSet describes its lighting, not the air.
-        // Share the stable sky anchor across geometry and sky without screen selection.
-        atmosphere_rgb = vec3(0.0);
-        for (uint id = 0u; id < record_count; ++id) {
-            vec3 candidate = primary(id);
-            if (max(candidate.r, max(candidate.g, candidate.b)) > 0.0) {
-                atmosphere_rgb = candidate;
-                break;
-            }
-        }
+    // Runtime record order changes with visible LightSets. Select by bounded
+    // luminance and colour, never slot number or the receiving surface.
+    uint lane = gl_LocalInvocationIndex;
+    vec4 best = vec4(0.0);
+    for (uint id = lane; id < record_count; id += 64u) {
+        vec3 rgb = primary(id);
+        vec4 candidate = vec4(rgb, dot(rgb, vec3(0.2126, 0.7152, 0.0722)));
+        if (brighter(candidate, best)) best = candidate;
     }
+    atmosphere_candidates[lane] = best;
     barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (lane < stride && brighter(atmosphere_candidates[lane + stride],
+                                      atmosphere_candidates[lane])) {
+            atmosphere_candidates[lane] = atmosphere_candidates[lane + stride];
+        }
+        barrier();
+    }
     if (!inside) return;
+    vec4 atmosphere = atmosphere_candidates[0];
+    vec3 atmosphere_rgb = mix(vec3(atmosphere.w), atmosphere.rgb, 0.75);
     // Resolved RGB needs no second gamma conversion or alpha multiplication.
     imageStore(fog_img, px, vec4(fog.rgb * atmosphere_rgb, fog.a));
 }
@@ -283,6 +297,7 @@ layout(binding = 0) uniform sampler2D fog_tex;
 layout(binding = 1) uniform sampler2D depth_tex;
 layout(binding = 2, rgba16f) uniform image2D scene;
 layout(binding = 4) uniform sampler2D repair_tex;
+layout(binding = 5) uniform sampler2D point_tex;
 layout(push_constant) uniform CompositeParams { float anisotropy; uint allow_celestial; };
 
 float phase_ratio(ivec2 q, ivec2 size) {
@@ -334,6 +349,6 @@ void main() {
         scattering = sum / weight_sum;
     }
     vec4 color = imageLoad(scene, px);
-    imageStore(scene, px, vec4(color.rgb + scattering, color.a));
+    imageStore(scene, px, vec4(color.rgb + scattering + texelFetch(point_tex, px, 0).rgb, color.a));
 }
 #endif

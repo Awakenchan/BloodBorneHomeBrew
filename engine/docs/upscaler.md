@@ -141,7 +141,7 @@ resolved the remaining mismatch in the user's test scene. Performance impact has
 been measured separately.
 
 After directional lighting `d92266b9`, a tint pass reads its resolved 288-byte lighting
-records. The first populated primary record supplies a shared atmosphere tint for
+records. The highest-luminance bounded primary record supplies a shared atmosphere tint for
 geometry, repaired cutouts and sky; the receiving surface's material/LightSet no longer
 selects the fog colour. Words 16-18 are the primary directional diffuse RGB, used directly
 by the original shader.
@@ -156,18 +156,28 @@ accumulate a longer column than the sky.
 Scene-wide words 76-78 instead tint shadowed
 lighting and are not the primary diffuse colour. The atmosphere anchor comes from the
 current lighting table without parsing GPARAM files or hard-coding map names.
-This prototype uses the same first-populated-record rule previously used for sky,
-shared per workgroup rather than repeated per pixel.
+All records are reduced cooperatively per workgroup. Selection uses linear luminance
+after the RGB bound, with lexicographic RGB tie-breaking, not the record's index.
+The earlier first-populated-record rule flickered in Old Yharnam: two GPU captures
+showed record 0 switching between moonlight RGB (0.449710, 0.830904, 1.600000) and
+a dim region RGB (0.111474, 0.128867, 0.156326), while moonlight remained elsewhere
+in the table. The new rule selects the same moonlight from both captured tables,
+independent of packing order and duplicate records.
+The user confirmed the updated selection removed the Old Yharnam camera-pan flicker.
 It does not select a light from visible materials: screen-centre/grid selection caused
 whole-sky colour and brightness jumps when panning across different lighting records.
-For an unchanged table, sky tint is now independent of camera orientation, screen contents
+For an unchanged set of lighting colours, tint is independent of camera orientation, screen contents
 and geometry/sky coverage. Surface LightSet differences cannot create tint-shaped holes
 in the added scattering. This is still a table-defined approximation; runtime record
 indices have not been proven to map directly to GPARAM IDs, so it is not guaranteed to
 select file ID 0.
 
-This prototype remains directional scattering only: no point lights,
-additional extinction, animated density, or temporal history. Its
+The bounded atmosphere colour is blended 75% toward the sampled RGB from its
+equal-luminance neutral grey (linear RGB luminance weights 0.2126/0.7152/0.0722).
+This reduces strong blue and other colour casts without reducing luminance,
+changing the intensity multiplier, or reintroducing surface LightSet selection.
+
+The directional layer adds no additional extinction, animated density, or temporal history. Its
 shadow visibility comes from the shadow transforms. The phase direction also defaults
 to those transforms, with the verified Central daytime celestial override described below.
 The cascade rows are stored in ordinary U/V/depth/divisor order: divide row 2 by
@@ -279,8 +289,49 @@ Environment overrides (read at startup):
 `BB_VOLUMETRIC_LIGHT=0`, `BB_VOLUMETRIC_STRENGTH` (default 0.08, range 0..1),
 `BB_VOLUMETRIC_RANGE` (40 m, 1..100), `BB_VOLUMETRIC_DENSITY` (0.025, 0.001..0.2),
 `BB_VOLUMETRIC_ANISOTROPY` (0.4, 0..0.8), and `BB_VOLUMETRIC_STEPS` (32, 8..96).
-The toggle is available in the overlay and launcher; the game's custom options menu
-does not yet have a dedicated row.
+The directional toggle is available in the overlay and launcher; the game's custom
+options menu does not yet have a dedicated row. `BB_VOLUMETRIC_LIGHT=0` disables
+both directional and point-light scattering; the remaining environment overrides
+above affect only the directional layer.
+
+### Unshadowed point-light volumetric fog
+
+The Picture section's **Point-light fog intensity** slider independently controls
+an additive 3D scattering layer: 0 disables it, 1 is the default, and 3 triples its
+strength. It works with directional volumetrics, point shadows and Picture tuning
+disabled. The value is persisted as `graphics_point_fog_intensity` in `lantern.ini`;
+Picture reset restores 1. It does not change the game's original fog or surface lights.
+
+After each supported unshadowed point-light batch, a full-resolution compute pass
+consumes that draw's current view-space light positions, radii, diffuse RGB and
+inverse projection. Sixteen-word light records store inverse radius **squared**
+at word 3, not inverse radius. The shader intersects each camera ray with each
+light sphere, clips to opaque scene depth (at most 100 m, also used for sky), and
+integrates 12 midpoint samples over the surviving segment. It uses the original
+radial attenuation `(1 - distance / radius)^2`, homogeneous density 0.025 and
+view-ray transmittance. RGB is bounded to peak 4 and uses 75% saturation.
+The accumulated RGB is added before tone mapping without changing scene alpha.
+
+This is not a screen-space halo or screen-space shadow trace. Off-screen light
+centres can contribute when their spheres intersect visible air; camera-inside
+volumes are supported. There is no temporal history or source-position cache.
+The full-resolution depth snapshot avoids the half-resolution foliage coverage
+problem. Shared depth acquisition still relies on the game's normal shadow-resolve
+pass, even when directional scattering is disabled.
+
+Fourteen decoded pure point-batch shaders cover fixed counts of 1 through 12
+lights; `9f9ef267` contains 12 unrolled records, not the 11 suggested by its
+unused constant. Mixed spotlight and special/shadowed variants are excluded.
+The source is the game's current light list: captures include off-screen centres,
+but this does not guarantee that the game retains every light whose fog sphere
+would intersect visible air. Live camera-edge behavior and performance need
+in-game confirmation.
+
+There is deliberately no light-to-air occlusion: foreground geometry terminates
+the camera ray, but walls do not cast shadows into these point-light volumes.
+Light can therefore leak into air on the camera side of a wall. This is the
+accepted tradeoff for supporting non-shadowcasting lights without screen-space
+visibility approximations or new point-shadow rendering.
 
 ## Scene constants (864 bytes, bound by most passes)
 

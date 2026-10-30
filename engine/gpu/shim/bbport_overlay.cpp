@@ -580,6 +580,17 @@ void PictureSection() {
             "интенсивность. Требует включённого объёмного освещения. Не меняет плотность, "
             "дальность, освещение поверхностей и исходный туман игры; не зависит от настройки изображения."));
     }
+    if (const char* label = Item("Point-light fog intensity", "Интенсивность тумана точечных источников")) {
+        Slider(label, s.graphics_point_fog_intensity, 0.0f, 3.0f, "%.2fx",
+               ImGuiSliderFlags_AlwaysClamp);
+        Hint(BbSettings::MenuText(
+            "Unshadowed volumetric scattering inside point-light radii. 0 is off, 1 is the default. "
+            "Independent of directional volumetrics, point shadows and Picture tuning. "
+            "Walls stop the view ray but do not shadow the light's fog volume.",
+            "Объёмное рассеяние в радиусах точечных источников без теней. 0 — выкл., 1 — по умолчанию. "
+            "Не зависит от направленного объёмного света, точечных теней и настройки изображения. "
+            "Стены ограничивают луч камеры, но не отбрасывают тени в объёме тумана."));
+    }
     slider("Indirect lighting strength", "Сила непрямого освещения (GI)", s.graphics_gi_strength, 0.0f, 12.0f);
     slider("Shadow distance", "Дальность теней", s.graphics_shadow_scale, 0.5f, 4.0f);
     if (moved && !s.graphics_controls) {
@@ -597,6 +608,7 @@ void PictureSection() {
             Store(s.graphics_ao_strength, 1.0f, true);
             Store(s.graphics_gi_strength, 6.0f, true);
             Store(s.graphics_volumetric_intensity, 1.0f, true);
+            Store(s.graphics_point_fog_intensity, 1.0f, true);
             Store(s.graphics_shadow_scale, 1.0f, true);
         }
     }

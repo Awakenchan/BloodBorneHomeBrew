@@ -2252,6 +2252,36 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         !buffer_infos.empty() && !image_infos.empty()) {
         volumetric_light->Tint(buffer_infos[0], push_data.buf_offsets[0] & 255u, image_infos[0]);
     }
+    if (ps_info && (pipeline->GetGraphicsKey().mrt_mask & 3) == 3 &&
+        cb_descs[0].first && cb_descs[1].first && buffer_infos.size() >= 2) {
+        const u32 count = [&]() -> u32 {
+            switch (ps_info->pgm_hash) {
+            case 0x370174f7: case 0x7cc2c044: return 1;
+            case 0x186d69d5: case 0x600f86b0: return 2;
+            case 0xd22cbfd1: return 3;
+            case 0x3105494c: return 4;
+            case 0xd75fe2ff: return 5;
+            case 0x07d07cf3: return 6;
+            case 0xf2531727: return 7;
+            case 0xc6edb19a: return 8;
+            case 0xb59b4c4e: return 9;
+            case 0x505ebdbe: return 10;
+            case 0x22b357f3: return 11;
+            case 0x9f9ef267: return 12;
+            default: return 0;
+            }
+        }();
+        if (count != 0) {
+            volumetric_light->PointLights(
+                {.constants = buffer_infos[0].buffer,
+                 .constants_offset = buffer_infos[0].offset,
+                 .constants_range = buffer_infos[0].range,
+                 .lights = buffer_infos[1].buffer,
+                 .lights_offset = buffer_infos[1].offset,
+                 .lights_range = buffer_infos[1].range,
+                 .offsets = push_data.buf_offsets[0]}, count);
+        }
+    }
     if (ps_info && ps_info->pgm_hash == 0xdda49e89 && vs_info.pgm_hash == 0xb28f5a56 &&
         is_indexed && num_indices == 1824 && num_instances == 1 && first_vertex == 0) {
         const auto& v = vertex_binds;
