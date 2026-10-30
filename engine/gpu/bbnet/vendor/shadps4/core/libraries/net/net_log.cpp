@@ -14,6 +14,7 @@
 #include <fmt/format.h>
 
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/net/net_error.h"
 #include "core/libraries/net/net_log.h"
@@ -315,8 +316,7 @@ std::string FormatSockaddr(const OrbisNetSockaddr* addr, u32 len) {
         OrbisNetSockaddrIn in;
         std::memcpy(&in, addr, sizeof(in));
         const u32 ip = sceNetNtohl(in.sin_addr);
-        std::string text = fmt::format("{}.{}.{}.{}:{}", ip >> 24, (ip >> 16) & 0xff,
-                                       (ip >> 8) & 0xff, ip & 0xff, sceNetNtohs(in.sin_port));
+        std::string text = fmt::format("{}:{}", BbNet::MaskIpv4Host(ip), sceNetNtohs(in.sin_port));
         if (in.sin_vport != 0) {
             text += fmt::format(" vport {}", sceNetNtohs(in.sin_vport));
         }

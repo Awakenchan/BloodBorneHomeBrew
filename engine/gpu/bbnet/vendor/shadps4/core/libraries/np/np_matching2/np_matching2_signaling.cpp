@@ -8,6 +8,7 @@
 #include <string>
 
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "common/singleton.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/net/net_p2p.h"
@@ -70,9 +71,9 @@ bool SendMatching2StunPing(const ContextObject& ctx) {
     const int rc =
         NpSignaling::Transport::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
     LOG_DEBUG(Lib_NpMatching2,
-              "Matching2 STUN ping: ctx={} online_id='{}' server={:#x}:{} local_ip={:#x} rc={}",
+              "Matching2 STUN ping: ctx={} online_id='{}' server={:#x}:{} local_ip={} rc={}",
               ctx.ctx_id, OnlineIdToString(ctx.online_id), server_addr,
-              Libraries::Net::sceNetNtohs(server_udp), ping.local_ip, rc);
+              Libraries::Net::sceNetNtohs(server_udp), BbNet::MaskIpv4(ping.local_ip), rc);
     return rc >= 0;
 }
 
@@ -330,8 +331,8 @@ s32 FillMatching2LocalNetInfo(void* info) {
     }
     out->_pad_14 = 0;
 
-    LOG_INFO(Lib_NpMatching2, "localAddr={:#x} mappedAddr={:#x} natStatus={}", out->localAddr,
-             out->mappedAddr, out->natStatus);
+    LOG_INFO(Lib_NpMatching2, "localAddr={} mappedAddr={} natStatus={}",
+             BbNet::MaskIpv4(out->localAddr), BbNet::MaskIpv4(out->mappedAddr), out->natStatus);
     return ORBIS_OK;
 }
 

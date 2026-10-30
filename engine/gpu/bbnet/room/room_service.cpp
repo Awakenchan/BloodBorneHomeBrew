@@ -47,7 +47,7 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12, kBring = 13, kVoice = 14 };
 constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4 + 4;
 constexpr std::size_t kBatchBytes = 16000;
 constexpr std::size_t kBundleBytes = 60000;
@@ -137,6 +137,7 @@ struct State {
 
     std::mutex host_mu;
     std::map<int, std::string> names;
+    std::map<int, Clock::time_point> named_at;
     std::map<std::uint64_t, MatchRoom> rooms;
     std::uint64_t next_room = 1;
     std::map<int, Sign> signs;
@@ -148,6 +149,8 @@ struct State {
 
     std::mutex vitals_mu;
     std::map<int, std::pair<Vitals, Clock::time_point>> vitals;
+    Clock::time_point bring_at{};
+    std::deque<std::pair<int, std::vector<std::uint8_t>>> voice;
     std::uint32_t travel = 0;
     Clock::time_point travel_at;
     std::vector<std::uint32_t> progress;
@@ -214,7 +217,7 @@ void Localize(Json& value) {
     if (value.contains("Members")) Localize(value["Members"]);
 }
 
-enum class Stage { None, Looking, Found, Calling, Waiting, Invited, Joined, Failed, HostOnly };
+enum class Stage { None, Looking, Found, Calling, Waiting, Invited, Joined, Failed, HostOnly, Left, Home, Arrived };
 
 struct Notice {
     std::mutex mu;
@@ -253,12 +256,16 @@ void NoteEvent(const Json& ev) {
         Note(Stage::Invited, host.empty() ? std::string("the host") : host);
     } else if (name == "room_member_joined") {
         Note(Stage::Joined, NameOf(static_cast<int>(IntOf(ev, "Slot"))));
+    } else if (name == "room_member_left") {
+        Note(Stage::Left, NameOf(static_cast<int>(IntOf(ev, "Slot"))));
+    } else if (name == "room_member_kicked" || name == "room_closed") {
+        Note(Stage::Home);
     }
 }
 
 void NoteSummon(const std::string& api, const Json& body, const Json& reply, bool ok) {
     if (!ok) {
-        Note(Stage::Failed);
+        if (api == "request") Note(Stage::Failed);
         return;
     }
     if (api == "create") {
@@ -331,26 +338,55 @@ void LeaveLocked(std::uint64_t room_id, int slot, const char* reason) {
     for (const Member& other : room.members) Deliver(other.slot, ev);
 }
 
+bool KickLocked(int target) {
+    const int own = S().own_slot.load();
+    for (auto& [id, room] : S().rooms) {
+        const bool mine = std::any_of(room.members.begin(), room.members.end(),
+                                      [&](const Member& m) { return m.slot == own && m.member_id == 1; });
+        if (!mine) continue;
+        for (const Member& m : room.members) {
+            if (m.slot != target || m.slot == own) continue;
+            Deliver(m.slot, {{"Name", "room_member_kicked"}, {"RoomId", static_cast<long long>(id)},
+                             {"MemberId", m.member_id}, {"OptData", ""}});
+            LeaveLocked(id, target, "kicked");
+            return true;
+        }
+    }
+    return false;
+}
+
 Json HandleSession(int slot, const std::string& path, const Json& body) {
     std::lock_guard lock(S().host_mu);
     if (path == "/mp/matching2/context_start") {
         const std::string name = StrOf(body, "OnlineId");
         if (!name.empty() && S().names[slot] != name) {
             S().names[slot] = name;
+            S().named_at[slot] = Clock::now();
             Log("slot %d is %s", slot, name.c_str());
         }
         return {{"ResKind", 0}};
     }
     if (path == "/np/signaling/resolve") {
         const std::string id = StrOf(body, "OnlineId");
+        int best = 0;
+        Clock::time_point best_at{};
         for (const auto& [s, name] : S().names) {
-            if (name == id) return {{"ResKind", 0}, {"Slot", s}};
+            if (name != id) continue;
+            const auto at = S().named_at.count(s) ? S().named_at[s] : Clock::time_point{};
+            if (!best || at > best_at) {
+                best = s;
+                best_at = at;
+            }
         }
+        if (best) return {{"ResKind", 0}, {"Slot", best}};
         return {{"ResKind", 1}};
     }
     if (path == "/mp/matching2/create_room") {
         const std::string name = StrOf(body, "OnlineId");
-        if (!name.empty()) S().names[slot] = name;
+        if (!name.empty() && S().names[slot] != name) {
+            S().names[slot] = name;
+            S().named_at[slot] = Clock::now();
+        }
         for (auto it = S().rooms.begin(); it != S().rooms.end();) {
             const bool owned = std::any_of(it->second.members.begin(), it->second.members.end(),
                                            [&](const Member& m) { return m.slot == slot && m.member_id == 1; });
@@ -373,7 +409,10 @@ Json HandleSession(int slot, const std::string& path, const Json& body) {
     }
     if (path == "/mp/matching2/join_room") {
         const std::string name = StrOf(body, "OnlineId");
-        if (!name.empty()) S().names[slot] = name;
+        if (!name.empty() && S().names[slot] != name) {
+            S().names[slot] = name;
+            S().named_at[slot] = Clock::now();
+        }
         const auto id = static_cast<std::uint64_t>(IntOf(body, "RoomId"));
         const auto it = S().rooms.find(id);
         if (it == S().rooms.end()) return {{"ResKind", 1}, {"Message", "no such room"}};
@@ -417,6 +456,10 @@ Json HandleSession(int slot, const std::string& path, const Json& body) {
         }
         return {{"ResKind", 0}, {"InRoom", 0}};
     }
+    if (path == "/lantern/leave_party") {
+        KickLocked(slot);
+        return {{"ResKind", 0}};
+    }
     if (path == "/mp/matching2/kick_member") {
         const int target = static_cast<int>(IntOf(body, "MemberId"));
         for (auto& [id, room] : S().rooms) {
@@ -450,6 +493,7 @@ void ForgetSlotLocked(int slot) {
         }
         S().names.erase(name);
     }
+    S().named_at.erase(slot);
 }
 
 bool B64Size(const std::string& text, std::size_t want) {
@@ -469,6 +513,8 @@ Json HandleSummon(int slot, const std::string& api, const Json& body) {
         const std::string data = StrOf(body, "SummonData");
         if (!B64Size(data, 0xE0)) return {{"ResKind", 0}};
         S().signs[slot] = {data, IntOf(body, "SummonType"), IntOf(body, "CharaId", slot)};
+        static std::atomic<int> told{0};
+        if (told.fetch_add(1) < 20) Log("slot %d put up a summon sign (type %lld)", slot, IntOf(body, "SummonType"));
         return {{"ResKind", 0}};
     }
     if ((api == "get" || api == "request") && slot != S().own_slot.load()) {
@@ -482,6 +528,8 @@ Json HandleSummon(int slot, const std::string& api, const Json& body) {
             for (const auto& t : body["SummonTypeList"]) types.insert(IntOf(t, "SummonType", -1));
         }
         Json list = Json::array();
+        static std::atomic<int> searched{0};
+        if (searched.fetch_add(1) < 20) Log("the host searches the summon board: %zu sign(s) up", S().signs.size());
         for (const auto& [s, sign] : S().signs) {
             if (s == slot) continue;
             if (!types.empty() && !types.count(sign.type)) continue;
@@ -951,6 +999,19 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         if (!d.flags.empty()) std::memcpy(d.flags.data(), data.data() + fixed, 4 * d.flags.size());
         std::lock_guard lock(S().vitals_mu);
         if (S().dungeons.size() < 8) S().dungeons.push_back(std::move(d));
+        return;
+    }
+    if (kind == kVoice) {
+        if (data.size() < 4 || data.size() > 1200) return;
+        std::lock_guard lock(S().vitals_mu);
+        if (S().voice.size() >= 48) S().voice.pop_front();
+        S().voice.emplace_back(sender, std::vector<std::uint8_t>(data.begin() + 1, data.end()));
+        return;
+    }
+    if (kind == kBring) {
+        if (data.size() != 1 || sender != S().link.HostSlot()) return;
+        std::lock_guard lock(S().vitals_mu);
+        S().bring_at = Clock::now();
         return;
     }
     if (kind == kPortrait) {
@@ -1423,9 +1484,75 @@ bool Call(const std::string& path, const Json& body, Json& reply, std::string& e
         std::unique_lock lock(n.mu);
         const std::string who = n.who;
         lock.unlock();
-        Note(joined ? Stage::Joined : Stage::Failed, joined ? who : std::string());
+        Note(joined ? Stage::Arrived : Stage::Failed, joined ? who : std::string());
     }
     return ok;
+}
+
+std::vector<std::pair<int, std::string>> PartyMembers() {
+    std::vector<std::pair<int, std::string>> out;
+    if (!S().host) return out;
+    std::lock_guard lock(S().host_mu);
+    const int own = S().own_slot.load();
+    for (const auto& [id, room] : S().rooms) {
+        const bool mine = std::any_of(room.members.begin(), room.members.end(),
+                                      [&](const Member& m) { return m.slot == own && m.member_id == 1; });
+        if (!mine) continue;
+        for (const Member& m : room.members) {
+            if (m.slot == own) continue;
+            const auto name = S().names.find(m.slot);
+            out.emplace_back(m.slot, name == S().names.end() ? std::string("a hunter") : name->second);
+        }
+    }
+    return out;
+}
+
+bool Kick(int slot) {
+    if (!S().host) return false;
+    std::lock_guard lock(S().host_mu);
+    const bool done = KickLocked(slot);
+    if (done) Log("the host sent slot %d home", slot);
+    return done;
+}
+
+bool LeaveParty() {
+    if (S().host || !S().started.load()) return false;
+    Json reply;
+    std::string error;
+    const bool ok = Rpc({{"p", "/lantern/leave_party"}, {"b", Json::object()}}, reply, error, 5000);
+    if (ok) Log("left the host's world from the co-op panel");
+    return ok;
+}
+
+void SendVoice(const std::vector<std::uint8_t>& packet) {
+    if (packet.empty() || packet.size() > 1100 || !S().started.load() || !S().link.Connected()) return;
+    std::vector<std::uint8_t> frame(1 + packet.size());
+    frame[0] = kVoice;
+    std::memcpy(frame.data() + 1, packet.data(), packet.size());
+    S().link.Send(0, frame.data(), frame.size());
+}
+
+std::vector<std::pair<int, std::vector<std::uint8_t>>> TakeVoice() {
+    std::lock_guard lock(S().vitals_mu);
+    std::vector<std::pair<int, std::vector<std::uint8_t>>> out(std::make_move_iterator(S().voice.begin()),
+                                                                 std::make_move_iterator(S().voice.end()));
+    S().voice.clear();
+    return out;
+}
+
+void SendBring(int target) {
+    if (!S().host || !S().started.load() || !S().link.Connected()) return;
+    const std::uint8_t frame[1] = {kBring};
+    S().link.Send(target, frame, sizeof frame);
+    Log("the host calls %s to its side", target ? ("slot " + std::to_string(target)).c_str() : "everyone");
+}
+
+bool TakeBring() {
+    std::lock_guard lock(S().vitals_mu);
+    if (S().bring_at == Clock::time_point{}) return false;
+    const bool fresh = Clock::now() - S().bring_at < std::chrono::seconds(10);
+    S().bring_at = {};
+    return fresh;
 }
 
 bool CurrentNotice(std::string& text) {
@@ -1439,34 +1566,34 @@ bool CurrentNotice(std::string& text) {
     case Stage::None:
         return false;
     case Stage::Looking:
-        if (quiet > std::chrono::seconds(15)) return false;
-        std::snprintf(line, sizeof line, "Looking for hunters in the room... %ld s", secs);
-        break;
     case Stage::Found:
-        if (quiet > std::chrono::seconds(15)) return false;
-        if (n.count > 1) std::snprintf(line, sizeof line, "Found %s and %d more: summoning", n.who.c_str(), n.count - 1);
-        else std::snprintf(line, sizeof line, "Found %s: summoning", n.who.c_str());
-        break;
     case Stage::Calling:
-        if (quiet > std::chrono::seconds(30)) return false;
-        std::snprintf(line, sizeof line, "Calling %s... %ld s", n.who.c_str(), secs);
-        break;
     case Stage::Waiting:
-        if (quiet > std::chrono::minutes(10)) return false;
-        std::snprintf(line, sizeof line, "Your sign is up: waiting for the host... %ld s", secs);
-        break;
+        return false;
     case Stage::Invited:
-        if (quiet > std::chrono::seconds(30)) {
-            std::snprintf(line, sizeof line, "%s's summon did not go through: still looking", n.who.c_str());
-            if (quiet > std::chrono::seconds(36)) return false;
+        if (quiet > std::chrono::seconds(15)) {
+            if (quiet > std::chrono::seconds(20)) return false;
+            std::snprintf(line, sizeof line, "%s's summon did not go through: ring again", n.who.c_str());
             break;
         }
-        std::snprintf(line, sizeof line, "%s is summoning you: connecting... %ld s", n.who.c_str(), secs);
+        std::snprintf(line, sizeof line, "Joining %s's world... %ld s", n.who.c_str(), secs);
         break;
     case Stage::Joined:
-        if (quiet > std::chrono::seconds(5)) return false;
+        if (quiet > std::chrono::seconds(4)) return false;
         if (n.who.empty()) std::snprintf(line, sizeof line, "Connected");
-        else std::snprintf(line, sizeof line, "Connected: %s", n.who.c_str());
+        else std::snprintf(line, sizeof line, "%s is here", n.who.c_str());
+        break;
+    case Stage::Arrived:
+        if (quiet > std::chrono::seconds(4)) return false;
+        std::snprintf(line, sizeof line, "In %s's world", n.who.empty() ? "the host" : n.who.c_str());
+        break;
+    case Stage::Left:
+        if (quiet > std::chrono::seconds(4)) return false;
+        std::snprintf(line, sizeof line, "%s left the world", n.who.c_str());
+        break;
+    case Stage::Home:
+        if (quiet > std::chrono::seconds(4)) return false;
+        std::snprintf(line, sizeof line, "Back in your own world");
         break;
     case Stage::HostOnly:
         if (quiet > std::chrono::seconds(6)) return false;
@@ -1474,7 +1601,7 @@ bool CurrentNotice(std::string& text) {
         break;
     case Stage::Failed:
         if (quiet > std::chrono::seconds(6)) return false;
-        std::snprintf(line, sizeof line, "Could not connect: still looking");
+        std::snprintf(line, sizeof line, "Could not connect: ring again");
         break;
     }
     text = line;

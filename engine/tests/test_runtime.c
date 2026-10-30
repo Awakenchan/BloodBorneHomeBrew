@@ -157,7 +157,7 @@ static void posix_mutexes(void) {
     m=NULL;
     assert(lock(&m)==0 && lock(&m)==11 && trylock(&m)==16);
     assert(unlock(&m)==0 && destroy(&m)==0);
-    assert(!runtime_resolve("dQHWEsJtoE4#q#q",0));
+    assert(runtime_resolve("dQHWEsJtoE4#q#q",0)==(uintptr_t)init);
 }
 static void wall_time(void) {
     typedef int (ABI *GetTime)(int64_t *,int32_t *);

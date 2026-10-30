@@ -5,6 +5,7 @@
 #include <cstring>
 #include <upnperrors.h>
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "net_upnp.h"
 
 #ifdef _WIN32
@@ -113,7 +114,7 @@ void UPnPClient::DiscoverThread() {
     m_available = true;
 
     LOG_INFO(Lib_Net, "UPNP: IGD found - external IP={} lan={} (port mapping available)",
-             external_ip, m_lan_addr);
+             BbNet::MaskIpText(external_ip), BbNet::MaskIpText(m_lan_addr));
 
     m_done = true;
     m_cv.notify_all();

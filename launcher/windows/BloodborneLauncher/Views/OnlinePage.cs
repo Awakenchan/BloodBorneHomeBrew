@@ -42,8 +42,12 @@ namespace BloodborneLauncher.Views
             _role = ComboRow(SymbolRegular.Crown24, L.T("Role"), L.T("One player hosts, the others join the host's world"),
                 Choices.SeamlessRoles, () => Ini.Get("seamless_role", "guest"), v => { Ini.Set("seamless_role", v); ShowRoom(); });
             IniText(SymbolRegular.Person24, L.T("Plate name"), L.T("Your name on the plate above your hunter and in the party list (up to 16 characters, spaces and symbols allowed)"), "Hunter", "seamless_player", 220);
-            ComboRow(SymbolRegular.Tag24, L.T("Name plates"), L.T("What the plate above each hunter shows in co-op"),
-                Choices.NamePlates, () => Ini.Get("name_plates", "name"), v => Ini.Set("name_plates", v));
+            IniText(SymbolRegular.Crown24, L.T("Host title"),
+                L.T("The line above the host's name on plates in your game. Empty: only the name. The game's own is Beckoner"),
+                L.T("Name only"), "plate_host_title", 220);
+            IniText(SymbolRegular.Tag24, L.T("Guest title"),
+                L.T("The line above each guest's name on plates in your game. Empty: only the name. The game's own is Cooperator"),
+                L.T("Name only"), "plate_guest_title", 220);
             var invite = new StackPanel { Orientation = Orientation.Horizontal };
             _copy = SmallButton(L.T("Copy invite code"), SymbolRegular.Copy24, (_, _) => CopyInvite());
             invite.Children.Add(_copy);

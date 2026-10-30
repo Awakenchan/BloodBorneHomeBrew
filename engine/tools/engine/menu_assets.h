@@ -60,7 +60,10 @@ std::map<std::int32_t, PcMessage> PcMessages(bool chinese = false);
 enum class Kind { Menu, Question, Event };
 Kind KindOf(std::int32_t id);
 
-Bytes MenuMessages(const Bytes& dcx, Language language, bool keep_roles = false);
+struct PlateTitles {
+    std::optional<std::string> host, guest;
+};
+Bytes MenuMessages(const Bytes& dcx, Language language, const PlateTitles& titles = {});
 Bytes MenuMessages(const Bytes& dcx, bool chinese = false);
 Bytes OptionMovie(const Bytes& gfx);
 Bytes AltarScripts(const Bytes& dcx);

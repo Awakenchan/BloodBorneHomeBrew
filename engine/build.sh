@@ -183,4 +183,10 @@ if [[ ${1:-} == --test ]]; then
     out/content-test
     "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_rtc.c tests/sys_test_host.c src/sys/*.c out/libatrac9.a -lm "${libraries[@]}" -o out/sys-rtc-test
     out/sys-rtc-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_mutex.c tests/sys_test_host.c src/sys/*.c out/libatrac9.a -lm "${libraries[@]}" -o out/sys-mutex-test
+    out/sys-mutex-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_thread.c tests/sys_test_host.c src/sys/*.c out/libatrac9.a -lm "${libraries[@]}" -o out/sys-thread-test
+    out/sys-thread-test
+    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc tests/test_sys_clock.c tests/sys_test_host.c src/sys/*.c out/libatrac9.a -lm "${libraries[@]}" -o out/sys-clock-test
+    out/sys-clock-test
 fi

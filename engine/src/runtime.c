@@ -83,7 +83,7 @@ void runtime_report(void) {
            calls_init, calls_atexit, calls_cxa, handler_count);
     printf("Runtime: static guards acquired=%zu, released=%zu\n", (size_t)guards_acquired, (size_t)guards_released);
     runtime_thread_report();
-    runtime_mutex_report();
+    sys_mutex_report();
     sys_rwlock_report();
     sys_sema_report();
     sys_app_content_report();
@@ -215,14 +215,8 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!strcmp(name, "p5EcQeEeJAE#p#J")) return (uintptr_t)guest_set_heap_api;
     uintptr_t own = sys_resolve(name);
     if (own) return own;
-    uintptr_t mutex = runtime_mutex_resolve(name);
-    if (mutex) return mutex;
-    uintptr_t thread = runtime_thread_resolve(name);
-    if (thread) return thread;
     uintptr_t memory = runtime_memory_resolve(name);
     if (memory) return memory;
-    uintptr_t kernel = runtime_kernel_resolve(name);
-    if (kernel) return kernel;
     uintptr_t services = runtime_services_resolve(name);
     if (services) return services;
     uintptr_t file = runtime_file_resolve(name);

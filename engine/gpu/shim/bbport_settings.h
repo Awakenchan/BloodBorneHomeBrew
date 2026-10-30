@@ -119,6 +119,7 @@ struct Values {
         fsr3_shading_change_scale{1.0f}, fsr3_accumulation{0.333f}, fsr3_min_disocclusion{-0.333f};
     std::atomic<int> debug_view{DebugNone};
     std::atomic<bool> show_fps{false};
+    std::atomic<bool> voice_enabled{true}, voice_push_to_talk{true}, voice_mic_muted{false};
     std::atomic<bool> show_fps_rate{true};
     std::atomic<bool> show_fps_frame_time{true};
     std::atomic<bool> show_fps_upscaler{true};

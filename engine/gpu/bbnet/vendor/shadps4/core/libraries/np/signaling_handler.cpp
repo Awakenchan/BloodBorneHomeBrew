@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/libraries/np/signaling_handler.h"
+#include "ip_mask.h"
 
 #include <algorithm>
 #include <atomic>
@@ -92,8 +93,8 @@ void HandleStunEcho(const NpSignaling::StunEcho& echo) {
             ctx.ext_addr.store(echo.ext_ip);
             ctx.ext_port.store(echo.ext_port);
             ctx.stun_cv.notify_all();
-            LOG_DEBUG(Lib_NpSignaling, "STUN echo: ctxId={} ext_addr={:#x} ext_port={}", ctx_id,
-                      echo.ext_ip, Net::sceNetNtohs(echo.ext_port));
+            LOG_DEBUG(Lib_NpSignaling, "STUN echo: ctxId={} ext_addr={} ext_port={}", ctx_id,
+                      BbNet::MaskIpv4(echo.ext_ip), Net::sceNetNtohs(echo.ext_port));
         }
     }
 
@@ -215,8 +216,9 @@ bool PublishSignalingInfo(const OrbisNpOnlineId& online_id) {
 
     const int rc =
         NpSignaling::Transport::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
-    LOG_DEBUG(Lib_NpSignaling, "PublishSignalingInfo: id='{}' server={:#x}:{} local_ip={:#x} rc={}",
-              OnlineIdString(online_id), server_addr, Net::sceNetNtohs(server_udp), ping.local_ip,
+    LOG_DEBUG(Lib_NpSignaling, "PublishSignalingInfo: id='{}' server={:#x}:{} local_ip={} rc={}",
+              OnlineIdString(online_id), server_addr, Net::sceNetNtohs(server_udp),
+              BbNet::MaskIpv4(ping.local_ip),
               rc);
     return rc >= 0;
 }
@@ -484,16 +486,16 @@ void SendHandshakeLocked(NpSignaling::PeerTransport& transport,
                          const NpSignaling::SignalingHandshake& pkt) {
     if (transport.addr == 0 || transport.port == 0) {
         LOG_DEBUG(
-            Lib_NpSignaling, "Signaling handshake skipped: transport={} kind={} endpoint={:#x}:{}",
-            transport.transport_id, pkt.kind, transport.addr, Net::sceNetNtohs(transport.port));
+            Lib_NpSignaling, "Signaling handshake skipped: transport={} kind={} endpoint={}:{}",
+            transport.transport_id, pkt.kind, BbNet::MaskIpv4(transport.addr), Net::sceNetNtohs(transport.port));
         return;
     }
     transport.last_handshake_send_us = NpSignaling::NowUs();
     const int rc =
         NpSignaling::Transport::SignalingSendTo(&pkt, sizeof(pkt), transport.addr, transport.port);
     LOG_DEBUG(
-        Lib_NpSignaling, "Signaling handshake send: transport={} kind={} endpoint={:#x}:{} rc={}",
-        transport.transport_id, pkt.kind, transport.addr, Net::sceNetNtohs(transport.port), rc);
+        Lib_NpSignaling, "Signaling handshake send: transport={} kind={} endpoint={}:{} rc={}",
+        transport.transport_id, pkt.kind, BbNet::MaskIpv4(transport.addr), Net::sceNetNtohs(transport.port), rc);
     SyncSig1ConnectionsForTransportLocked(transport.transport_id);
 }
 
@@ -542,8 +544,9 @@ void SendActivate(const NpSignaling::ConnectionInfo& ci) {
     const int rc =
         NpSignaling::Transport::ControlSendTo(&pkt, sizeof(pkt), transport->addr, transport->port);
     LOG_DEBUG(Lib_NpSignaling,
-              "Signaling activate send: conn={} transport={} peer='{}' endpoint={:#x}:{} rc={}",
-              ci.conn_id, ci.transport_id, OnlineIdString(ci.online_id), transport->addr,
+              "Signaling activate send: conn={} transport={} peer='{}' endpoint={}:{} rc={}",
+              ci.conn_id, ci.transport_id, OnlineIdString(ci.online_id),
+              BbNet::MaskIpv4(transport->addr),
               Net::sceNetNtohs(transport->port), rc);
 }
 
@@ -840,8 +843,9 @@ void ProcessPendingActivations() {
             SyncSig1StatusLocked(it->second, *transport);
             LOG_DEBUG(Lib_NpSignaling,
                       "Signaling activation resolved: conn={} transport={} peer='{}' "
-                      "endpoint={:#x}:{} start_handshake={}",
-                      act.conn_id, it->second.transport_id, act.peer_online_id, peer_addr,
+                      "endpoint={}:{} start_handshake={}",
+                      act.conn_id, it->second.transport_id, act.peer_online_id,
+                      BbNet::MaskIpv4(peer_addr),
                       Net::sceNetNtohs(peer_port), act.start_handshake);
             SendActivate(it->second);
             already_established = transport->state == NpSignaling::ConnState::Established;
@@ -1215,8 +1219,8 @@ void SyncMatching2Peers() {
                 static_cast<NpMatching2::OrbisNpMatching2RoomMemberId>(s.member_id),
                 NpMatching2::ORBIS_NP_MATCHING2_SIGNALING_EVENT_ESTABLISHED, ORBIS_OK);
             LOG_INFO(Lib_NpMatching2,
-                     "Matching2 signaling established: ctx={} room={} member={} addr={:#x}:{}",
-                     s.ctx_id, s.room_id, s.member_id, s.addr, Net::sceNetNtohs(s.port));
+                     "Matching2 signaling established: ctx={} room={} member={} addr={}:{}",
+                     s.ctx_id, s.room_id, s.member_id, BbNet::MaskIpv4(s.addr), Net::sceNetNtohs(s.port));
         }
     }
 }

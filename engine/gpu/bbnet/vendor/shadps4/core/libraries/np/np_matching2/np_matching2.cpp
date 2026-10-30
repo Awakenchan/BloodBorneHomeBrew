@@ -7,6 +7,7 @@
 #include <memory>
 #include <fmt/format.h>
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
@@ -626,8 +627,8 @@ s32 PS4_SYSV_ABI sceNpMatching2SignalingGetConnectionStatus(OrbisNpMatching2Cont
         *peerPort = peer_it->second.port;
     }
 
-    LOG_INFO(Lib_NpMatching2, "member={} is in room={}, status={} addr={:#x}:{}", memberId, roomId,
-             status, peer_it->second.addr, Libraries::Net::sceNetNtohs(peer_it->second.port));
+    LOG_INFO(Lib_NpMatching2, "member={} is in room={}, status={} addr={}:{}", memberId, roomId,
+             status, BbNet::MaskIpv4(peer_it->second.addr), Libraries::Net::sceNetNtohs(peer_it->second.port));
     return ORBIS_OK;
 }
 

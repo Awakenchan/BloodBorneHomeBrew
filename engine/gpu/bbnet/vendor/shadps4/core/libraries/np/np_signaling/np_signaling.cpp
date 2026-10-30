@@ -6,6 +6,7 @@
 #include <vector>
 #include <fmt/format.h>
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "common/singleton.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/net/net.h"
@@ -568,7 +569,8 @@ sceNpSignalingGetConnectionFromPeerAddress(OrbisNpSignalingContextId ctxId, u32 
             ci.ctx_id == ctxId && transport_it->second.addr == peerAddr &&
             transport_it->second.port == peerPort && ConnectionStateFromStatus(ci.status) == 10) {
             *outConnId = id;
-            LOG_INFO(Lib_NpSignaling, "ctxId={} addr={:#x} port={} connId={}", ctxId, peerAddr,
+            LOG_INFO(Lib_NpSignaling, "ctxId={} addr={} port={} connId={}", ctxId,
+                     BbNet::MaskIpv4(peerAddr),
                      sceNetNtohs(peerPort), id);
             return ORBIS_OK;
         }
@@ -680,8 +682,8 @@ s32 PS4_SYSV_ABI sceNpSignalingGetLocalNetInfo(OrbisNpSignalingContextId ctxId,
     }
     info->_pad_14 = 0;
 
-    LOG_INFO(Lib_NpSignaling, "localAddr={:#x} mappedAddr={:#x} natStatus={}", info->localAddr,
-             info->mappedAddr, info->natStatus);
+    LOG_INFO(Lib_NpSignaling, "localAddr={} mappedAddr={} natStatus={}",
+             BbNet::MaskIpv4(info->localAddr), BbNet::MaskIpv4(info->mappedAddr), info->natStatus);
     return ORBIS_OK;
 }
 
@@ -785,8 +787,8 @@ s32 PS4_SYSV_ABI sceNpSignalingGetPeerNetInfoResult(OrbisNpSignalingContextId ct
     peerNetInfo->mappedAddr = result.external_ipv4;
     peerNetInfo->natStatus = static_cast<s32>(result.nat_route_kind);
     peerNetInfo->_pad_14 = 0;
-    LOG_INFO(Lib_NpSignaling, "ctxId={} connId={:#x} ext={:#x}", ctxId, connId,
-             result.external_ipv4);
+    LOG_INFO(Lib_NpSignaling, "ctxId={} connId={:#x} ext={}", ctxId, connId,
+             BbNet::MaskIpv4(result.external_ipv4));
     return ORBIS_OK;
 }
 

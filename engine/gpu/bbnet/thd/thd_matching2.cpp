@@ -445,7 +445,7 @@ void on_server_event(const Json& ev) {
             else PeersErase(1);
         }
         Log("np: guest_invite: room %lld from %s (%s:%lld)", IntOf(ev, "RoomId", 0), StrOf(ev, "HostOnlineId").c_str(),
-            StrOf(ev, "HostAddr").c_str(), IntOf(ev, "HostPort", 0));
+            BbNet::MaskIpText(StrOf(ev, "HostAddr")).c_str(), IntOf(ev, "HostPort", 0));
         return;
     }
     if (name == "room_member_joined") {

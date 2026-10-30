@@ -521,9 +521,8 @@ void p2p_reader(std::shared_ptr<UdpPort> port) {
         g_p2p_counts.received.fetch_add(1, std::memory_order_relaxed);
         g_p2p_counts.received_bytes.fetch_add(dg.data.size(), std::memory_order_relaxed);
         if (trace_now(logs)) {
-            char ip[32];
-            write_ipv4(ip, sizeof(ip), sa.sin_addr.s_addr);
-            Log("net: recv %d <- %s:%u vport %u->%u: %zu bytes%s", q->sock, ip, bswap16(sa.sin_port), src,
+            Log("net: recv %d <- %s:%u vport %u->%u: %zu bytes%s", q->sock,
+                BbNet::MaskIpv4(sa.sin_addr.s_addr).c_str(), bswap16(sa.sin_port), src,
                 dst, dg.data.size(), hdr ? (forwarded ? " (forwarded)" : "") : " (no p2p header)");
         }
         {
@@ -706,9 +705,8 @@ int dgram_send(int s, const void* buf, std::uint64_t len, int flags, const SceSo
     }
     static int logs = 0;
     if (trace_now(logs)) {
-        char ip[32];
-        write_ipv4(ip, sizeof(ip), to->addr);
-        Log("net: send %d -> %s:%u vport %u->%u: %llu bytes -> %lld", s, ip, bswap16(to->port), sock.vport,
+        Log("net: send %d -> %s:%u vport %u->%u: %llu bytes -> %lld", s, BbNet::MaskIpv4(to->addr).c_str(),
+            bswap16(to->port), sock.vport,
             dst_vport, static_cast<unsigned long long>(len), static_cast<long long>(n));
     }
     if (n < 0) return sock_errno() == EAGAIN ? net_again() : net_fail();
@@ -1213,9 +1211,8 @@ void P2pPunch(const char* label, std::uint32_t addr, std::uint16_t port_host, st
             }
             if (heard) break;
         }
-        char ip[32];
-        write_ipv4(ip, sizeof(ip), targets[0].sin_addr.s_addr);
-        Log("net: punch %s %s:%u: %d probes, %s", name.c_str(), ip, bswap16(targets[0].sin_port), sent,
+        Log("net: punch %s %s:%u: %d probes, %s", name.c_str(),
+            BbNet::MaskIpv4(targets[0].sin_addr.s_addr).c_str(), bswap16(targets[0].sin_port), sent,
             heard ? "peer heard" : "nothing heard");
     }).detach();
 }

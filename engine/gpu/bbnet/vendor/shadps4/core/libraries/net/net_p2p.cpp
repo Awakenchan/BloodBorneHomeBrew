@@ -14,6 +14,7 @@
 #include <fmt/format.h>
 
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/net/net_log.h"
 #include "core/libraries/net/net_p2p.h"
@@ -68,6 +69,7 @@ void LogBroadcast(std::span<const u8> packet, const P2P::Endpoint& from) {
         inet_ntop(AF_INET6, &reinterpret_cast<const sockaddr_in6*>(sa)->sin6_addr, address,
                   sizeof(address));
     }
+    const std::string masked = BbNet::MaskIpText(address);
     std::string hex;
     const size_t shown = std::min<size_t>(packet.size(), 64);
     hex.reserve(shown * 3);
@@ -77,7 +79,7 @@ void LogBroadcast(std::span<const u8> packet, const P2P::Endpoint& from) {
     LOG_WARNING(Lib_Net,
                 "P2P broadcast packet received (layout assumed; please report this line): "
                 "from {}:{}, {} bytes: {}{}",
-                address, from.Port(), packet.size(), hex, packet.size() > shown ? " ..." : "");
+                masked, from.Port(), packet.size(), hex, packet.size() > shown ? " ..." : "");
 }
 
 constexpr u16 P2PPortFallbacks = 16;
@@ -197,9 +199,8 @@ void ConfigureP2P(u16 udp_port, u32 advertised_addr) {
     std::scoped_lock lock{state.mutex};
     state.configured_port = udp_port;
     state.advertised_addr = advertised_addr;
-    const u32 ip = sceNetNtohl(advertised_addr);
-    LOG_INFO(Lib_Net, "P2P configured: UDP port {}, advertised address {}.{}.{}.{}", udp_port,
-             ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+    LOG_INFO(Lib_Net, "P2P configured: UDP port {}, advertised address {}", udp_port,
+             BbNet::MaskIpv4(advertised_addr));
 }
 
 u16 StartP2P(u16 udp_port) {

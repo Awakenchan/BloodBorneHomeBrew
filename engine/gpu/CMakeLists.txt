@@ -66,6 +66,7 @@ find_package(tsl-robin-map REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
 find_package(Zydis REQUIRED)
 if (WIN32)
     # bbport: Windows (MSYS2 MINGW64). bbgpu is a static library linked into bb-probe.exe
@@ -259,7 +260,7 @@ endif()
 target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan
     ffx-vulkan::fsr3-vk-framegeneration-3.1.6) # bbport: frame generation (vk_frame_generation.cpp)
 target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
-    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit
+    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::OPUS PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit
     xbyak::xbyak)
 if (WIN32)
     # Windows headers: no min/max macros, no winsock 1 clash; Windows 10+ APIs (SetThreadDescription).

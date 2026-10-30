@@ -23,6 +23,7 @@
 #include "engine/cheats.h"
 #include "engine/graphics.h"
 #include "engine/online_fixes.h"
+#include "voice.h"
 #include "hud_gauge.h"
 #include "face_shot.h"
 #include "imgui_internal.h"
@@ -116,6 +117,10 @@ std::mutex imgui_mutex;
 bool initialized = false;
 std::atomic<bool> menu_open{false};
 bool l3_down = false, r3_down = false;
+std::atomic<bool> coop_open{false};
+int coop_row = 0, coop_column = 0;
+std::string coop_armed;
+std::chrono::steady_clock::time_point coop_armed_at{};
 bool dirty = false;
 float base_scale = 1.0f;
 ImFont* name_font = nullptr;
@@ -1572,7 +1577,93 @@ void MouseSection() {
     }
 }
 
-enum Tab : int { TabUpscaling, TabDisplay, TabPicture, TabGameplay, TabInterface, TabCount };
+void VoiceSection() {
+    auto& s = BbSettings::Get();
+    Section("Voice chat", "Голосовой чат");
+    if (const char* label = Item("Voice chat", "Голосовой чат")) {
+        Checkbox(label, s.voice_enabled);
+        Hint(BbSettings::MenuText("Talk with the hunters in your seamless room. It goes through the room's encryption; nobody sees your address.",
+                                  "Разговор с охотниками в вашей комнате. Идёт через шифрование комнаты; ваш адрес никто не видит."));
+    }
+    if (!s.voice_enabled) return;
+    if (const char* label = Item("Mute my microphone", "Выключить мой микрофон")) Checkbox(label, s.voice_mic_muted);
+    if (const char* label = Item("Push to talk (hold V)", "Говорить с зажатой V")) {
+        Checkbox(label, s.voice_push_to_talk);
+        Hint(BbSettings::MenuText("Off: your microphone sends whenever you speak.", "Выкл.: микрофон передаёт, когда вы говорите."));
+    }
+    for (const auto& t : BbVoice::Talkers()) {
+        ImGui::PushID(t.slot + 1000);
+        bool muted = t.muted;
+        const std::string label = std::string(BbSettings::MenuText("Mute ", "Заглушить ")) + t.name + (t.talking ? "  (speaking)" : "");
+        if (ImGui::Checkbox(label.c_str(), &muted)) BbVoice::SetMuted(t.slot, muted);
+        ImGui::PopID();
+    }
+}
+
+void CoopSection() {
+    namespace Online = BbEngine::OnlineFixes;
+    Section("Seamless co-op", "Бесшовная совместная игра");
+    if (!Item("Seamless co-op", "Бесшовная совместная игра")) return;
+    if (!BbRoom::Active()) {
+        ImGui::TextWrapped("%s", BbSettings::MenuText("Seamless co-op is off. Turn on Play online and Seamless co-op on the launcher's Online page.",
+                                                      "Бесшовная совместная игра выключена. Включите её на странице «Онлайн» в лаунчере."));
+        return;
+    }
+    ImGui::TextWrapped("%s", BbSettings::MenuText("In the game: F2, or hold L3 and press D-pad Up, opens the co-op menu.",
+                                                  "В игре: F2 или L3 + крестовина вверх открывают меню совместной игры."));
+    const bool host = BbRoom::IsHost();
+    const int role = Online::PartyRole();
+    const bool summoning = Online::Summoning();
+    if (host) {
+        if (ImGui::Button(summoning ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
+                                    : BbSettings::MenuText("Start session", "Начать сеанс"))) {
+            if (summoning) Online::StopSummon();
+            else Online::StartSummon();
+        }
+        Hint(BbSettings::MenuText("Rings the Beckoning Bell for you every 10 s until the party is full. Friends press Join host.",
+                                  "Звонит в Манящий колокол каждые 10 с, пока отряд не заполнится. Друзья нажимают «Присоединиться»."));
+        const auto members = BbRoom::PartyMembers();
+        if (members.empty()) {
+            ImGui::TextDisabled("%s", BbSettings::MenuText("Nobody in your world yet.", "В вашем мире пока никого."));
+        } else {
+            for (const auto& [slot, name] : members) {
+                ImGui::PushID(slot);
+                ImGui::TextUnformatted(name.c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton(BbSettings::MenuText("Bring", "Призвать к себе"))) BbRoom::SendBring(slot);
+                ImGui::SameLine();
+                if (ImGui::SmallButton(BbSettings::MenuText("Kick", "Выгнать"))) BbRoom::Kick(slot);
+                ImGui::PopID();
+            }
+            if (ImGui::Button(BbSettings::MenuText("Bring all players", "Призвать всех к себе"))) BbRoom::SendBring(0);
+            Hint(BbSettings::MenuText("Moves hunters in your area to your side. Someone in another area comes with your lamp instead.",
+                                      "Переносит охотников из вашей области к вам. Из другой области — через ваш фонарь."));
+            if (ImGui::Button(BbSettings::MenuText("End session", "Завершить сеанс"))) {
+                Online::StopSummon();
+                for (const auto& [slot, name] : members) BbRoom::Kick(slot);
+            }
+            Hint(BbSettings::MenuText("Sends everyone back to their own world. Your room stays open.",
+                                      "Отправляет всех в их миры. Комната остаётся открытой."));
+        }
+        return;
+    }
+    if (role == 6) {
+        ImGui::TextUnformatted(BbSettings::MenuText("You are in the host's world.", "Вы в мире хозяина."));
+        if (ImGui::Button(BbSettings::MenuText("Go to the host", "К хозяину"))) Online::GoToHost();
+        ImGui::SameLine();
+        if (ImGui::Button(BbSettings::MenuText("Return to your own world", "Вернуться в свой мир"))) BbRoom::LeaveParty();
+        return;
+    }
+    if (ImGui::Button(summoning ? BbSettings::MenuText("Stop summon", "Остановить призыв")
+                                : BbSettings::MenuText("Start summon", "Начать призыв"))) {
+        if (summoning) Online::StopSummon();
+        else Online::StartSummon();
+    }
+    Hint(BbSettings::MenuText("Rings the Small Resonant Bell for you every 10 s until the host summons you.",
+                              "Звонит в Малый резонансный колокол каждые 10 с, пока хозяин не призовёт вас."));
+}
+
+enum Tab : int { TabUpscaling, TabDisplay, TabPicture, TabGameplay, TabInterface, TabCoop, TabCount };
 
 const char* TabTitle(int tab) {
     switch (tab) {
@@ -1580,6 +1671,7 @@ const char* TabTitle(int tab) {
     case TabDisplay: return BbSettings::MenuText("Display", "Экран");
     case TabPicture: return BbSettings::MenuText("Picture", "Изображение");
     case TabGameplay: return BbSettings::MenuText("Gameplay", "Игра");
+    case TabCoop: return BbSettings::MenuText("Co-op", "Совместная игра");
     default: return BbSettings::MenuText("Interface", "Интерфейс");
     }
 }
@@ -1606,6 +1698,10 @@ void DrawTab(int tab) {
     case TabGameplay:
         CameraSection();
         CheatsSection();
+        break;
+    case TabCoop:
+        CoopSection();
+        VoiceSection();
         break;
     default:
         FpsSection();
@@ -2191,6 +2287,12 @@ void PartyHud(const std::vector<BbEngine::OnlineFixes::PartyRow>& rows) {
         draw->AddText(font, name_size, ImVec2(text_x + k, top + 7.0f * k), IM_COL32(0, 0, 0, int(200 * dim)), row.name.c_str());
         draw->AddText(font, name_size, ImVec2(text_x, top + 6.0f * k),
                       (parchment & ~IM_COL32_A_MASK) | (ImU32(255 * dim) << IM_COL32_A_SHIFT), row.name.c_str());
+        if (BbVoice::TalkingName(row.name)) {
+            const float name_w = font->CalcTextSizeA(name_size, FLT_MAX, 0.0f, row.name.c_str()).x;
+            const ImVec2 c(text_x + name_w + 10.0f * k, top + 6.0f * k + name_size * 0.55f);
+            draw->AddCircleFilled(c, 3.0f * k, IM_COL32(226, 216, 192, 255));
+            draw->AddCircle(c, 6.0f * k, IM_COL32(226, 216, 192, 160), 0, 1.2f * k);
+        }
         char where[32] = "";
         if (row.down) {
             std::snprintf(where, sizeof where, "%s", BbSettings::MenuText("dead", "мёртв"));
@@ -2364,6 +2466,8 @@ void UpdateTextInput(SDL_Window* window) {
     }
 }
 
+void CoopInput(int move, int side, bool select, bool back);
+
 bool HandleEvent(const SDL_Event& event) {
     std::scoped_lock lock{imgui_mutex};
     if (!initialized) {
@@ -2375,6 +2479,22 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (!is_open && down && !event.key.repeat && event.key.key == SDLK_F2) {
+            coop_open = !coop_open;
+            coop_armed.clear();
+            return true;
+        }
+        if (!is_open && coop_open) {
+            if (down) {
+                const SDL_Keycode key = event.key.key;
+                const int move = key == SDLK_UP || key == SDLK_W ? -1 : key == SDLK_DOWN || key == SDLK_S ? 1 : 0;
+                const int side = key == SDLK_LEFT || key == SDLK_A ? -1 : key == SDLK_RIGHT || key == SDLK_D ? 1 : 0;
+                const bool select = !event.key.repeat && (key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_E || key == SDLK_KP_ENTER);
+                const bool back = !event.key.repeat && (key == SDLK_ESCAPE || key == SDLK_BACKSPACE || key == SDLK_Q);
+                CoopInput(move, side, select, back);
+            }
+            return true;
+        }
         if (down && !event.key.repeat &&
             ((event.key.key == SDLK_INSERT && (is_open || MenuKeys() != OverlayKeys::Off)) ||
              (is_open && event.key.key == SDLK_ESCAPE && !io.WantTextInput))) {
@@ -2402,7 +2522,21 @@ bool HandleEvent(const SDL_Event& event) {
             r3_down = down;
         }
         if (down && l3_down && r3_down && (is_open || MenuKeys() == OverlayKeys::Both)) {
+            coop_open = false;
             SetOpen(!is_open);
+            return true;
+        }
+        if (!is_open && down && l3_down && button == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+            coop_open = !coop_open;
+            coop_armed.clear();
+            return true;
+        }
+        if (!is_open && coop_open) {
+            if (down) {
+                const int move = button == SDL_GAMEPAD_BUTTON_DPAD_UP ? -1 : button == SDL_GAMEPAD_BUTTON_DPAD_DOWN ? 1 : 0;
+                const int side = button == SDL_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT ? 1 : 0;
+                CoopInput(move, side, button == SDL_GAMEPAD_BUTTON_SOUTH, button == SDL_GAMEPAD_BUTTON_EAST);
+            }
             return true;
         }
         if (!is_open) {
@@ -2433,7 +2567,7 @@ bool HandleEvent(const SDL_Event& event) {
         return true;
     }
     case SDL_EVENT_MOUSE_MOTION: {
-        if (!is_open) {
+        if (!is_open && !coop_open) {
             return false;
         }
         const float density = PixelDensity(event.motion.windowID);
@@ -2442,7 +2576,7 @@ bool HandleEvent(const SDL_Event& event) {
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
-        if (!is_open) {
+        if (!is_open && !coop_open) {
             return false;
         }
         const int button = event.button.button == SDL_BUTTON_LEFT    ? 0
@@ -2466,7 +2600,7 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() ||
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive() || RelayNoteActive() || SummonNoteActive() || coop_open ||
                            !BbEngine::OnlineFixes::PartyRows().empty() || BbFaceShot::JustTaken());
 }
 
@@ -2475,7 +2609,279 @@ bool MenuOpen() {
 }
 
 bool CapturesInput() {
-    return menu_open || prompt_active;
+    return menu_open || prompt_active || coop_open;
+}
+
+enum class CoopKind { Summon, Member, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, Listen, Close };
+
+struct CoopItem {
+    CoopKind kind;
+    int slot = 0;
+    std::string name;
+};
+
+std::vector<CoopItem> CoopItems() {
+    namespace Online = BbEngine::OnlineFixes;
+    std::vector<CoopItem> items;
+    if (BbRoom::Active()) {
+        if (BbRoom::IsHost()) {
+            items.push_back({CoopKind::Summon});
+            const auto members = BbRoom::PartyMembers();
+            for (const auto& [slot, name] : members) items.push_back({CoopKind::Member, slot, name});
+            if (!members.empty()) {
+                items.push_back({CoopKind::BringAll});
+                items.push_back({CoopKind::End});
+            }
+        } else if (Online::PartyRole() == 6) {
+            items.push_back({CoopKind::GoTo});
+            items.push_back({CoopKind::Leave});
+        } else {
+            items.push_back({CoopKind::Join});
+        }
+    }
+    if (BbRoom::Active()) {
+        items.push_back({CoopKind::Voice});
+        if (BbSettings::Get().voice_enabled) {
+            items.push_back({CoopKind::Mic});
+            items.push_back({CoopKind::Speak});
+            for (const auto& t : BbVoice::Talkers()) items.push_back({CoopKind::Listen, t.slot, t.name});
+        }
+    }
+    items.push_back({CoopKind::Close});
+    return items;
+}
+
+bool CoopArmed(const std::string& what) {
+    const auto now = std::chrono::steady_clock::now();
+    if (coop_armed == what && now - coop_armed_at < std::chrono::seconds(4)) {
+        coop_armed.clear();
+        return true;
+    }
+    coop_armed = what;
+    coop_armed_at = now;
+    return false;
+}
+
+void CoopActivate(const CoopItem& item) {
+    namespace Online = BbEngine::OnlineFixes;
+    switch (item.kind) {
+    case CoopKind::Summon:
+    case CoopKind::Join:
+        if (Online::Summoning()) Online::StopSummon();
+        else Online::StartSummon();
+        break;
+    case CoopKind::Member:
+        if (coop_column == 0) BbRoom::SendBring(item.slot);
+        else if (CoopArmed("kick:" + std::to_string(item.slot))) BbRoom::Kick(item.slot);
+        break;
+    case CoopKind::BringAll:
+        BbRoom::SendBring(0);
+        break;
+    case CoopKind::End:
+        if (CoopArmed("end")) {
+            Online::StopSummon();
+            for (const auto& [slot, name] : BbRoom::PartyMembers()) BbRoom::Kick(slot);
+        }
+        break;
+    case CoopKind::GoTo:
+        Online::GoToHost();
+        break;
+    case CoopKind::Leave:
+        if (CoopArmed("leave")) BbRoom::LeaveParty();
+        break;
+    case CoopKind::Voice:
+        BbSettings::Get().voice_enabled = !BbSettings::Get().voice_enabled;
+        BbSettings::Save();
+        break;
+    case CoopKind::Mic:
+        BbSettings::Get().voice_mic_muted = !BbSettings::Get().voice_mic_muted;
+        BbSettings::Save();
+        break;
+    case CoopKind::Speak:
+        BbSettings::Get().voice_push_to_talk = !BbSettings::Get().voice_push_to_talk;
+        BbSettings::Save();
+        break;
+    case CoopKind::Listen: {
+        bool muted = false;
+        for (const auto& t : BbVoice::Talkers())
+            if (t.slot == item.slot) muted = t.muted;
+        BbVoice::SetMuted(item.slot, !muted);
+        break;
+    }
+    case CoopKind::Close:
+        coop_open = false;
+        break;
+    }
+}
+
+void CoopInput(int move, int side, bool select, bool back) {
+    const auto items = CoopItems();
+    const int count = int(items.size());
+    if (back) {
+        coop_open = false;
+        return;
+    }
+    if (move) {
+        coop_row = (coop_row + move + count) % count;
+        coop_armed.clear();
+    }
+    coop_row = std::clamp(coop_row, 0, count - 1);
+    if (side && items[coop_row].kind == CoopKind::Member) {
+        coop_column = side < 0 ? 0 : 1;
+        coop_armed.clear();
+    }
+    if (select) CoopActivate(items[coop_row]);
+}
+
+bool CoopArmedNow(const std::string& what) {
+    return coop_armed == what && std::chrono::steady_clock::now() - coop_armed_at < std::chrono::seconds(4);
+}
+
+std::string CoopLabel(const CoopItem& item, bool chosen) {
+    namespace Online = BbEngine::OnlineFixes;
+    switch (item.kind) {
+    case CoopKind::Summon:
+        return Online::Summoning() ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
+                                   : BbSettings::MenuText("Start session", "Начать сеанс");
+    case CoopKind::Join:
+        return Online::Summoning() ? BbSettings::MenuText("Stop summon", "Остановить призыв")
+                                   : BbSettings::MenuText("Start summon", "Начать призыв");
+    case CoopKind::GoTo:
+        return BbSettings::MenuText("Go to the host", "К хозяину");
+    case CoopKind::Member:
+        if (chosen && CoopArmedNow("kick:" + std::to_string(item.slot)))
+            return std::string(BbSettings::MenuText("Press again to send home ", "Нажмите ещё раз, чтобы выгнать ")) + item.name;
+        return item.name;
+    case CoopKind::BringAll:
+        return BbSettings::MenuText("Bring all hunters", "Призвать всех к себе");
+    case CoopKind::End:
+        return chosen && CoopArmedNow("end") ? BbSettings::MenuText("Press again to end the session", "Нажмите ещё раз, чтобы завершить")
+                                             : BbSettings::MenuText("End session", "Завершить сеанс");
+    case CoopKind::Leave:
+        return chosen && CoopArmedNow("leave") ? BbSettings::MenuText("Press again to go back", "Нажмите ещё раз, чтобы вернуться")
+                                               : BbSettings::MenuText("Return to your own world", "Вернуться в свой мир");
+    case CoopKind::Voice:
+        return BbSettings::Get().voice_enabled ? BbSettings::MenuText("Voice chat: on", "Голосовой чат: вкл.")
+                                               : BbSettings::MenuText("Voice chat: off", "Голосовой чат: выкл.");
+    case CoopKind::Mic:
+        return BbSettings::Get().voice_mic_muted ? BbSettings::MenuText("Microphone: muted", "Микрофон: выкл.")
+                                                 : BbSettings::MenuText("Microphone: on", "Микрофон: вкл.");
+    case CoopKind::Speak:
+        return BbSettings::Get().voice_push_to_talk ? BbSettings::MenuText("Speak: hold V", "Говорить: зажать V")
+                                                    : BbSettings::MenuText("Speak: when you talk", "Говорить: голосом");
+    case CoopKind::Listen: {
+        bool muted = false, talking = false;
+        for (const auto& t : BbVoice::Talkers())
+            if (t.slot == item.slot) muted = t.muted, talking = t.talking;
+        return item.name + (muted ? BbSettings::MenuText(": muted", ": заглушён") : talking ? BbSettings::MenuText(": speaking", ": говорит")
+                                                                                           : BbSettings::MenuText(": heard", ": слышно"));
+    }
+    case CoopKind::Close:
+        return BbSettings::MenuText("Close", "Закрыть");
+    }
+    return {};
+}
+
+void CoopMenu() {
+    ImTextureData* gauge = GaugeTexture();
+    const BbHudGauge::Art* art = gauge ? BbHudGauge::Ready() : nullptr;
+    const auto items = CoopItems();
+    coop_row = std::clamp(coop_row, 0, int(items.size()) - 1);
+    const float k = base_scale;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = name_font ? name_font : ImGui::GetFont();
+    const float title_px = ImGui::GetFontSize() * 1.9f, item_px = ImGui::GetFontSize() * 1.45f, hint_px = ImGui::GetFontSize() * 1.05f;
+    const float row_h = item_px + 18.0f * k;
+    const float width = 620.0f * k;
+    const float height = title_px + 70.0f * k + row_h * float(items.size()) + hint_px + 40.0f * k;
+    const float cx = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float top = viewport->WorkPos.y + (viewport->WorkSize.y - height) * 0.5f;
+    const ImU32 parchment = IM_COL32(226, 216, 192, 255), faded = IM_COL32(150, 142, 126, 230), red = IM_COL32(220, 120, 100, 255);
+    draw->AddRectFilled(viewport->WorkPos, ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y),
+                        IM_COL32(0, 0, 0, 110));
+    const ImVec2 a(cx - width * 0.5f, top), b(cx + width * 0.5f, top + height);
+    draw->AddRectFilledMultiColor(a, ImVec2(cx, b.y), IM_COL32(0, 0, 0, 40), IM_COL32(4, 4, 6, 225), IM_COL32(4, 4, 6, 225),
+                                  IM_COL32(0, 0, 0, 40));
+    draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, IM_COL32(4, 4, 6, 225), IM_COL32(0, 0, 0, 40), IM_COL32(0, 0, 0, 40),
+                                  IM_COL32(4, 4, 6, 225));
+    const float ornament_ratio = art ? float(art->header.h) / (float(art->header.w) * (2.0f * kOrnamentArm + kOrnamentScroll)) : 0.0f;
+    const auto line = [&](float y) {
+        if (art) {
+            const float h = (width - 40.0f * k) * ornament_ratio;
+            Ornament(draw, gauge, art->header, ImVec2(a.x + 20.0f * k, y - h * 0.5f), ImVec2(b.x - 20.0f * k, y + h * 0.5f), false,
+                     IM_COL32(255, 255, 255, 230));
+        } else {
+            draw->AddLine(ImVec2(a.x + 20.0f * k, y), ImVec2(b.x - 20.0f * k, y), IM_COL32(200, 190, 170, 160), k);
+        }
+    };
+    const auto text = [&](float px, ImVec2 at, ImU32 color, const char* str) {
+        draw->AddText(font, px, ImVec2(at.x + k, at.y + k), IM_COL32(0, 0, 0, 210), str);
+        draw->AddText(font, px, at, color, str);
+    };
+    const char* title = BbSettings::MenuText("Seamless Co-op", "Бесшовная совместная игра");
+    const ImVec2 title_size = font->CalcTextSizeA(title_px, FLT_MAX, 0.0f, title);
+    text(title_px, ImVec2(cx - title_size.x * 0.5f, top + 18.0f * k), parchment, title);
+    float y = top + title_px + 34.0f * k;
+    line(y);
+    y += 22.0f * k;
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mouse = io.MousePos;
+    const bool moved = io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f;
+    for (int i = 0; i < int(items.size()); ++i) {
+        const CoopItem& item = items[i];
+        const ImVec2 ra(a.x + 40.0f * k, y), rb(b.x - 40.0f * k, y + row_h);
+        const bool over = mouse.x >= ra.x && mouse.x < rb.x && mouse.y >= ra.y && mouse.y < rb.y;
+        if (over && moved) coop_row = i;
+        const bool chosen = i == coop_row;
+        if (chosen) {
+            const float mid = (ra.x + rb.x) * 0.5f;
+            draw->AddRectFilledMultiColor(ra, ImVec2(mid, rb.y), IM_COL32(120, 100, 60, 0), IM_COL32(120, 100, 60, 70),
+                                          IM_COL32(120, 100, 60, 70), IM_COL32(120, 100, 60, 0));
+            draw->AddRectFilledMultiColor(ImVec2(mid, ra.y), rb, IM_COL32(120, 100, 60, 70), IM_COL32(120, 100, 60, 0),
+                                          IM_COL32(120, 100, 60, 0), IM_COL32(120, 100, 60, 70));
+        }
+        const std::string label = CoopLabel(item, chosen);
+        const float ty = y + (row_h - item_px) * 0.5f;
+        if (item.kind == CoopKind::Member) {
+            text(item_px, ImVec2(ra.x + 20.0f * k, ty), chosen ? parchment : faded, label.c_str());
+            const char* bring = BbSettings::MenuText("Bring", "Призвать");
+            const char* kick = BbSettings::MenuText("Kick", "Выгнать");
+            const float kick_w = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, kick).x;
+            const float bring_w = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, bring).x;
+            const float kick_x = rb.x - 20.0f * k - kick_w, bring_x = kick_x - 40.0f * k - bring_w;
+            const bool on_bring = chosen && coop_column == 0, on_kick = chosen && coop_column == 1;
+            text(item_px, ImVec2(bring_x, ty), on_bring ? parchment : faded, bring);
+            text(item_px, ImVec2(kick_x, ty), on_kick ? red : faded, kick);
+            const float under = ty + item_px + 2.0f * k;
+            if (on_bring) draw->AddLine(ImVec2(bring_x, under), ImVec2(bring_x + bring_w, under), parchment, k);
+            if (on_kick) draw->AddLine(ImVec2(kick_x, under), ImVec2(kick_x + kick_w, under), red, k);
+            if (over && ImGui::IsMouseClicked(0)) {
+                coop_row = i;
+                if (mouse.x >= bring_x && mouse.x < bring_x + bring_w) {
+                    coop_column = 0;
+                    CoopActivate(item);
+                } else if (mouse.x >= kick_x && mouse.x < kick_x + kick_w) {
+                    coop_column = 1;
+                    CoopActivate(item);
+                }
+            }
+        } else {
+            const ImVec2 size = font->CalcTextSizeA(item_px, FLT_MAX, 0.0f, label.c_str());
+            text(item_px, ImVec2(cx - size.x * 0.5f, ty), chosen ? parchment : faded, label.c_str());
+            if (over && ImGui::IsMouseClicked(0)) {
+                coop_row = i;
+                CoopActivate(item);
+            }
+        }
+        y += row_h;
+    }
+    y += 10.0f * k;
+    line(y);
+    const char* hint = BbSettings::MenuText("Enter / Cross: select      Arrows / D-pad: move      Esc / Circle: back",
+                                            "Enter / Крест: выбрать      Стрелки: двигаться      Esc / Круг: назад");
+    const ImVec2 hint_size = font->CalcTextSizeA(hint_px, FLT_MAX, 0.0f, hint);
+    text(hint_px, ImVec2(cx - hint_size.x * 0.5f, y + 14.0f * k), faded, hint);
 }
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
@@ -2525,6 +2931,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
         const auto party = BbEngine::OnlineFixes::PartyRows();
         if (!party.empty()) PartyHud(party);
         PortraitToast();
+    }
+    if (coop_open && !menu_open) {
+        CoopMenu();
     }
     ImGui::Render();
 

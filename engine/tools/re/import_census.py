@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ORDER = ['runtime.c', 'runtime_mutex.c', 'runtime_thread.c',
+RUNTIME_ORDER = ['runtime.c',
                  'runtime_memory.c', 'runtime_kernel.c',
                  'runtime_services.c',
                  'runtime_file.c']

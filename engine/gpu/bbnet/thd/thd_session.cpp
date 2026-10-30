@@ -598,7 +598,8 @@ void MappedRefresh(bool force) {
     std::snprintf(text, sizeof(text), "%u.%u.%u.%u", addr & 0xff, (addr >> 8) & 0xff,
                   (addr >> 16) & 0xff, addr >> 24);
     if (g_mapped.addr != text || g_mapped.port != port) {
-        Log("stun: %s:%u sees our P2P port %d as %s:%u", host.c_str(), sport, P2pPort(), text, port);
+        Log("stun: %s:%u sees our P2P port %d as %s:%u", host.c_str(), sport, P2pPort(),
+            BbNet::MaskIpText(text).c_str(), port);
     }
     g_mapped.addr = text;
     g_mapped.port = port;
@@ -841,7 +842,8 @@ void KeepaliveMain() {
             now = g_mapped.addr + ":" + std::to_string(g_mapped.port);
         }
         if (now != last && now != ":0") {
-            Log("stun: our address is now %s (was %s); telling the server", now.c_str(), last.c_str());
+            Log("stun: our address is now %s (was %s); telling the server", BbNet::MaskIpText(now).c_str(),
+                BbNet::MaskIpText(last).c_str());
             ServerSignalingUpdate();
             last = now;
         }

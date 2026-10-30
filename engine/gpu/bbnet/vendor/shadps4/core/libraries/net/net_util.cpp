@@ -37,6 +37,7 @@ typedef int net_socket;
 #include <vector>
 #include <string.h>
 #include "common/assert.h"
+#include "ip_mask.h"
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/net/net_error.h"
@@ -404,7 +405,8 @@ int NetUtilInternal::ResolveHostname(const char* hostname, Libraries::Net::Orbis
     } else {
         ASSERT(info && info->ai_addr);
         in_addr resolved_addr = ((sockaddr_in*)info->ai_addr)->sin_addr;
-        LOG_DEBUG(Lib_Net, "resolved address for {}: {}", hostname, inet_ntoa(resolved_addr));
+        LOG_DEBUG(Lib_Net, "resolved address for {}: {}", hostname,
+                  BbNet::MaskIpv4(resolved_addr.s_addr));
         addr->inaddr_addr = resolved_addr.s_addr;
     }
 

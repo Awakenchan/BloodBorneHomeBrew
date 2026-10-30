@@ -44,6 +44,20 @@ Folders Locate() {
     return f;
 }
 
+std::optional<std::string> PlateTitle(const std::map<std::string, std::string>& settings, const char* key) {
+    const auto set = Setting(settings, key);
+    if (!set) return Setting(settings, "name_plates") == "role" ? std::nullopt : std::optional<std::string>(std::string());
+    std::string title;
+    for (const char c : *set)
+        if (std::uint8_t(c) >= 0x20 && c != 0x7f) title.push_back(c);
+    if (title.size() > 48) {
+        title.resize(48);
+        while (!title.empty() && (std::uint8_t(title.back()) & 0xc0) == 0x80) title.pop_back();
+        if (!title.empty() && std::uint8_t(title.back()) >= 0xc0) title.pop_back();
+    }
+    return title;
+}
+
 std::optional<std::string> SettingValue(const fs::path& config, const std::string& key) {
     return Setting(ReadSettings(config), key);
 }
@@ -430,7 +444,8 @@ int Main(std::vector<std::wstring> arguments) {
             try {
                 const fs::path menus = PrepareMenuAssets(merged, out / "eboot.elf", data / "engine-assets",
                                                          out / "bb-engine-assets.exe", is_on("rebirth"),
-                                                         Setting(settings, "name_plates") == "role");
+                                                         PlateTitle(settings, "plate_host_title"),
+                                                         PlateTitle(settings, "plate_guest_title"));
                 SetEnv("BB_PC_MENU_ASSETS", Utf8(menus));
                 Log("Engine: native PC menus prepared locally: %s", Utf8(menus).c_str());
                 if (is_on("rebirth"))

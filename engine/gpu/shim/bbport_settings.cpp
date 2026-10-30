@@ -156,6 +156,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "debug_view") {
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "voice_enabled") {
+        v.voice_enabled = i != 0;
+    } else if (key == "voice_push_to_talk") {
+        v.voice_push_to_talk = i != 0;
+    } else if (key == "voice_mic_muted") {
+        v.voice_mic_muted = i != 0;
     } else if (key == "show_fps_rate") {
         v.show_fps_rate = i != 0;
     } else if (key == "show_fps_frame_time") {
@@ -581,6 +587,9 @@ void Save() {
     put("fsr3_accumulation", fixed(v.fsr3_accumulation, 3));
     put("fsr3_min_disocclusion", fixed(v.fsr3_min_disocclusion, 3));
     put("show_fps", flag(v.show_fps));
+    put("voice_enabled", flag(v.voice_enabled));
+    put("voice_push_to_talk", flag(v.voice_push_to_talk));
+    put("voice_mic_muted", flag(v.voice_mic_muted));
     put("show_fps_rate", flag(v.show_fps_rate));
     put("show_fps_frame_time", flag(v.show_fps_frame_time));
     put("show_fps_upscaler", flag(v.show_fps_upscaler));

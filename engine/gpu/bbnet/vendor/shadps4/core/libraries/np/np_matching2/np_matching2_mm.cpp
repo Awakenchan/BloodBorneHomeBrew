@@ -15,6 +15,7 @@
 #include <fmt/format.h>
 
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/net/net_p2p.h"
 #include "core/libraries/net/net_upnp.h"
@@ -1479,8 +1480,8 @@ bool RequestSignalingInfos(std::string_view target_online_id, u32* out_addr, u16
     }
     *out_addr = addr_nbo;
     *out_port = Libraries::Net::sceNetHtons(port_host);
-    LOG_INFO(Lib_NpMatching2, "received peer='{}' ip={} port={} addr_nbo={:#x} port_nbo={:#x}",
-             target_online_id, addr_str, port_host, addr_nbo, *out_port);
+    LOG_INFO(Lib_NpMatching2, "received peer='{}' ip={} port={} port_nbo={:#x}",
+             target_online_id, BbNet::MaskIpv4(addr_nbo), port_host, *out_port);
     return true;
 }
 

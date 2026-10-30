@@ -35,7 +35,7 @@ void runtime_blocked_report(void) {
         const uintptr_t object = slots[i].object;
         if (!tid || !kind) continue;
         char what[160];
-        if (kind == RUNTIME_BLOCK_MUTEX) runtime_mutex_describe(object, what, sizeof what);
+        if (kind == RUNTIME_BLOCK_MUTEX) sys_mutex_describe(object, what, sizeof what);
         else if (kind == RUNTIME_BLOCK_SEMA) sys_sema_describe((uint32_t)object, what, sizeof what);
         else snprintf(what, sizeof what, "condition variable %#llx", (unsigned long long)object);
         printf("Freeze: thread %ld waits for %s\n", (long)tid, what);

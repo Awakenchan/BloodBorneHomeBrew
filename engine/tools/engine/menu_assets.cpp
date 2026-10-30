@@ -511,7 +511,7 @@ const char kTsv[] =
 #include "pc_option_messages.inc"
     ;
 
-constexpr std::int32_t kPlateRoles[] = {107000, 107100};
+constexpr std::int32_t kHostRole = 107000, kGuestRole = 107100;
 constexpr std::uint32_t kMenuGroup = 200, kHelpGroup = 201, kQuestionGroup = 78, kScreenQuestionGroup = 204, kEventGroup = 30;
 
 std::string Unescape(std::string s) {
@@ -743,7 +743,7 @@ Bytes MenuMessages(const Bytes& file, bool chinese) {
     return MenuMessages(file, chinese ? Language::Chinese : Language::English);
 }
 
-Bytes MenuMessages(const Bytes& file, Language language, bool keep_roles) {
+Bytes MenuMessages(const Bytes& file, Language language, const PlateTitles& titles) {
     const bool packed = Has(file, 0, "DCX\0", 4);
     Dcx dcx = packed ? DcxRead(file) : Dcx{{}, file};
     Binder bundle = BinderRead(dcx.data);
@@ -769,9 +769,10 @@ Bytes MenuMessages(const Bytes& file, Language language, bool keep_roles) {
             const std::string& s = g->help ? m.help : m.text;
             fmg.text[id] = s.empty() ? std::nullopt : std::optional<std::u16string>(Utf16(s));
         }
-        if (g->kind == Kind::Event && !keep_roles)
-            for (const std::int32_t id : kPlateRoles)
-                if (fmg.text.count(id)) fmg.text[id] = std::u16string();
+        if (g->kind == Kind::Event) {
+            if (titles.host && fmg.text.count(kHostRole)) fmg.text[kHostRole] = Utf16(*titles.host);
+            if (titles.guest && fmg.text.count(kGuestRole)) fmg.text[kGuestRole] = Utf16(*titles.guest);
+        }
         file_in.data = FmgWrite(fmg);
         g->found = true;
     }

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <stddef.h>
 #include <stdint.h>
+#include <time.h>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 
 #define WEAK __attribute__((weak))
 
@@ -23,6 +28,17 @@ WEAK void runtime_file_unmount(const char *guest) { (void)guest; }
 WEAK int runtime_block_begin(int kind, uintptr_t object) { (void)kind; (void)object; return 0; }
 WEAK void runtime_block_end(int slot) { (void)slot; }
 WEAK void runtime_wait_note(int kind, uint64_t ns) { (void)kind; (void)ns; }
+WEAK void host_sleep_ns(uint64_t ns) {
+    struct timespec t = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
+    nanosleep(&t, NULL);
+}
+WEAK void runtime_report(void) {}
+WEAK void runtime_file_stream_report(void) {}
+WEAK void *runtime_low_map(size_t size, int prot) { (void)size; (void)prot; return NULL; }
+#ifndef _WIN32
+WEAK int host_thread_join(pthread_t thread) { return pthread_join(thread, NULL); }
+WEAK void host_thread_detach(pthread_t thread) { pthread_detach(thread); }
+#endif
 #ifdef _WIN32
 WEAK int runtime_win_remove_tree(const char *path) { (void)path; return 0; }
 #endif

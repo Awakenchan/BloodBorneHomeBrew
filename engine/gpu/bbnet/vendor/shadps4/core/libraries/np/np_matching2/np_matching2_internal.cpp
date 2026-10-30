@@ -10,6 +10,7 @@
 #include <fmt/format.h>
 
 #include "common/logging/log.h"
+#include "ip_mask.h"
 #include "common/thread.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/np/np_common.h"
@@ -212,7 +213,7 @@ void BuildCreateJoinRoomPayloadCommon(ContextObject& ctx, CallbackPayload& p,
                   "  member[{}] id={} npid='{}' owner={} team={} nat={} flags={:#x} group={} "
                   "addr={}:{} account={} platform={} bins={}",
                   i, m.member_id(), m.npid(), m.is_owner(), m.team_id(), m.nat_type(),
-                  m.flag_attr(), m.group_id(), m.addr(), m.port(), m.account_id(), m.platform(),
+                  m.flag_attr(), m.group_id(), BbNet::MaskIpText(m.addr()), m.port(), m.account_id(), m.platform(),
                   m.bin_attrs_internal_size());
         MemberCache& mc = rc.members[static_cast<OrbisNpMatching2RoomMemberId>(m.member_id())];
         mc = MemberCache{};

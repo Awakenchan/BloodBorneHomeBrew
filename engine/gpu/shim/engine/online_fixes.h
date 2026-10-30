@@ -17,4 +17,9 @@ bool Install(std::uint8_t* image, std::size_t size);
 void Tick();
 std::vector<PartyRow> PartyRows();
 void SetCameraYaw(float yaw);
+void StartSummon();
+void StopSummon();
+void GoToHost();
+bool Summoning();
+int PartyRole();
 }
