@@ -151,6 +151,11 @@ struct State {
     std::map<int, std::pair<Vitals, Clock::time_point>> vitals;
     Clock::time_point bring_at{};
     std::deque<std::pair<int, std::vector<std::uint8_t>>> voice;
+    Link voice_link;
+    std::mutex voice_mu;
+    bool voice_on = false;
+    std::thread voice_thread;
+    std::atomic<bool> voice_run{false};
     std::uint32_t travel = 0;
     Clock::time_point travel_at;
     std::vector<std::uint32_t> progress;
@@ -1347,7 +1352,7 @@ void SendTravel(std::uint32_t lamp) {
 bool TakeTravel(std::uint32_t& lamp) {
     std::lock_guard lock(S().vitals_mu);
     if (!S().travel) return false;
-    if (Clock::now() - S().travel_at > std::chrono::seconds(10)) {
+    if (Clock::now() - S().travel_at > std::chrono::seconds(120)) {
         S().travel = 0;
         return false;
     }
@@ -1524,12 +1529,44 @@ bool LeaveParty() {
     return ok;
 }
 
+void VoiceLoop() {
+    while (S().voice_run.load()) {
+        S().voice_link.WaitEvent(200);
+        for (auto& e : S().voice_link.Drain()) {
+            if (e.kind == Event::Kind::Connected) Log("voice: connected to the room's voice channel");
+            if (e.kind != Event::Kind::Data || e.data.size() < 4 || e.data.size() > 1200 || e.data[0] != kVoice) continue;
+            std::lock_guard lock(S().vitals_mu);
+            if (S().voice.size() >= 48) S().voice.pop_front();
+            S().voice.emplace_back(-e.slot, std::vector<std::uint8_t>(e.data.begin() + 1, e.data.end()));
+        }
+    }
+}
+
+void SetVoice(bool on) {
+    std::lock_guard lock(S().voice_mu);
+    if (on == S().voice_on || (on && !S().started.load())) return;
+    S().voice_on = on;
+    if (on) {
+        if (!S().voice_link.Start(Env("BB_ROOM_SERVER"), Env("BB_ROOM_NAME"), Env("BB_ROOM_PASSWORD"), "voice")) {
+            S().voice_on = false;
+            return;
+        }
+        S().voice_run = true;
+        S().voice_thread = std::thread(VoiceLoop);
+        return;
+    }
+    S().voice_run = false;
+    if (S().voice_thread.joinable()) S().voice_thread.join();
+    S().voice_link.Stop();
+    Log("voice: left the room's voice channel");
+}
+
 void SendVoice(const std::vector<std::uint8_t>& packet) {
-    if (packet.empty() || packet.size() > 1100 || !S().started.load() || !S().link.Connected()) return;
+    if (packet.empty() || packet.size() > 1100 || !S().voice_link.Connected()) return;
     std::vector<std::uint8_t> frame(1 + packet.size());
     frame[0] = kVoice;
     std::memcpy(frame.data() + 1, packet.data(), packet.size());
-    S().link.Send(0, frame.data(), frame.size());
+    S().voice_link.SendLossy(0, frame.data(), frame.size(), 4);
 }
 
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakeVoice() {

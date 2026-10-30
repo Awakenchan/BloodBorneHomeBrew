@@ -162,6 +162,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.voice_push_to_talk = i != 0;
     } else if (key == "voice_mic_muted") {
         v.voice_mic_muted = i != 0;
+    } else if (key == "voice_talk_key") {
+        if (i != 0 && i > -6 && i < 512) v.voice_talk_key = i;
+    } else if (key == "voice_volume") {
+        v.voice_volume = Clamp(f, 0.0f, 5.0f);
     } else if (key == "show_fps_rate") {
         v.show_fps_rate = i != 0;
     } else if (key == "show_fps_frame_time") {
@@ -590,6 +594,8 @@ void Save() {
     put("voice_enabled", flag(v.voice_enabled));
     put("voice_push_to_talk", flag(v.voice_push_to_talk));
     put("voice_mic_muted", flag(v.voice_mic_muted));
+    put("voice_talk_key", std::to_string(v.voice_talk_key.load()));
+    put("voice_volume", fixed(v.voice_volume, 2));
     put("show_fps_rate", flag(v.show_fps_rate));
     put("show_fps_frame_time", flag(v.show_fps_frame_time));
     put("show_fps_upscaler", flag(v.show_fps_upscaler));

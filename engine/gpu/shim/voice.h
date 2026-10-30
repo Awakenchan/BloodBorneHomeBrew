@@ -16,5 +16,6 @@ bool Available();
 bool Speaking();
 std::vector<Talker> Talkers();
 bool TalkingName(const std::string& name);
-void SetMuted(int slot, bool muted);
+void SetMuted(const std::string& name, bool muted);
+std::string KeyName(int key);
 }

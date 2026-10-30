@@ -51,6 +51,7 @@ bool Kick(int slot);
 bool LeaveParty();
 void SendBring(int target);
 bool TakeBring();
+void SetVoice(bool on);
 void SendVoice(const std::vector<std::uint8_t>& packet);
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakeVoice();
 bool IsHost();

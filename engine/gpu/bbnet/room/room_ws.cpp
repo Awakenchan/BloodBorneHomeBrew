@@ -316,6 +316,15 @@ bool WebSocket::Send(const void* data, std::size_t size, bool binary) {
     return true;
 }
 
+bool WebSocket::SendLossy(const void* data, std::size_t size, std::size_t most_queued) {
+    if (!open_) return false;
+    {
+        std::lock_guard lock(queue_mutex_);
+        if (queue_.size() >= most_queued) return false;
+    }
+    return Send(data, size, true);
+}
+
 void WebSocket::Close() {
     closing_ = true;
     Wake();

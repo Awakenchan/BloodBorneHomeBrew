@@ -30,9 +30,11 @@ public:
     Link(const Link&) = delete;
     Link& operator=(const Link&) = delete;
 
-    bool Start(const std::string& server, const std::string& name, const std::string& password);
+    bool Start(const std::string& server, const std::string& name, const std::string& password,
+               const std::string& path = "room");
     void Stop();
     bool Send(int target, const std::uint8_t* data, std::size_t size);
+    bool SendLossy(int target, const std::uint8_t* data, std::size_t size, std::size_t most_queued);
     void SetHost(bool host);
     std::vector<Event> Drain();
     bool WaitEvent(int timeout_ms);
@@ -67,6 +69,6 @@ private:
     std::string last_error_;
 };
 
-std::string RoomUrl(const std::string& server, const std::string& room_id);
+std::string RoomUrl(const std::string& server, const std::string& room_id, const std::string& path = "room");
 
 } // namespace BbRoom

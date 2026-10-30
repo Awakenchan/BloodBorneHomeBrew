@@ -25,6 +25,7 @@ public:
     bool Connect(const std::string& url, int timeout_s, std::string& error);
     void Run(const Handler& handler);
     bool Send(const void* data, std::size_t size, bool binary);
+    bool SendLossy(const void* data, std::size_t size, std::size_t most_queued);
     void Close();
     bool Open() const { return open_.load(); }
 

@@ -118,6 +118,7 @@ bool initialized = false;
 std::atomic<bool> menu_open{false};
 bool l3_down = false, r3_down = false;
 std::atomic<bool> coop_open{false};
+std::atomic<bool> binding_talk_key{false};
 int coop_row = 0, coop_column = 0;
 std::string coop_armed;
 std::chrono::steady_clock::time_point coop_armed_at{};
@@ -1587,15 +1588,32 @@ void VoiceSection() {
     }
     if (!s.voice_enabled) return;
     if (const char* label = Item("Mute my microphone", "Выключить мой микрофон")) Checkbox(label, s.voice_mic_muted);
-    if (const char* label = Item("Push to talk (hold V)", "Говорить с зажатой V")) {
+    if (const char* label = Item("Push to talk", "Говорить по кнопке")) {
         Checkbox(label, s.voice_push_to_talk);
         Hint(BbSettings::MenuText("Off: your microphone sends whenever you speak.", "Выкл.: микрофон передаёт, когда вы говорите."));
+    }
+    if (const char* label = Item("Talk key", "Кнопка разговора")) {
+        const std::string current = binding_talk_key ? std::string(BbSettings::MenuText("Press a key or mouse button...", "Нажмите кнопку..."))
+                                                     : BbVoice::KeyName(s.voice_talk_key);
+        if (ImGui::Button((current + "###talk_key").c_str())) binding_talk_key = true;
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
+        Hint(BbSettings::MenuText("Press it, then the key or mouse button you want to hold while talking. Esc keeps the old one.",
+                                  "Нажмите, затем кнопку, которую будете держать во время разговора. Esc оставляет прежнюю."));
+    }
+    if (const char* label = Item("Voice volume", "Громкость голоса")) {
+        float percent = s.voice_volume * 100.0f;
+        if (ImGui::SliderFloat(label, &percent, 0.0f, 500.0f, "%.0f%%")) {
+            s.voice_volume = percent / 100.0f;
+            dirty = true;
+        }
+        Hint(BbSettings::MenuText("How loud the other hunters are, up to 500%.", "Громкость других охотников, до 500%."));
     }
     for (const auto& t : BbVoice::Talkers()) {
         ImGui::PushID(t.slot + 1000);
         bool muted = t.muted;
         const std::string label = std::string(BbSettings::MenuText("Mute ", "Заглушить ")) + t.name + (t.talking ? "  (speaking)" : "");
-        if (ImGui::Checkbox(label.c_str(), &muted)) BbVoice::SetMuted(t.slot, muted);
+        if (ImGui::Checkbox(label.c_str(), &muted)) BbVoice::SetMuted(t.name, muted);
         ImGui::PopID();
     }
 }
@@ -2154,6 +2172,18 @@ void Ornament(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece&
     }
 }
 
+void Flourish(ImDrawList* draw, ImTextureData* texture, const BbHudGauge::Piece& piece, ImVec2 a, ImVec2 b, ImU32 tint) {
+    const float w = float(texture->Width), h = float(texture->Height);
+    const float arm = float(piece.w) * kOrnamentArm, scroll = float(piece.w) * kOrnamentScroll;
+    const float u = float(piece.x), v0 = float(piece.y) / h, v1 = float(piece.y + piece.h) / h;
+    const float height = b.y - a.y;
+    const float curl = std::min(height * scroll / float(piece.h), (b.x - a.x) * 0.45f);
+    const float line0 = u + arm * 0.45f, line1 = u + arm * 0.95f;
+    draw->AddImage(texture->GetTexRef(), a, ImVec2(a.x + curl, b.y), ImVec2((u + arm) / w, v0), ImVec2((u + arm + scroll) / w, v1), tint);
+    draw->AddImage(texture->GetTexRef(), ImVec2(a.x + curl, a.y), ImVec2(b.x - curl, b.y), ImVec2(line0 / w, v0), ImVec2(line1 / w, v1), tint);
+    draw->AddImage(texture->GetTexRef(), ImVec2(b.x - curl, a.y), b, ImVec2((u + arm + scroll) / w, v0), ImVec2((u + arm) / w, v1), tint);
+}
+
 ImTextureData* PortraitTexture(const std::string& key, const std::vector<std::uint32_t>& rgba, std::uint32_t version) {
     struct Entry {
         ImTextureData* texture = nullptr;
@@ -2479,6 +2509,12 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (binding_talk_key && down && !event.key.repeat) {
+            if (event.key.key != SDLK_ESCAPE) BbSettings::Get().voice_talk_key = int(event.key.scancode);
+            binding_talk_key = false;
+            BbSettings::Save();
+            return true;
+        }
         if (!is_open && down && !event.key.repeat && event.key.key == SDLK_F2) {
             coop_open = !coop_open;
             coop_armed.clear();
@@ -2576,6 +2612,12 @@ bool HandleEvent(const SDL_Event& event) {
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
+        if (binding_talk_key && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button != SDL_BUTTON_LEFT) {
+            BbSettings::Get().voice_talk_key = -int(event.button.button);
+            binding_talk_key = false;
+            BbSettings::Save();
+            return true;
+        }
         if (!is_open && !coop_open) {
             return false;
         }
@@ -2612,7 +2654,7 @@ bool CapturesInput() {
     return menu_open || prompt_active || coop_open;
 }
 
-enum class CoopKind { Summon, Member, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, Listen, Close };
+enum class CoopKind { Summon, Member, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, TalkKey, Volume, Listen, Close };
 
 struct CoopItem {
     CoopKind kind;
@@ -2644,6 +2686,8 @@ std::vector<CoopItem> CoopItems() {
         if (BbSettings::Get().voice_enabled) {
             items.push_back({CoopKind::Mic});
             items.push_back({CoopKind::Speak});
+            if (BbSettings::Get().voice_push_to_talk) items.push_back({CoopKind::TalkKey});
+            items.push_back({CoopKind::Volume});
             for (const auto& t : BbVoice::Talkers()) items.push_back({CoopKind::Listen, t.slot, t.name});
         }
     }
@@ -2701,11 +2745,16 @@ void CoopActivate(const CoopItem& item) {
         BbSettings::Get().voice_push_to_talk = !BbSettings::Get().voice_push_to_talk;
         BbSettings::Save();
         break;
+    case CoopKind::TalkKey:
+        binding_talk_key = true;
+        break;
+    case CoopKind::Volume:
+        break;
     case CoopKind::Listen: {
         bool muted = false;
         for (const auto& t : BbVoice::Talkers())
-            if (t.slot == item.slot) muted = t.muted;
-        BbVoice::SetMuted(item.slot, !muted);
+            if (t.name == item.name) muted = t.muted;
+        BbVoice::SetMuted(item.name, !muted);
         break;
     }
     case CoopKind::Close:
@@ -2726,6 +2775,11 @@ void CoopInput(int move, int side, bool select, bool back) {
         coop_armed.clear();
     }
     coop_row = std::clamp(coop_row, 0, count - 1);
+    if (side && items[coop_row].kind == CoopKind::Volume) {
+        auto& volume = BbSettings::Get().voice_volume;
+        volume = std::clamp(volume + (side < 0 ? -0.25f : 0.25f), 0.0f, 5.0f);
+        BbSettings::Save();
+    }
     if (side && items[coop_row].kind == CoopKind::Member) {
         coop_column = side < 0 ? 0 : 1;
         coop_armed.clear();
@@ -2767,8 +2821,17 @@ std::string CoopLabel(const CoopItem& item, bool chosen) {
         return BbSettings::Get().voice_mic_muted ? BbSettings::MenuText("Microphone: muted", "Микрофон: выкл.")
                                                  : BbSettings::MenuText("Microphone: on", "Микрофон: вкл.");
     case CoopKind::Speak:
-        return BbSettings::Get().voice_push_to_talk ? BbSettings::MenuText("Speak: hold V", "Говорить: зажать V")
+        return BbSettings::Get().voice_push_to_talk ? BbSettings::MenuText("Speak: hold the talk key", "Говорить: по кнопке")
                                                     : BbSettings::MenuText("Speak: when you talk", "Говорить: голосом");
+    case CoopKind::TalkKey:
+        return binding_talk_key ? std::string(BbSettings::MenuText("Press a key or mouse button...", "Нажмите кнопку..."))
+                                : std::string(BbSettings::MenuText("Talk key: ", "Кнопка разговора: ")) + BbVoice::KeyName(BbSettings::Get().voice_talk_key);
+    case CoopKind::Volume: {
+        char text[64];
+        std::snprintf(text, sizeof text, "%s %.0f%%   < >", BbSettings::MenuText("Voice volume:", "Громкость голоса:"),
+                      BbSettings::Get().voice_volume * 100.0f);
+        return text;
+    }
     case CoopKind::Listen: {
         bool muted = false, talking = false;
         for (const auto& t : BbVoice::Talkers())
@@ -2805,14 +2868,12 @@ void CoopMenu() {
                                   IM_COL32(0, 0, 0, 40));
     draw->AddRectFilledMultiColor(ImVec2(cx, a.y), b, IM_COL32(4, 4, 6, 225), IM_COL32(0, 0, 0, 40), IM_COL32(0, 0, 0, 40),
                                   IM_COL32(4, 4, 6, 225));
-    const float ornament_ratio = art ? float(art->header.h) / (float(art->header.w) * (2.0f * kOrnamentArm + kOrnamentScroll)) : 0.0f;
-    const auto line = [&](float y) {
+    const auto line = [&](float y, float half) {
         if (art) {
-            const float h = (width - 40.0f * k) * ornament_ratio;
-            Ornament(draw, gauge, art->header, ImVec2(a.x + 20.0f * k, y - h * 0.5f), ImVec2(b.x - 20.0f * k, y + h * 0.5f), false,
-                     IM_COL32(255, 255, 255, 230));
+            const float h = 18.0f * k;
+            Flourish(draw, gauge, art->header, ImVec2(cx - half, y - h * 0.5f), ImVec2(cx + half, y + h * 0.5f), IM_COL32(255, 255, 255, 235));
         } else {
-            draw->AddLine(ImVec2(a.x + 20.0f * k, y), ImVec2(b.x - 20.0f * k, y), IM_COL32(200, 190, 170, 160), k);
+            draw->AddLine(ImVec2(cx - half, y), ImVec2(cx + half, y), IM_COL32(200, 190, 170, 160), k);
         }
     };
     const auto text = [&](float px, ImVec2 at, ImU32 color, const char* str) {
@@ -2823,7 +2884,7 @@ void CoopMenu() {
     const ImVec2 title_size = font->CalcTextSizeA(title_px, FLT_MAX, 0.0f, title);
     text(title_px, ImVec2(cx - title_size.x * 0.5f, top + 18.0f * k), parchment, title);
     float y = top + title_px + 34.0f * k;
-    line(y);
+    line(y, 85.0f * k);
     y += 22.0f * k;
     const ImGuiIO& io = ImGui::GetIO();
     const ImVec2 mouse = io.MousePos;
@@ -2877,11 +2938,11 @@ void CoopMenu() {
         y += row_h;
     }
     y += 10.0f * k;
-    line(y);
     const char* hint = BbSettings::MenuText("Enter / Cross: select      Arrows / D-pad: move      Esc / Circle: back",
                                             "Enter / Крест: выбрать      Стрелки: двигаться      Esc / Круг: назад");
     const ImVec2 hint_size = font->CalcTextSizeA(hint_px, FLT_MAX, 0.0f, hint);
-    text(hint_px, ImVec2(cx - hint_size.x * 0.5f, y + 14.0f * k), faded, hint);
+    text(hint_px, ImVec2(cx - hint_size.x * 0.5f, y + 6.0f * k), faded, hint);
+    line(y + hint_px + 22.0f * k, width * 0.5f - 30.0f * k);
 }
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {

@@ -120,6 +120,8 @@ struct Values {
     std::atomic<int> debug_view{DebugNone};
     std::atomic<bool> show_fps{false};
     std::atomic<bool> voice_enabled{true}, voice_push_to_talk{true}, voice_mic_muted{false};
+    std::atomic<int> voice_talk_key{25};
+    std::atomic<float> voice_volume{1.0f};
     std::atomic<bool> show_fps_rate{true};
     std::atomic<bool> show_fps_frame_time{true};
     std::atomic<bool> show_fps_upscaler{true};

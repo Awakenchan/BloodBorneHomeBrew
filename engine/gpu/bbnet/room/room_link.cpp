@@ -9,7 +9,7 @@
 
 namespace BbRoom {
 
-std::string RoomUrl(const std::string& server, const std::string& room_id) {
+std::string RoomUrl(const std::string& server, const std::string& room_id, const std::string& path) {
     std::string base = server;
     while (!base.empty() && base.back() == '/') base.pop_back();
     if (base.rfind("https://", 0) == 0) {
@@ -19,14 +19,14 @@ std::string RoomUrl(const std::string& server, const std::string& room_id) {
     } else if (base.rfind("wss://", 0) != 0 && base.rfind("ws://", 0) != 0) {
         base = "wss://" + base;
     }
-    return base + "/room/" + room_id;
+    return base + "/" + path + "/" + room_id;
 }
 
 Link::Link() = default;
 
 Link::~Link() { Stop(); }
 
-bool Link::Start(const std::string& server, const std::string& name, const std::string& password) {
+bool Link::Start(const std::string& server, const std::string& name, const std::string& password, const std::string& path) {
     Stop();
     if (server.empty() || name.empty()) return false;
     secret_ = Derive(name, password);
@@ -38,7 +38,7 @@ bool Link::Start(const std::string& server, const std::string& name, const std::
         member.push_back(digits[byte >> 4]);
         member.push_back(digits[byte & 15]);
     }
-    url_ = RoomUrl(server, secret_.room_id) + "/" + member;
+    url_ = RoomUrl(server, secret_.room_id, path) + "/" + member;
     stop_ = false;
     thread_ = std::thread([this] { Run(); });
     return true;
@@ -75,6 +75,20 @@ bool Link::Send(int target, const std::uint8_t* data, std::size_t size) {
         socket = socket_;
     }
     return socket && socket->Send(sealed.data(), sealed.size(), true);
+}
+
+bool Link::SendLossy(int target, const std::uint8_t* data, std::size_t size, std::size_t most_queued) {
+    const int slot = slot_.load();
+    if (!connected_ || !slot || target == slot || target < 0 || target > 255) return false;
+    auto sealed = Seal(secret_.key, static_cast<std::uint8_t>(slot), data, size);
+    if (sealed.empty()) return false;
+    sealed.insert(sealed.begin(), static_cast<std::uint8_t>(target));
+    std::shared_ptr<WebSocket> socket;
+    {
+        std::lock_guard lock(socket_mutex_);
+        socket = socket_;
+    }
+    return socket && socket->SendLossy(sealed.data(), sealed.size(), most_queued);
 }
 
 void Link::SetHost(bool host) {

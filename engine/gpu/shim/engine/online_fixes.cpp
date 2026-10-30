@@ -356,6 +356,10 @@ constexpr std::uint8_t kEmevdDispatchEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x53, 0x
 constexpr std::int32_t kLampEvent = 7200;
 std::atomic<int> g_role{-1};
 std::atomic<std::uint32_t> g_lamp_talk{0};
+std::atomic<std::int64_t> g_own_lamp_ms{0};
+std::atomic<std::uint32_t> g_solo_travel{0};
+constexpr int kGuestHpEffect = 9006;
+constexpr std::int64_t kOwnLampMs = 120000;
 std::atomic<bool> g_solo_lamp{false};
 std::atomic<bool> g_wall_kept_down{false};
 
@@ -754,11 +758,34 @@ void RebuildRemote(std::uint64_t world, std::uint64_t chr, const std::string& wh
     }
 }
 
+std::int64_t SteadyNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool LampsKeepWorld() {
+    static const bool keep = [] {
+        const char* v = std::getenv("BB_GUEST_LAMP_MOVES_HOST");
+        return !(v && std::strcmp(v, "1") == 0);
+    }();
+    return keep;
+}
+
 std::int64_t __attribute__((sysv_abi)) OnLampWarp(std::uint64_t, const std::uint64_t* saved) {
     if (g_follow.replaying) return 0;
-    const bool hosting = Role() == kRoleHost;
-    if (!hosting && !(g_lead.on && g_lead.dream)) return 0;
+    const int role = Role();
+    const bool hosting = role == kRoleHost;
     const std::uint32_t lamp = static_cast<std::uint32_t>(saved[5]);
+    if (LampsKeepWorld() && role == kRoleClient && lamp / 100000 != kDungeonArea) {
+        g_solo_travel.store(lamp, std::memory_order_relaxed);
+        const_cast<std::uint64_t*>(saved)[-1] = 0;
+        return 1;
+    }
+    if (LampsKeepWorld() && hosting && SteadyNowMs() - g_own_lamp_ms.load(std::memory_order_relaxed) > kOwnLampMs) {
+        Say("seamless: a lamp travel this host did not choose (a guest's lamp) was left out: the host's world stays put");
+        const_cast<std::uint64_t*>(saved)[-1] = 0;
+        return 1;
+    }
+    if (!hosting && !(g_lead.on && g_lead.dream)) return 0;
     const int expected = hosting ? static_cast<int>(InWorld().size()) : g_lead.expected;
     BbRoom::SendTravel(lamp);
     g_lead = {};
@@ -825,12 +852,38 @@ bool Settled(std::chrono::steady_clock::time_point& since, std::chrono::steady_c
     return now - since >= kSettle;
 }
 
+void SoloTravelTick(int role, std::chrono::steady_clock::time_point now) {
+    static std::uint32_t lamp = 0;
+    static std::chrono::steady_clock::time_point asked, settled;
+    if (const std::uint32_t chosen = g_solo_travel.exchange(0, std::memory_order_relaxed)) {
+        lamp = chosen;
+        asked = now;
+        Say("seamless: a guest's lamp to %u: leaving the host's world first, then travelling there alone", lamp);
+        if (!BbRoom::LeaveParty()) Say("seamless: the host did not answer the leave (an older beta?); use Return to your own world");
+    }
+    if (!lamp) return;
+    if (now - asked > std::chrono::minutes(2)) {
+        Say("seamless: the guest's lamp travel to %u gave up: still in the host's world", lamp);
+        lamp = 0;
+        return;
+    }
+    if (role == kRoleClient || !Settled(settled, now)) return;
+    Say("seamless: back home: travelling to lamp %u", lamp);
+    g_follow.replaying = true;
+    Call(Fn(kLampWarp), lamp);
+    g_follow.replaying = false;
+    lamp = 0;
+}
+
 void TravelTick() {
     if (!g_lamp_travel.load()) return;
     const auto now = std::chrono::steady_clock::now();
     const int role = Role();
+    static std::chrono::steady_clock::time_point last_client;
+    if (role == kRoleClient) last_client = now;
+    SoloTravelTick(role, now);
     std::uint32_t lamp = 0;
-    const bool following = role == kRoleClient || g_follow.replayed;
+    const bool following = role == kRoleClient || g_follow.replayed || now - last_client < std::chrono::seconds(60);
     if (following && !Loading() && LocalPlayer() && BbRoom::TakeTravel(lamp)) {
         if (lamp / 100000 == kDungeonArea) {
             Say("seamless: the host went to a chalice dungeon's lamp %u: this hunter is summoned into it instead", lamp);
@@ -914,6 +967,7 @@ std::int64_t __attribute__((sysv_abi)) OnTalkTest(std::uint64_t, const std::uint
     *reinterpret_cast<std::int32_t*>(result) = 0;
     *reinterpret_cast<std::int32_t*>(result + 8) = 2;
     g_lamp_talk.store(talk, std::memory_order_relaxed);
+    if (role == kRoleHost) g_own_lamp_ms.store(SteadyNowMs(), std::memory_order_relaxed);
     const_cast<std::uint64_t*>(saved)[-1] = result;
     return 1;
 }
@@ -1771,6 +1825,19 @@ void LogOwnState(int role) {
 
 std::atomic<bool> g_go_to_host{false};
 
+void GuestStatsTick(int role) {
+    static const bool keep = [] {
+        const char* v = std::getenv("BB_GUEST_PHANTOM_HP");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    static int told = 0;
+    if (keep || role != kRoleClient || Loading()) return;
+    const std::uint64_t local = LocalPlayer();
+    if (!local || !EffectNode(local, kGuestHpEffect)) return;
+    if (RemoveEffect(local, kGuestHpEffect) && told++ < 3)
+        Say("seamless: the guest's 70%% HP effect (9006) removed: this hunter keeps its own stats in the host's world");
+}
+
 void BringTick(int role) {
     const bool asked = g_go_to_host.exchange(false);
     if (!BbRoom::TakeBring() && !asked) return;
@@ -1843,6 +1910,7 @@ void Tick() {
     SummonTick(role);
     LogOwnState(role);
     BringTick(role);
+    GuestStatsTick(role);
     if (g_death_rules.load()) PendingTick();
     TravelTick();
     LampNotes();
