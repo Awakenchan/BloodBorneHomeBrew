@@ -118,10 +118,13 @@
             new("effect_ssr", L.T("Screen-space reflections"), false, L.T("Not in the original game")),
             new("effect_contact_shadows", L.T("Contact shadows"), true, L.T("Screen-space shadows that sharpen shadow detail at object bases, applied live")),
             new("effect_pcss", L.T("Soft shadows (PCSS)"), false, L.T("NVIDIA percentage-closer soft shadows: shadows soften with distance from the caster, applied live")),
+            new("effect_point_shadows", L.T("Point light shadows"), true, L.T("Screen-space shadows from lamps and other point lights, applied live")),
             new("skip_intro", L.T("Skip intro videos"), false),
             new("debug_camera", L.T("Free camera"), false, L.T("Toggle with Cross + L3 / Space + Z")),
             new("debug_menu", L.T("Debug menu"), false,
                 L.T("Left touchpad / Tab. Needs the adhoc folder from Nexus mod #253 (adhoc/font) in the game's dvdroot_ps4 or as a mod; without it the patch is not applied")),
+            new("effect_volumetric_light", L.T("Volumetric lighting (prototype)"), true,
+                L.T("Shadowed directional light shafts; preserves the game's fog, applied live")),
         };
 
         public static readonly Choice[] CameraTuning =

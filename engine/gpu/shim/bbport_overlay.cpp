@@ -569,6 +569,17 @@ void PictureSection() {
         moved |= vignette != s.graphics_vignette;
     }
     slider("Ambient occlusion strength", "Сила затенения (AO)", s.graphics_ao_strength, 0.0f, 1.0f);
+    if (const char* label = Item("Volumetric fog intensity", "Интенсивность объёмного тумана")) {
+        Slider(label, s.graphics_volumetric_intensity, 0.0f, 3.0f, "%.2fx",
+               ImGuiSliderFlags_AlwaysClamp);
+        Hint(BbSettings::MenuText(
+            "Live multiplier for added volumetric scattering: 0 is off, 1 is the default, "
+            "3 is triple intensity. Requires Volumetric lighting. Does not change density, "
+            "range, surface lighting or the game's original fog; independent of Picture tuning.",
+            "Множитель объёмного рассеяния: 0 — выкл., 1 — по умолчанию, 3 — тройная "
+            "интенсивность. Требует включённого объёмного освещения. Не меняет плотность, "
+            "дальность, освещение поверхностей и исходный туман игры; не зависит от настройки изображения."));
+    }
     slider("Indirect lighting strength", "Сила непрямого освещения (GI)", s.graphics_gi_strength, 0.0f, 12.0f);
     slider("Shadow distance", "Дальность теней", s.graphics_shadow_scale, 0.5f, 4.0f);
     if (moved && !s.graphics_controls) {
@@ -585,6 +596,7 @@ void PictureSection() {
             Store(s.graphics_vignette, true, true);
             Store(s.graphics_ao_strength, 1.0f, true);
             Store(s.graphics_gi_strength, 6.0f, true);
+            Store(s.graphics_volumetric_intensity, 1.0f, true);
             Store(s.graphics_shadow_scale, 1.0f, true);
         }
     }
@@ -1692,7 +1704,8 @@ void Menu() {
         BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         restart |= e != BbSettings::EffectGi && e != BbSettings::EffectContactShadows &&
-                   e != BbSettings::EffectPcss &&
+                   e != BbSettings::EffectPcss && e != BbSettings::EffectPointShadows &&
+                   e != BbSettings::EffectVolumetricLight &&
                    s.effects[e] != s.startup_effects[e];
     }
     restart |= Vulkan::OptiScaler::Detect().loaded &&

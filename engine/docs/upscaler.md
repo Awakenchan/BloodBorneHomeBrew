@@ -92,7 +92,7 @@ sampled textures, and the first 1 KiB of bound constants for small passes and fi
 | G-buffer | 6 targets 1920x1080 (RGBA8 x3, sRGB albedo, B10G11R11, RGBA16F) + D32S8 depth |
 | lighting | light volumes into two B10G11R11 targets |
 | scene color | RGBA16F 1920x1080, also forward/transparent draws and effects |
-| volumetric fog | compute, reads linear depth (R32F 1920x1080) and composites into scene color |
+| authored fog | scene-combine pixel shader `32e47788`: depth-based exponential distance and height fog using 96-byte parameter records; additional textured transparent effects follow |
 | half-res effects | RGBA8 960x540 with half-res depth |
 | post | combine/bloom pyramid in RGBA16F / B10G11R11 |
 | tonemap | into RGBA8 1920x1080 (the UI target) |
@@ -100,6 +100,187 @@ sampled textures, and the first 1 KiB of bound constants for small passes and fi
 | UI | stencil-masked draws over the same RGBA8 target |
 
 There is no velocity buffer, also with the camera moving: motion vectors are computed.
+
+### Directional volumetric-lighting prototype
+
+`effect_volumetric_light` adds a separate, live-toggled scattering layer without
+replacing or scaling the authored fog. After shadow resolve `f55643de`, a half-resolution
+compute pass uses that draw's inverse projection, cascade transforms, shadow map and
+shadow-distance fade. It marches 32 samples toward visible opaque surfaces, up to 40 m,
+with four depth comparisons per sample. Sky rays also stop at 40 m; their direction is
+reconstructed from a finite projected point, not the potentially infinite far plane.
+The pass snapshots full-resolution opaque depth into an owned R32F image. At the first
+`ccbf44a6` HDR post copy, after the authored fog, sky and transparent draws, a depth-aware
+upsample adds scattering to HDR RGB, preserving alpha. Sky and surface samples never mix.
+`32e47788` identifies the HDR scene; its saved image ID is UID-checked at composite and
+cleared on the next G-buffer. Guest buffers and sampled guest views are consumed immediately
+after their source draws, not retained for the late composite. No upscaler or camera-motion
+tracking is required.
+
+The in-game overlay's Picture section has a **Volumetric fog intensity** slider
+beside ambient occlusion strength. It applies live from 0 to 3 times the calibrated
+scattering strength, with 1 preserving the default appearance and 0 adding no
+scattering. It leaves density, range, tint, celestial phase and the game's original
+fog unchanged. Both half-resolution integration and thin-surface repair use the
+same multiplier. It requires the volumetric-lighting effect, not Picture tuning.
+The value is saved as `graphics_volumetric_intensity` in `lantern.ini`; resetting
+the Picture section restores 1. The multiplier also scales `BB_VOLUMETRIC_STRENGTH`
+when that diagnostic environment override is set.
+
+Thin depth-tested surfaces can be absent from all four half-resolution bilateral
+samples. A full-resolution repair pass uses the same sample weights and raymarches
+only pixels whose total weight is below `1e-5`, rather than leaving those pixels
+without scattering. It runs immediately after integration using the same depth and
+shadow inputs. Its owned RGBA16F output receives the shared atmosphere tint and celestial
+phase correction before the late composite. Supported half-resolution samples retain
+their existing result. This targets depth-represented cutouts such as grass and leaves;
+it does not resolve separate alpha-blended layers that do not write opaque depth.
+The repair alone partially improved the reported foliage gaps. Sharing the atmosphere
+tint instead of selecting it from each receiving surface's LightSet then completely
+resolved the remaining mismatch in the user's test scene. Performance impact has not
+been measured separately.
+
+After directional lighting `d92266b9`, a tint pass reads its resolved 288-byte lighting
+records. The first populated primary record supplies a shared atmosphere tint for
+geometry, repaired cutouts and sky; the receiving surface's material/LightSet no longer
+selects the fog colour. Words 16-18 are the primary directional diffuse RGB, used directly
+by the original shader.
+These are already resolved lighting values, so no additional gamma conversion or alpha
+multiplication is applied. The fog strength is calibrated against unit-white scattering,
+not the HDR surface radiance stored in these records. RGB is divided by
+`max(1, max(R, G, B))`: sub-unit lights are unchanged and brighter lights retain their
+hue without amplifying the scattering above its calibrated strength. This prevents
+high-intensity backdrop/material lighting records from turning distant buildings into
+bright silhouettes. The ray length still saturates at 40 m; distant surfaces do not
+accumulate a longer column than the sky.
+Scene-wide words 76-78 instead tint shadowed
+lighting and are not the primary diffuse colour. The atmosphere anchor comes from the
+current lighting table without parsing GPARAM files or hard-coding map names.
+This prototype uses the same first-populated-record rule previously used for sky,
+shared per workgroup rather than repeated per pixel.
+It does not select a light from visible materials: screen-centre/grid selection caused
+whole-sky colour and brightness jumps when panning across different lighting records.
+For an unchanged table, sky tint is now independent of camera orientation, screen contents
+and geometry/sky coverage. Surface LightSet differences cannot create tint-shaped holes
+in the added scattering. This is still a table-defined approximation; runtime record
+indices have not been proven to map directly to GPARAM IDs, so it is not guaranteed to
+select file ID 0.
+
+This prototype remains directional scattering only: no point lights,
+additional extinction, animated density, or temporal history. Its
+shadow visibility comes from the shadow transforms. The phase direction also defaults
+to those transforms, with the verified Central daytime celestial override described below.
+The cascade rows are stored in ordinary U/V/depth/divisor order: divide row 2 by
+row 3, matching the original resolve shader. Swapping those last rows produces
+reciprocal shadow depths above 1 and rejects valid scattering samples.
+It fades out with the game's shadow coverage rather than assuming unshadowed air outside
+the map. FogBank colours/density are not mixed into this layer; the original fog keeps its
+own 96-byte records and distance/height blends. The added scattering remains an artistic
+approximation; it can brighten interiors where
+the directional shadow map lacks suitable occluders. Fixed spatial jitter and half-resolution
+integration can show grain, and non-depth-writing transparent surfaces are not volume
+termination surfaces.
+
+### Central Yharnam daytime celestial phase prototype
+
+The daytime prototype aligns angular scattering brightness with verified sun geometry.
+It does not rotate shadow visibility or change tint, density, strength, range or the
+game's original fog. Integration saves its inverse projection and original phase
+direction in an owned 112-byte GPU buffer, resetting the same-frame match count.
+After a candidate sky-dome draw, a single compute invocation fingerprints all 393 dome
+vertex positions (word-wise FNV-1a, `0xf7004131`) and checks the centroid against the
+daytime asset. It also checks every vertex's packed transform index is zero. Shader hashes and
+index count are only a broad prefilter, never sufficient identification. Vertex data
+comes from the actual GPU-bound streams, including their stride and aligned-offset
+adjustments; the potentially stale CPU backing is not used for identification.
+
+On a match, the shader verifies the actual dome palette entry selected by model
+word 20 is identity. The daytime dome and disk are distinct nodes with baked world-space
+vertices; nonidentity placement is not assumed to transfer between them. The shader
+uses the verified daytime disk centre (-67.5080062, 99.7654301, 577.6338876), subtracts
+the current scene camera, and uses the scene's world-to-view rotation.
+Guest vertex/model/scene buffers are consumed immediately
+after the draw. Only the resulting direction is kept in owned storage for the late
+composite; no guest descriptors are retained across draws or frames. Normal rendering
+uses no readback, CPU/GPU wait or previous-frame celestial history.
+
+At composite, each half-resolution fog sample is multiplied by the ratio of celestial
+phase to its original shadow-direction phase, before bilateral upsampling. This replaces
+the phase, rather than adding another light or rotating the shadow-map coordinates.
+Exactly one valid geometry match is required; absent, unrecognized, invalid or duplicate
+matches retain the original phase. More than four eligible draw attempts also fall back.
+CPU-side unsupported buffers and absent/excessive candidates produce bounded log messages;
+GPU fingerprint rejection keeps the documented shadow fallback without claiming detection.
+This path supports the 1,824-index, single-instance, zero-base-vertex daytime dome
+draw only. Unlike the culled disk, this surrounding geometry remains drawn when
+facing away from the sun, identifying the active sky afresh each frame. No cached sun,
+timeout, camera-motion threshold or GPARAM-colour heuristic is used. Evening, night,
+red moon and other maps do not match its geometry. Their dome position fingerprints
+are distinct (`0x6d352c6f`, `0x070d76da`, `0xa26549c9` for the other Central variants).
+Other vertex formats, placements and LODs are not
+validated for automatic alignment and retain shadow phase. There is no GPARAM identity
+mapping or per-variant override UI.
+
+Central Yharnam's `900000`, `900010`, `900020` and `900030` sky models each have a separate
+1,986-vertex sun/moon mesh (24-byte vertices; 11,904/7,140/2,376 indices by LOD). Their
+model-space centres differ between day, evening, night and red moon. The normal texture
+is `m24_00_moon_a`; the red-moon model instead uses `m24_00_moon_red_a`. Neither a model
+centre alone nor the shared `b28f5a56`/`dda49e89` shader pair establishes world direction.
+
+The temporary celestial GPU-readback and vertex-dump hooks used for the captures
+below have been removed, including their explicit GPU waits and diagnostic buffer
+accessor. The runtime geometry fingerprint remains necessary for stable celestial
+alignment; it is rendering logic, not tracing. Existing opt-in engine diagnostics
+remain available but are not enabled for normal launches.
+
+The Central Yharnam research capture `frame_1793364982` contains one candidate
+11,904-index draw sampling a 1024x1024 texture. Its GPU transform buffer starts with
+identity rows, whereas its CPU backing dump is all zero. The same snapshot recovers
+the camera at approximately (-194.159, -27.791, 64.352). Under that identity transform,
+the day and evening model centres project to normalized image coordinates
+(0.6070, 0.3904) and (0.6016, 0.3292), respectively (image Y downward). The two night
+centres project behind this camera. Fitting the visible rim in the corresponding
+2000x1125 screenshot gives a centre of about (1215.1, 437.9); the daytime model predicts
+(1213.9, 439.2), within 1.8 pixels, whereas the evening prediction is about 69 pixels
+away. This supports the daytime model for that view. The existing scene shadow vector
+has about 37.5 degrees elevation versus 13.6 degrees for the daytime centre ray,
+a direction difference of about 25 degrees.
+
+A second, rotated-view capture (`frame_1793365413`) still reads identity model rows.
+Its camera is approximately (-194.984, -27.807, 64.526), and the daytime centre now
+projects to normalized image coordinates (0.4461, 0.3985). Its matching screenshot
+has a visible rim centre of about (890.6, 445.3) at 2000x1125, versus the predicted
+(892.2, 448.3), a difference of 3.4 pixels. Together these views support recovering the
+daytime sun direction from the authored geometry and actual draw transform across
+camera rotation. They do not yet validate the other sky variants or a general runtime
+mesh-identification method. No celestial direction is wired into the rendering effect
+at the time of those two research captures. Aligning the scattering phase does not rotate shadow-map
+occlusion or make its shafts physically consistent with a different light direction.
+
+Runtime capture `frame_1793365917` verifies the implemented path: the owned buffer
+contains integer match count 1 and celestial validity 1. Its sun view direction is
+approximately (0.129166, 0.015237, 0.991506), agreeing with independent reconstruction
+from the captured camera and model centroid within 0.000002 per component. The
+shadow direction remains approximately (-0.006951, 0.418095, 0.908377). The corrected
+phase is about 25 degrees away from the original, while integration still uses the
+original shadow map. The original disk-driven version visibly switched to fallback
+when the game culled the off-screen disk; the dome-driven version replaces that
+visibility-dependent identification.
+
+Runtime capture `frame_1793366410` verifies the dome version with the disk visible:
+one valid dome match, identity palette, view direction (0.141729, 0.064607, 0.987795).
+Capture `frame_1793366453` has no 11,904-index sun draw at all, but still has the
+1,824-index dome draw and exactly one valid match. Its recovered direction is
+(0.115818, 0.297297, -0.947734), correctly behind the camera. Both agree with independent
+reconstruction from the current scene constants within 0.000003 per component.
+This validates off-screen operation without retaining any previous-frame source.
+
+Environment overrides (read at startup):
+`BB_VOLUMETRIC_LIGHT=0`, `BB_VOLUMETRIC_STRENGTH` (default 0.08, range 0..1),
+`BB_VOLUMETRIC_RANGE` (40 m, 1..100), `BB_VOLUMETRIC_DENSITY` (0.025, 0.001..0.2),
+`BB_VOLUMETRIC_ANISOTROPY` (0.4, 0..0.8), and `BB_VOLUMETRIC_STEPS` (32, 8..96).
+The toggle is available in the overlay and launcher; the game's custom options menu
+does not yet have a dedicated row.
 
 ## Scene constants (864 bytes, bound by most passes)
 

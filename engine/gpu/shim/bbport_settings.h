@@ -50,9 +50,11 @@ inline constexpr Effect Effects[] = {
     {"effect_ssr", "Screen-space reflections (not in original game)", "Отражения SSR (не было в игре)", false},
     {"effect_contact_shadows", "Contact shadows (screen-space)", "Контактные тени (экранные)", true},
     {"effect_pcss", "Soft shadows (PCSS)", "Мягкие тени (PCSS)", false},
+    {"effect_point_shadows", "Point light shadows (screen-space)", "Тени от точечных источников (экранные)", true},
     {"skip_intro", "Skip startup intros", "Пропуск заставок при запуске", false},
     {"debug_camera", "Free camera (Cross + L3)", "Свободная камера (Cross + L3)", false},
     {"debug_menu", "Debug menu (requires font files)", "Debug menu (нужны файлы шрифтов)", false},
+    {"effect_volumetric_light", "Volumetric lighting (prototype)", "Volumetric lighting (prototype)", true},
 };
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
 /// Indirect lighting: applied live by the renderer, no restart.
@@ -61,6 +63,10 @@ inline constexpr int EffectGi = 5;
 inline constexpr int EffectContactShadows = 8;
 /// PCSS soft shadows: applied live by the renderer, no restart.
 inline constexpr int EffectPcss = 9;
+/// Point light shadows: applied live by the renderer, no restart.
+inline constexpr int EffectPointShadows = 10;
+/// Directional volumetric scattering: applied live, separate from the game's fog.
+inline constexpr int EffectVolumetricLight = 14;
 inline constexpr int OutputWidths[] = {1280,1600,1920,2560,3840,2560,3440,3840,3840,5120,5120,7680,0,0};
 inline constexpr int OutputHeights[] = {720,900,1080,1440,2160,1080,1440,1600,1080,1440,2160,2160,0,0};
 inline constexpr int OutputCount = 14;
@@ -158,6 +164,7 @@ struct Values {
     std::atomic<bool> change_appearance{false}, rebirth{false};
     std::atomic<bool> graphics_controls{false}, graphics_vignette{true};
     std::atomic<float> graphics_ao_strength{1},graphics_gi_strength{6},graphics_shadow_scale{1},graphics_bloom{1},graphics_saturation{1};
+    std::atomic<float> graphics_volumetric_intensity{1};
     std::atomic<float> graphics_fog{1},graphics_brightness{1},graphics_contrast{1},graphics_hue{0};
     std::atomic<float> camera_fov_scale{1.0f}, camera_distance_scale{1.0f}, camera_height_scale{1.0f};
     std::atomic<int> model_lod{0};

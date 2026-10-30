@@ -87,6 +87,10 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
                                                  *scene_targets, *camera_motion);
     contact_shadow = std::make_unique<ContactShadow>(instance, scheduler, texture_cache, runtime,
                                                      *camera_motion);
+    point_shadow = std::make_unique<PointShadow>(instance, scheduler, texture_cache, runtime,
+                                                 *camera_motion);
+    volumetric_light = std::make_unique<VolumetricLight>(instance, scheduler, texture_cache,
+                                                       runtime, *scene_targets);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets, *hdr_native);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -604,6 +608,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         ssr_temporal->Flush(upscaler->Jitter());
     }
     contact_shadow->Flush();
+    point_shadow->Flush();
     if (regs.color_control.degamma_enable) {
         LOG_WARNING(Render_Vulkan, "Color buffers require gamma correction");
     }
@@ -647,6 +652,9 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     }
     // bbport: the G-buffer pass (5+ color targets) holds the scene depth, and its constants the
     // main camera (shadow passes bind the same layout with the light's camera).
+    if (std::popcount(key.mrt_mask) >= 5 && db_desc.first) {
+        volumetric_light->Reset();
+    }
     gbuffer_draw = camera_motion->Enabled() && std::popcount(key.mrt_mask) >= 5 && db_desc.first;
     if (gbuffer_draw) {
         const auto& vp = regs.viewports[0];
@@ -1957,6 +1965,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
 
     PrepareRenderState(pipeline);
     NotifyUiDraw(pipeline);
+    // The first HDR post copy follows sky and transparent scene draws. Composite before
+    // binding its sampled resources so BindResources restores the game's expected layouts.
+    if (const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        ps && ps->pgm_hash == 0xccbf44a6) {
+        volumetric_light->Composite();
+    }
     const PreparedDraw* draw_prepared = bind_prepared;
     // bbport: vertex and index buffers are resolved while the helper binds textures (their
     // commands are recorded after BeginRendering, as before).
@@ -2130,6 +2144,19 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
              .constants_offset_word = push_data.buf_offsets[0],
              .frame_index = shadow_frame++});
     }
+    if (const auto& key = pipeline->GetGraphicsKey();
+        (key.mrt_mask & 3) == 3 && cb_descs[0].first && cb_descs[1].first &&
+        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x9f9ef267 &&
+        buffer_infos.size() >= 2 && buffer_infos[0].buffer && buffer_infos[1].buffer) {
+        point_shadow->OnLightDraw(cb_descs[0].first, cb_descs[1].first,
+                                  {.constants = buffer_infos[0].buffer,
+                                   .constants_offset = buffer_infos[0].offset,
+                                   .constants_range = buffer_infos[0].range,
+                                   .lights = buffer_infos[1].buffer,
+                                   .lights_offset = buffer_infos[1].offset,
+                                   .lights_range = buffer_infos[1].range,
+                                   .offsets = push_data.buf_offsets[0]});
+    }
     if (pipeline->GetGraphicsKey().mrt_mask &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x3fe9e964) {
         // The composite reads the scene-size reflection when this frame's trace made one.
@@ -2206,6 +2233,72 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             cmdbuf.endQuery(query.pool, query.index);
         }
     });
+    // Run after the actual draw, while its descriptors still identify this camera and pass.
+    if (ps_info && ps_info->pgm_hash == 0xf55643de && cb_descs[0].first &&
+        buffer_infos.size() >= 2 && image_infos.size() >= 2) {
+        volumetric_light->Integrate(
+            cb_descs[0].first, image_infos[0],
+            {.constants = buffer_infos[0].buffer,
+             .constants_offset = buffer_infos[0].offset,
+             .constants_range = buffer_infos[0].range,
+             .uniforms = buffer_infos[1].buffer,
+             .uniforms_offset = buffer_infos[1].offset,
+             .uniforms_range = buffer_infos[1].range,
+             .shadow_map = image_infos[1].imageView,
+             .shadow_layout = image_infos[1].imageLayout,
+             .constants_offset_word = push_data.buf_offsets[0]});
+    }
+    if (ps_info && ps_info->pgm_hash == 0xd92266b9 &&
+        !buffer_infos.empty() && !image_infos.empty()) {
+        volumetric_light->Tint(buffer_infos[0], push_data.buf_offsets[0] & 255u, image_infos[0]);
+    }
+    if (ps_info && ps_info->pgm_hash == 0xdda49e89 && vs_info.pgm_hash == 0xb28f5a56 &&
+        is_indexed && num_indices == 1824 && num_instances == 1 && first_vertex == 0) {
+        const auto& v = vertex_binds;
+        const auto position = std::ranges::find(v.attributes, 0u,
+            &vk::VertexInputAttributeDescription2EXT::location);
+        const auto normal = std::ranges::find(v.attributes, 1u,
+            &vk::VertexInputAttributeDescription2EXT::location);
+        u32 first_buffer = 0;
+        for (const auto* stage : pipeline->GetStages()) {
+            if (stage == &vs_info) break;
+            if (stage) first_buffer += u32(stage->buffers.size());
+        }
+        if (position != v.attributes.end() && normal != v.attributes.end() &&
+            position->format == vk::Format::eR32G32B32Sfloat &&
+            vs_info.buffers.size() >= 3 && !vs_info.buffers[0].IsSpecial() &&
+            !vs_info.buffers[1].IsSpecial() && !vs_info.buffers[2].IsSpecial() &&
+            first_buffer + 3 <= buffer_infos.size()) {
+            const auto pi = size_t(position - v.attributes.begin());
+            const auto ni = size_t(normal - v.attributes.begin());
+            const bool packed = normal->format == vk::Format::eR8G8B8A8Uint ||
+                                normal->format == vk::Format::eR8G8B8A8Sint;
+            const bool wide = normal->format == vk::Format::eR32G32B32A32Uint ||
+                              normal->format == vk::Format::eR32G32B32A32Sint;
+            const u64 position_bytes = 392 * v.host_strides[pi] + 12;
+            const u64 normal_bytes = 392 * v.host_strides[ni] + (packed ? 4 : 16);
+            if ((packed || wide) && v.host_strides[pi] >= 12 &&
+                v.host_strides[ni] >= (packed ? 4u : 16u) &&
+                v.host_sizes[pi] >= position_bytes && v.host_sizes[ni] >= normal_bytes) {
+                volumetric_light->Celestial({
+                    .positions = {v.host_buffers[pi], v.host_offsets[pi], position_bytes},
+                    .normals = {v.host_buffers[ni], v.host_offsets[ni], normal_bytes},
+                    .model = buffer_infos[first_buffer],
+                    .transforms = buffer_infos[first_buffer + 1],
+                    .scene = buffer_infos[first_buffer + 2],
+                    .vertex_stride = u32(v.host_strides[pi]),
+                    .normal_stride = u32(v.host_strides[ni]),
+                    .normal_word = packed ? 0u : 3u,
+                    .model_offset = push_data.buf_offsets[first_buffer],
+                    .transform_offset = push_data.buf_offsets[first_buffer + 1],
+                    .scene_offset = push_data.buf_offsets[first_buffer + 2],
+                });
+            }
+        }
+    }
+    if (ps_info && ps_info->pgm_hash == 0x32e47788 && cb_descs[0].first) {
+        volumetric_light->Scene(cb_descs[0].first);
+    }
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);

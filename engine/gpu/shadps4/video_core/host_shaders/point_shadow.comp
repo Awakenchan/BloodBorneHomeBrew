@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// bbport: screen-space shadows for point lights (vk_point_shadow.h). A point-light draw (shader
+// 9f9ef267: 11 lights, one full-screen additive quad into two B10G11R11 targets) has added its
+// lighting to the targets. `snap*` hold the targets from before the draw, so (cur - snap) is the
+// draw's light. Each pixel marches the scene depth toward every light of the draw; the visibility
+// (weighted by each light's contribution at the pixel) scales that added light.
+//
+// Constants (decoded from 9f9ef267): slot 0 words 0..15 map (ndc x, ndc y, depth, 1) to
+// homogeneous view space, word 48 is the light count. Slot 1 holds 16-word light records: view
+// position (0..2), inverse radius (3), colour (4..6).
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(scalar, set = 0, binding = 0) readonly buffer Cb { uint d[]; } cbuf;
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+layout(scalar, set = 0, binding = 2) readonly buffer Lb { uint d[]; } lbuf;
+layout(set = 0, binding = 3, r11f_g11f_b10f) uniform image2D cur0;
+layout(set = 0, binding = 4, r11f_g11f_b10f) uniform readonly image2D snap0;
+layout(set = 0, binding = 5, r11f_g11f_b10f) uniform image2D cur1;
+layout(set = 0, binding = 6, r11f_g11f_b10f) uniform readonly image2D snap1;
+
+layout(push_constant) uniform Constants {
+    uint buf_off;
+    uint frame_index;
+    vec2 size;
+    float length_m;
+    float thickness_m;
+    float strength;
+    float fade_start_m;
+    float fade_end_m;
+    uint debug;
+    uint steps;
+    float bias_m;
+};
+
+uint base;
+uint lbase;
+float cb(int i) { return uintBitsToFloat(cbuf.d[base + uint(i)]); }
+vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
+float lb(uint k, uint i) { return uintBitsToFloat(lbuf.d[lbase + k * 16u + i]); }
+
+float sceneDepth(vec2 uv) { return textureLod(depth_tex, uv, 0.0).x; }
+
+mat4 invMat;
+mat4 projMat;
+
+vec3 viewPosAt(vec2 uv, float depth) {
+    vec4 c = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    vec4 v = invMat * c;
+    return v.xyz / v.w;
+}
+
+float hash(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+// 1 = the light reaches P, 0 = occluded.
+float visibility(vec3 P, vec3 L, float jitter) {
+    vec3 to = L - P;
+    float dist = length(to);
+    float reach = min(dist - 0.25, length_m);
+    if (!(reach > 0.05)) {
+        return 1.0;
+    }
+    vec3 dir = to / dist;
+    float thick = thickness_m;
+    for (uint i = 0u; i < steps; ++i) {
+        float t = (float(i) + 0.5 + jitter) / float(steps);
+        t *= t; // dense near the surface
+        float s = 0.03 + t * reach;
+        vec3 Q = P + dir * s;
+        if (!(Q.z > 0.0)) {
+            break;
+        }
+        vec4 n4 = projMat * vec4(Q, 1.0);
+        if (!(n4.w != 0.0)) {
+            break;
+        }
+        vec3 ndc = n4.xyz / n4.w;
+        vec2 uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+            break;
+        }
+        float sd = sceneDepth(uv);
+        if (!(sd < 1.0) || !(sd > 0.0)) {
+            continue;
+        }
+        float zs = viewPosAt(uv, sd).z;
+        float diff = Q.z - zs;
+        float bias = bias_m + 0.006 * P.z + 0.03 * s;
+        if (diff > bias && diff < thick) {
+            return 0.0;
+        }
+    }
+    return 1.0;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(size.x) || px.y >= int(size.y)) {
+        return;
+    }
+    base = (buf_off & 0xffu) >> 2;
+    lbase = ((buf_off >> 8) & 0xffu) >> 2;
+    invMat = transpose(mat4(row(0), row(4), row(8), row(12)));
+    projMat = inverse(invMat);
+
+    vec2 uv0 = (vec2(px) + 0.5) / size;
+    float d0 = sceneDepth(uv0);
+    if (!(d0 < 1.0) || !(d0 > 0.0)) {
+        return;
+    }
+    vec3 P = viewPosAt(uv0, d0);
+    if (!(P.z > 0.0)) {
+        return;
+    }
+    float fade = 1.0 - smoothstep(fade_start_m, fade_end_m, P.z);
+    if (fade <= 0.0 && debug == 0u) {
+        return;
+    }
+
+    uint raw_count = cbuf.d[base + 48u];
+    uint count = min(raw_count > 64u ? uint(uintBitsToFloat(raw_count) + 0.5) : raw_count, 16u);
+    float jitter = hash(uv0 * size + float(frame_index & 63u) * 7.13);
+    float wsum = 0.0;
+    float vsum = 0.0;
+    for (uint k = 0u; k < count; ++k) {
+        float inv_r = lb(k, 3u);
+        if (!(inv_r > 0.0)) {
+            continue;
+        }
+        vec3 L = vec3(lb(k, 0u), lb(k, 1u), lb(k, 2u));
+        float t = length(L - P) * inv_r;
+        if (t >= 1.0) {
+            continue;
+        }
+        vec3 col = vec3(lb(k, 4u), lb(k, 5u), lb(k, 6u));
+        float w = (1.0 - t * t);
+        w *= w * dot(col, vec3(0.299, 0.587, 0.114));
+        if (!(w > 1e-5)) {
+            continue;
+        }
+        wsum += w;
+        vsum += w * visibility(P, L, jitter);
+    }
+    if (!(wsum > 0.0)) {
+        return;
+    }
+    float v = vsum / wsum;
+    float k = strength * fade;
+    float scale = mix(1.0, v, k);
+    if (debug != 0u) {
+        scale = v;
+    }
+
+    vec3 s0 = imageLoad(snap0, px).rgb;
+    vec3 c0 = imageLoad(cur0, px).rgb;
+    imageStore(cur0, px, vec4(s0 + max(c0 - s0, vec3(0.0)) * scale, 1.0));
+    vec3 s1 = imageLoad(snap1, px).rgb;
+    vec3 c1 = imageLoad(cur1, px).rgb;
+    imageStore(cur1, px, vec4(s1 + max(c1 - s1, vec3(0.0)) * scale, 1.0));
+}
