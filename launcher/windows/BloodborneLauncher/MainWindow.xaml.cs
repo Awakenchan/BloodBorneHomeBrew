@@ -119,6 +119,8 @@ namespace BloodborneLauncher
                     _ = Dispatcher.BeginInvoke(() => SetupGuide.Open(firstRun: true), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                 else if (!ws.Settings.Bool("hardware_offered") && Prompt.SnapshotPath == null && Paths.IsPortDir(Paths.PortDir))
                     _ = Dispatcher.BeginInvoke(() => OfferBestSettings(firstRun: true), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                else if (ws.Settings.Bool("hardware_offered") && !ws.Settings.Bool("thanks_maximilian_dood") && Prompt.SnapshotPath == null)
+                    _ = Dispatcher.BeginInvoke(ShowThanks, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                 // Once, after updating from an older launcher (a new install starts on New): the
                 // newer engine or the one 0.9.33 ran, the player's choice. Nothing changes unasked.
                 else if (ws.Settings.Bool("hardware_offered") && !ws.Settings.Bool("engine_preset_asked") &&
@@ -227,6 +229,14 @@ namespace BloodborneLauncher
         /// <summary>Shows what would change to suit this PC, and applies it on Apply.</summary>
         /// <summary>Graphics › Engine preset, asked once: New or Legacy (0.9.33). Closed without a
         /// choice, it asks again at the next start.</summary>
+        private void ShowThanks()
+        {
+            var ws = Workspace.Current;
+            ws.Settings.Set("thanks_maximilian_dood", true);
+            ws.SaveSoon();
+            Prompt.Tell(L.T("Thank you, Maximilian Dood!"), L.T("Thank you to Maximilian Dood for covering Lantern Engine.") + "\n\n" + L.T("Maximilian Dood, I'd love to reach out. My Discord is @awakenkn."));
+        }
+
         private void AskTestedSettings()
         {
             var ws = Workspace.Current;

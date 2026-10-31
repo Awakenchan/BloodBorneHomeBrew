@@ -42,7 +42,8 @@ namespace BloodborneLauncher.Core
             All.Where(setting => Current(setting, ini, s) != setting.Tested).ToList();
 
         public static bool ShouldAsk(IniFile ini, LauncherSettings s) =>
-            Updater.CurrentBeta > 0 && s.Str(AskedKey) != Updater.CurrentLabel && Differences(ini, s).Count > 0;
+            Updater.CurrentBeta > 0 && s.Str(AskedKey) != Updater.CurrentLabel &&
+            s.Str(AskedKey) != Updater.Label(Updater.Current, Updater.CurrentBeta / 100 * 100) && Differences(ini, s).Count > 0;
 
         public static void MarkAsked(LauncherSettings s) => s.Set(AskedKey, Updater.CurrentLabel);
 
