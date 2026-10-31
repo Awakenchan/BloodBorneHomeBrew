@@ -10,6 +10,13 @@ on:
       - "engine/src/isa_*.h"
       - "engine/src/probe.c"
       - "engine/tools/isa-scan/**"
+      - "engine/tools/setup/**"
+      - "engine/build.sh"
+      - "engine/start/**"
+      - "engine/packaging/**"
+      - "engine/shell.nix"
+      - "engine/run.sh"
+      - "engine/.github/workflows/**"
       - "engine/tests/test_isa_emulate.c"
       - ".github/workflows/isa-compat.yml"
   pull_request:
@@ -65,7 +72,19 @@ jobs:
         with:
           msystem: CLANG64
           update: true
-          install: mingw-w64-clang-x86_64-clang
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-rust
+
+      - name: Build scanner with the MSYS2 CLANG64 Rust toolchain
+        shell: msys2 {0}
+        run: |
+          cargo --version
+          rustc -vV
+          cargo test --manifest-path engine/tools/isa-scan/Cargo.toml
+          cargo build --manifest-path engine/tools/isa-scan/Cargo.toml --release
+          test -f engine/tools/isa-scan/target/release/bb-isa-scan.exe
+          ldd engine/tools/isa-scan/target/release/bb-isa-scan.exe
 
       - name: Syntax-check Windows loader and compile ISA helpers
         shell: msys2 {0}
