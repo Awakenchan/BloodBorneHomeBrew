@@ -10,6 +10,9 @@
 #pragma once
 
 // MSVC's CRT provides this macro, but MinGW/Clang does not, including on Windows.
+#ifndef _countof
+#define _countof(array) (sizeof(array) / sizeof((array)[0]))
+#endif
 
 #if !defined(_WIN32)
 
@@ -20,10 +23,6 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
-
-#ifndef _countof
-#define _countof(array) (sizeof(array) / sizeof((array)[0]))
-#endif
 
 inline int wcscpy_s(wchar_t* destination, std::size_t destinationSize, const wchar_t* source)
 {
