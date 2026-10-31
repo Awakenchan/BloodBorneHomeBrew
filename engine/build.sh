@@ -47,12 +47,6 @@ if [[ -n $windows ]]; then
 else
     install -m755 tools/isa-scan/target/release/bb-isa-scan out/bb-isa-scan
 fi
-if [[ -n $windows ]]; then
-    while IFS= read -r dll; do
-        [[ ! -f $dll ]] || cp -f "$dll" out/
-    done < <(ldd out/bb-isa-scan.exe 2>/dev/null | awk '{print $3}' |
-             grep -E '^/[A-Za-z]/msys64/clang64/bin/.*\\.dll$|^/clang64/bin/.*\\.dll$' || true)
-fi
 # BB_JOBS=N: at most N compile and link-time optimization jobs (less memory, e.g. while the
 # game runs).
 # GPU library (shadPS4 video core + drivers), built by CMake into out/gpu/libbbgpu.so.
@@ -189,6 +183,19 @@ if [[ -n $windows ]] && [[ ! -f out/bb-start.exe || -n $(find start src/lantern.
         -municode -static start/*.cpp out/lantern.res -lz -lexpat -lbcrypt -o out/bb-start.exe
     echo "Built $PWD/out/bb-start.exe"
 fi
+# The game is launched outside MSYS2, so clang64/bin is not on its PATH.
+# Bundle the transitive CLANG64 runtime DLLs beside every Windows executable in out/
+# (notably libc++.dll, which bb-probe.exe needs through the statically linked GPU library).
+if [[ -n $windows ]]; then
+    for executable in out/bb-isa-scan.exe out/bb-probe.exe out/bb-gpu-capabilities.exe \
+                      out/bb-engine-assets.exe out/bb-ui-4k.exe out/bb-shader-lab.exe; do
+        [[ -f $executable ]] || continue
+        while IFS= read -r dll; do
+            [[ ! -f $dll ]] || cp -f "$dll" out/
+        done < <(ldd "$executable" 2>/dev/null | awk '$3 ~ /clang64\/bin\/.*[.]dll$/ {print $3}')
+    done
+fi
+
 if [[ ${1:-} == --test ]]; then
     test_link=()
     if [[ -n $windows ]]; then test_link=(-lws2_32 -lwinpthread -Wl,--disable-dynamicbase,--disable-high-entropy-va); fi
