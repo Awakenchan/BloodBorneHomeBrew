@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * Adapted from SpartanPort (https://github.com/FelipePrado0/SpartanPort).
  * Modified for Lantern Engine on 2026-10-31: loader and stubs handle MOVBE/BMI1/LZCNT only. */
+#include "isa_rewrite.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
