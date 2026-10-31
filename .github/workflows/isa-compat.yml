@@ -1,0 +1,57 @@
+name: ISA compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/sandy-bridge-isa
+    paths:
+      - "engine/src/isa_*.c"
+      - "engine/src/isa_*.h"
+      - "engine/src/probe.c"
+      - "engine/tools/isa-scan/**"
+      - "engine/tests/test_isa_emulate.c"
+      - ".github/workflows/isa-compat.yml"
+  pull_request:
+    paths:
+      - "engine/src/isa_*.c"
+      - "engine/src/isa_*.h"
+      - "engine/src/probe.c"
+      - "engine/tools/isa-scan/**"
+      - "engine/tests/test_isa_emulate.c"
+      - ".github/workflows/isa-compat.yml"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test standalone scanner
+        run: cargo test --manifest-path engine/tools/isa-scan/Cargo.toml
+      - name: Compile ISA loader and general-register-only emulator
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -Iengine/src \
+            -c engine/src/isa_rewrite.c -o "$RUNNER_TEMP/isa_rewrite.o"
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only -Iengine/src \
+            -c engine/src/isa_emulate.c -o "$RUNNER_TEMP/isa_emulate.o"
+      - name: Differentially test instruction semantics
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only -Iengine/src \
+            engine/src/isa_emulate.c engine/tests/test_isa_emulate.c \
+            -o "$RUNNER_TEMP/test-isa-emulate"
+          "$RUNNER_TEMP/test-isa-emulate"
+
+  windows-scanner:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test scanner and build Windows executable
+        shell: pwsh
+        run: |
+          cargo test --manifest-path engine/tools/isa-scan/Cargo.toml
+          cargo build --manifest-path engine/tools/isa-scan/Cargo.toml --release
+          if (!(Test-Path engine/tools/isa-scan/target/release/bb-isa-scan.exe)) {
+            throw "The Windows ISA scanner executable was not produced."
+          }
