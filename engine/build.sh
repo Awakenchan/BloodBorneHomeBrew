@@ -51,7 +51,8 @@ if [[ -n $windows ]]; then
     while IFS= read -r dll; do
         [[ ! -f $dll ]] || cp -f "$dll" out/
     done < <(ldd out/bb-isa-scan.exe 2>/dev/null | awk '{print $3}' |
-             grep -E '^/[A-Za-z]/msys64/clang64/bin/.*\.dll$|^/clang64/bin/.*\.dll
+             grep -E '^/[A-Za-z]/msys64/clang64/bin/.*\\.dll$|^/clang64/bin/.*\\.dll$' || true)
+fi
 # BB_JOBS=N: at most N compile and link-time optimization jobs (less memory, e.g. while the
 # game runs).
 # GPU library (shadPS4 video core + drivers), built by CMake into out/gpu/libbbgpu.so.
