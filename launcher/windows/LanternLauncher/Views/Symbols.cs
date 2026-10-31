@@ -155,6 +155,20 @@ namespace BloodborneLauncher.Views
         XboxController24 = 0xEEB9,
         ZoomIn24 = 0xF8C5,
         ZoomOut24 = 0xF8C7,
+        Password24 = 0xF59E,
+        PeopleTeam24 = 0xF5B9,
+        Crown24 = 0xF020F,
+        PlugConnected24 = 0xE99A,
+        Tag24 = 0xF77D,
+        PersonEdit24 = 0xE92F,
+        ArrowCounterclockwise24 = 0xF140,
+        Video24 = 0xF84D,
+        Checkmark24 = 0xF295,
+        Wand24 = 0xEE38,
+        ArrowLeft24 = 0xF15C,
+        Flag24 = 0xF40C,
+        Circle24 = 0xF2BC,
+        Info24 = 0xF4A4,
     }
 
     /// <summary>A Fluent icon: a glyph of the icon font, regular or filled, in the text's colour.</summary>
@@ -166,6 +180,14 @@ namespace BloodborneLauncher.Views
         /// <summary>The filled glyphs, where they differ from the regular one's codepoint.</summary>
         private static readonly Dictionary<SymbolRegular, int> FilledCodes = new()
         {
+        [SymbolRegular.Password24] = 0xF5A8,
+        [SymbolRegular.PeopleTeam24] = 0xF5C3,
+        [SymbolRegular.PlugConnected24] = 0xE9AC,
+        [SymbolRegular.Tag24] = 0xF795,
+        [SymbolRegular.PersonEdit24] = 0xE941,
+        [SymbolRegular.Video24] = 0xF865,
+        [SymbolRegular.Flag24] = 0xF40B,
+        [SymbolRegular.Info24] = 0xF4AB,
         [SymbolRegular.ArrowBidirectionalLeftRight24] = 0xF02B5,
         [SymbolRegular.ArrowSortDown24] = 0xF82A,
         [SymbolRegular.Blur24] = 0xE164,

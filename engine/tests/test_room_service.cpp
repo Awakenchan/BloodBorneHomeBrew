@@ -309,6 +309,8 @@ int Host(int game_port, int http_port) {
     dungeon.flags = {12900166u, 72900202u};
     for (int i = 0; i < 10; ++i) {
         BbRoom::SendTravel(2412951, {0x49, 0x4e, 0x46, 0x45});
+        BbRoom::SendStageTravel(0x18020000u, 2412345);
+        BbRoom::SendWorldFlags({1, 2, 3});
         std::vector<std::uint32_t> flags = {12411800u, 72410201u, 1062u | 0x80000000u};
         for (std::uint32_t id = 0; flags.size() < 3600; ++id) flags.push_back(12400000u + id);
         BbRoom::SendProgress(flags);
@@ -365,6 +367,18 @@ int Guest(int game_port, int http_port, bool early) {
             if (lamp != 2412951) return Fail("no travel from the host");
             if (world_flags.size() != 4 || world_flags[0] != 0x49) return Fail("no world flags with the travel");
             std::printf("guest: the host travels to lamp %u\n", lamp);
+            std::uint32_t stage_map = 0;
+            std::int32_t stage_point = -1;
+            for (int k = 0; k < 40 && !BbRoom::TakeStageTravel(stage_map, stage_point); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (stage_map != 0x18020000u || stage_point != 2412345) return Fail("no stage travel from the host");
+            std::vector<std::vector<std::uint8_t>> world_parts;
+            for (int k = 0; k < 40 && world_parts.empty(); ++k) {
+                world_parts = BbRoom::TakeWorldFlags();
+                if (world_parts.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            if (world_parts.empty() || world_parts[0] != std::vector<std::uint8_t>{1, 2, 3}) return Fail("no world flags from the host");
+            std::printf("guest: the host goes to map %08x, %zu world flag part(s)\n", stage_map, world_parts.size());
             std::vector<std::uint32_t> flags;
             for (int k = 0; k < 40 && flags.empty(); ++k) {
                 flags = BbRoom::TakeProgress();

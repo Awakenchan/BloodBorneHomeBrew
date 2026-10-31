@@ -33,5 +33,5 @@ keeping lantern.ini, user/, mods/ and logs/.
 DLSS: NVIDIA's DLSS runtime is in engine/out (libnvidia-ngx-dlss.so.*); it needs an RTX GPU and
 NVIDIA's own driver (libnvidia-ngx.so.1). DLSS Frame Generation is Windows only.
 
-Not on Linux yet: FSR 4 through AMD's Windows DLL and the native PC option pages; the in-game menu
-covers the settings.
+Windows only: FSR 4 through AMD's Windows DLL and DLSS Frame Generation (NVIDIA's Streamline has no
+Linux runtime). Everything else, seamless co-op included, is the same as on Windows.

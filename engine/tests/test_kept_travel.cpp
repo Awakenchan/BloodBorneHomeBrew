@@ -135,6 +135,36 @@ int main() {
     Tick(twice, true, false, true, false, 0);
     Check(!twice.LoadOver(), "a second load counts as loading");
 
+    Check(CanKeepMap(0x18010000u) && CanKeepMap(0x1c000000u), "a world map keeps the party");
+    Check(!CanKeepMap(0x15000000u) && !CanKeepMap(0x1d000000u) && !CanKeepMap(0), "the Dream, dungeons and no map don't");
+    for (const std::int32_t type : {1, 2, 12, 13}) Check(PhantomType(type), "a phantom type");
+    for (const std::int32_t type : {-1, 0, 3, 8, 11, 14}) Check(!PhantomType(type), "not a phantom type");
+    Check(WrongTypeForOwnWorld(4, true, 1, -1), "a saved phantom type loading its own world");
+    Check(WrongTypeForOwnWorld(0, true, 0, 1), "a saved pending phantom type at the first load");
+    Check(!WrongTypeForOwnWorld(0, true, 1, 0), "the game's own pending type already puts it right");
+    Check(!WrongTypeForOwnWorld(3, true, 1, -1), "a guest loading the host's world stays a phantom");
+    Check(!WrongTypeForOwnWorld(4, false, 1, -1), "a guest placed in the host's world stays a phantom");
+    Check(!WrongTypeForOwnWorld(0, true, 0, -1), "a normal hunter is left alone");
+    Check(!WrongTypeForOwnWorld(0, true, 8, -1), "a grey hunter is left alone");
+    Check(OwnWorldType(1) == 0 && OwnWorldType(-1) == 0 && OwnWorldType(0) == 0, "a bad home type becomes a normal hunter");
+    Check(OwnWorldType(8) == 8, "a grey home type is kept");
+
+    Check(HoldsHit(0x1000, 2, 0x138, 0x1000), "the first hit of a block");
+    Check(HoldsHit(0x1000, 2, 0x138, 0x1138), "the last hit of a block");
+    Check(!HoldsHit(0x1000, 2, 0x138, 0x1270), "one past the block's hits");
+    Check(!HoldsHit(0x1000, 2, 0x138, 0xec8), "before the block's hits");
+    Check(!HoldsHit(0x1000, 2, 0x138, 0x1001), "inside a hit, not at its start");
+    Check(!HoldsHit(0x1000, 0, 0x138, 0x1000), "a block with no hits");
+
+    Check(LampText(2402950) == 70002400 && LampText(2412951) == 70002411 && LampText(3302951) == 70003301, "a lamp's text is its map's, plus its number");
+    Check(LampText(2102959) == 70002109 && LampMapText(2102959) == 70002100, "a point with no text of its own falls back to its map");
+    Check(LampText(2100950) == LampMapText(2100950), "a low point is its map");
+    Check(StoryWarp(12405263) && StoryWarp(13200310) && StoryWarp(kSnatcherEvent), "scripted story warps are the host's own");
+    Check(!StoryWarp(7200) && !StoryWarp(12107000) && !StoryWarp(0), "lamp events stay behind the host's own choice");
+    Check(HoldForHost(true, false, false), "a guest waits for a host still loading");
+    Check(!HoldForHost(true, true, false), "the host is here");
+    Check(!HoldForHost(true, false, true) && !HoldForHost(false, false, false), "the wait ends at its limit or with the link");
+
     if (failures) return 1;
     std::printf("kept-travel-test: ok\n");
     return 0;

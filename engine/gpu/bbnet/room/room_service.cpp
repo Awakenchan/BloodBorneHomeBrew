@@ -50,7 +50,7 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12, kBring = 13, kVoice = 14, kBossLot = 15, kBossTrophy = 16, kPiece = 17, kPartyCall = 18, kTravelFlags = 19, kPing = 20, kPong = 21, kWarpAsk = 22, kWarpAnswer = 23, kLampAsk = 24, kLampAnswer = 25 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12, kBring = 13, kVoice = 14, kBossLot = 15, kBossTrophy = 16, kPiece = 17, kPartyCall = 18, kTravelFlags = 19, kPing = 20, kPong = 21, kWarpAsk = 22, kWarpAnswer = 23, kLampAsk = 24, kLampAnswer = 25, kWorldFlags = 26, kWorldAsk = 27, kStageTravel = 28 };
 constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4 + 4;
 constexpr std::size_t kBatchBytes = 16000;
 constexpr std::size_t kBundleBytes = 60000;
@@ -184,6 +184,11 @@ struct State {
     std::uint32_t travel = 0;
     Clock::time_point travel_at;
     std::vector<std::uint8_t> travel_flags;
+    std::uint32_t stage_map = 0;
+    std::int32_t stage_point = -1;
+    Clock::time_point stage_at;
+    std::vector<std::vector<std::uint8_t>> world_flags;
+    std::vector<int> world_asks;
     std::vector<std::uint32_t> progress;
     std::vector<std::int32_t> boss_lots;
     std::vector<std::int32_t> boss_trophies;
@@ -1038,9 +1043,36 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         std::uint32_t lamp = 0;
         std::memcpy(&lamp, data.data() + 1, 4);
         Log("the host travels to lamp %u: following", lamp);
+        AddPartyLine(PartyLineKind::HostTravels, {});
         std::lock_guard lock(S().vitals_mu);
         S().travel = lamp;
         S().travel_at = Clock::now();
+        return;
+    }
+    if (kind == kStageTravel) {
+        if (data.size() != 9 || sender != S().link.HostSlot()) return;
+        std::uint32_t map = 0;
+        std::int32_t point = -1;
+        std::memcpy(&map, data.data() + 1, 4);
+        std::memcpy(&point, data.data() + 5, 4);
+        Log("the host travels to map %08x: following", map);
+        AddPartyLine(PartyLineKind::HostTravels, {});
+        std::lock_guard lock(S().vitals_mu);
+        S().stage_map = map;
+        S().stage_point = point;
+        S().stage_at = Clock::now();
+        return;
+    }
+    if (kind == kWorldFlags) {
+        if (sender != S().link.HostSlot() || data.size() < 2 || data.size() > kBundleBytes) return;
+        std::lock_guard lock(S().vitals_mu);
+        if (S().world_flags.size() < 256) S().world_flags.emplace_back(data.begin() + 1, data.end());
+        return;
+    }
+    if (kind == kWorldAsk) {
+        if (data.size() != 1) return;
+        std::lock_guard lock(S().vitals_mu);
+        if (S().world_asks.size() < 16) S().world_asks.push_back(sender);
         return;
     }
     if (kind == kTravelFlags) {
@@ -1596,6 +1628,61 @@ bool TakeTravel(std::uint32_t& lamp, std::vector<std::uint8_t>* world_flags) {
     return true;
 }
 
+void SendStageTravel(std::uint32_t map, std::int32_t point, const std::vector<std::uint8_t>& world_flags) {
+    if (!S().started.load() || !S().link.Connected()) return;
+    if (!world_flags.empty()) {
+        std::vector<std::uint8_t> flags_frame(1 + world_flags.size());
+        flags_frame[0] = kTravelFlags;
+        std::memcpy(flags_frame.data() + 1, world_flags.data(), world_flags.size());
+        S().link.Send(0, flags_frame.data(), flags_frame.size());
+    }
+    std::uint8_t frame[9] = {kStageTravel};
+    std::memcpy(frame + 1, &map, 4);
+    std::memcpy(frame + 5, &point, 4);
+    S().link.Send(0, frame, sizeof frame);
+    Log("travelling to map %08x: the party follows", map);
+}
+
+bool TakeStageTravel(std::uint32_t& map, std::int32_t& point, std::vector<std::uint8_t>* world_flags) {
+    std::lock_guard lock(S().vitals_mu);
+    if (!S().stage_map) return false;
+    std::vector<std::uint8_t> flags;
+    flags.swap(S().travel_flags);
+    const bool fresh = Clock::now() - S().stage_at <= std::chrono::seconds(120);
+    map = S().stage_map;
+    point = S().stage_point;
+    S().stage_map = 0;
+    if (!fresh) return false;
+    if (world_flags) *world_flags = std::move(flags);
+    return true;
+}
+
+void SendWorldFlags(const std::vector<std::uint8_t>& part, int target) {
+    if (part.empty() || !S().started.load() || !S().link.Connected()) return;
+    std::vector<std::uint8_t> frame(1 + part.size());
+    frame[0] = kWorldFlags;
+    std::memcpy(frame.data() + 1, part.data(), part.size());
+    S().link.Send(target, frame.data(), frame.size());
+}
+
+std::vector<std::vector<std::uint8_t>> TakeWorldFlags() {
+    std::lock_guard lock(S().vitals_mu);
+    return std::exchange(S().world_flags, {});
+}
+
+void SendWorldAsk() {
+    if (!S().started.load() || !S().link.Connected()) return;
+    const int host = S().link.HostSlot();
+    if (host <= 0) return;
+    const std::uint8_t frame[1] = {kWorldAsk};
+    S().link.Send(host, frame, sizeof frame);
+}
+
+std::vector<int> TakeWorldAsks() {
+    std::lock_guard lock(S().vitals_mu);
+    return std::exchange(S().world_asks, {});
+}
+
 void SendProgress(const std::vector<std::uint32_t>& flags, int target) {
     if (flags.empty() || !S().started.load() || !S().link.Connected()) return;
     std::vector<std::uint8_t> frame(1 + 4 * flags.size());
@@ -2025,6 +2112,14 @@ void AnswerLampAsk(bool yes) {
     const std::uint8_t answer[2] = {kLampAnswer, yes ? std::uint8_t(kLampAgreed) : std::uint8_t(kLampRefused)};
     S().link.Send(slot, answer, sizeof answer);
     Log("the host %s the party's travel to lamp %u", yes ? "accepted" : "refused", lamp);
+}
+
+void NoteTravelLost() {
+    AddPartyLine(PartyLineKind::TravelLost, {});
+}
+
+void NoteStayedWithParty() {
+    AddPartyLine(PartyLineKind::StayedWithParty, {});
 }
 
 void NoteBringFar() {

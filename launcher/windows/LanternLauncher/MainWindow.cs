@@ -194,6 +194,12 @@ namespace BloodborneLauncher
                     Prompt.Confirm(L.T("Switch layout"), L.T("The launcher restarts to change its layout."), L.T("Restart now"));
                 else if (_directPlay)
                     _ = PlayDirectAsync();
+                // The setup guide: with --setup, or once on a first start whose game folder is not
+                // ready (a game already set up never sees it). The settings for this PC follow it.
+                else if (Prompt.SnapshotPath == null && (Environment.GetCommandLineArgs().Contains("--setup") ||
+                         (!ws.Settings.Bool("setup_shown") && Paths.IsPortDir(Paths.PortDir) &&
+                          GameCheck.Inspect(GameEnvironment.GameDir(ws.Settings)).Health != Health.Good)))
+                    SetupGuide.Open(firstRun: true);
                 // Once: the settings that suit this PC, shown before anything changes.
                 else if (!ws.Settings.Bool("hardware_offered") && Paths.IsPortDir(Paths.PortDir))
                     OfferBestSettings(firstRun: true);
@@ -1498,6 +1504,17 @@ namespace BloodborneLauncher
                 GameEnvironment.ResolutionPatchChoice = choice == 1 ? "keep" : "skip";
                 ws.Log(choice == 1 ? L.F($"{names}: kept on with the {outW} × {outH} output.")
                     : L.F($"{names}: left out; the output resolution sets the picture."), LogLevel.Step);
+            }
+
+            // No game folder with eboot.bin: the engine would only log "No eboot.bin". The setup
+            // guide says what is missing instead.
+            if (!GameRunner.Custom(s) && !System.IO.File.Exists(System.IO.Path.Combine(GameEnvironment.GameDir(s), "eboot.bin")))
+            {
+                if (Prompt.Choose(L.T("The game is not set up yet"),
+                        L.T("The launcher has no game folder with eboot.bin in it, so the game cannot start. The setup guide shows where your game files go and checks them."),
+                        L.T("Cancel"), L.T("Open the setup guide")) == 1)
+                    SetupGuide.Open();
+                return;
             }
 
             // A game left running in the background (an earlier start that never ended, or another

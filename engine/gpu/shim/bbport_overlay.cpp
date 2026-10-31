@@ -2248,6 +2248,9 @@ std::string PartyLineText(const BbRoom::PartyLine& line) {
     case BbRoom::PartyLineKind::LampAgreed: return BbSettings::MenuText("The host accepted: the party travels", "Хозяин согласился: отряд отправляется");
     case BbRoom::PartyLineKind::LampRefused: return BbSettings::MenuText("The host stays here, you stay with the party", "Хозяин остаётся здесь, вы остаётесь с отрядом");
     case BbRoom::PartyLineKind::LampNoAnswer: return BbSettings::MenuText("The host did not answer, you stay with the party", "Хозяин не ответил, вы остаётесь с отрядом");
+    case BbRoom::PartyLineKind::HostTravels: return BbSettings::MenuText("The host is travelling, you follow", "Хозяин отправляется в путь, вы следуете за ним");
+    case BbRoom::PartyLineKind::TravelLost: return BbSettings::MenuText("The party split on the way, the bells bring it back together", "Группа разделилась в пути, колокола соберут её снова");
+    case BbRoom::PartyLineKind::StayedWithParty: return BbSettings::MenuText("You were taken, but the party holds on to you: you are back with the host", "Вас схватили, но отряд вас не отпустил: вы снова рядом с хозяином");
     case BbRoom::PartyLineKind::BringFar: return BbSettings::MenuText("The host is in another area, use the host's lamp", "Хозяин в другой области, идите через его фонарь");
     case BbRoom::PartyLineKind::Visitor: return BbSettings::MenuText("A visitor from the event team entered the room", "В комнату вошёл посетитель из команды мероприятий");
     }

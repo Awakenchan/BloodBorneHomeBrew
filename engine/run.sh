@@ -63,7 +63,12 @@ fi
 game=${BB_GAME_DIR:-../CUSA03173}
 if [[ ! -f $game/eboot.bin ]]; then echo "No eboot.bin in $game (set BB_GAME_DIR)." >&2; exit 1; fi
 original_game=$game
-game=$("$PYTHON" scripts/mods.py "$game" --out "$out" \
+first_layers=()
+while IFS= read -r layer; do
+    [[ -z $layer ]] || first_layers+=(--first-layer "$layer")
+done < <("$PYTHON" scripts/first_layers.py "$game" --engine . --data "$data" --config "${BB_CONFIG:-lantern.ini}" \
+    --patches "${BB_PATCHES_CONFIG:-$data/patches.json}")
+game=$("$PYTHON" scripts/mods.py "$game" --out "$out" "${first_layers[@]}" \
     --mods-dir "${BB_MODS_DIR:-$data/mods}" --config "${BB_MODS_CONFIG:-$data/mods.json}" \
     --enabled "${BB_MODS_ENABLED:-1}")
 # A private merged view lasts for this launch, including restarts. Cleanup only our own view.
@@ -127,6 +132,18 @@ fi
 if [[ $live == 1 ]]; then
     echo "Output ${scaled_output}: live resolution changes (live_resolution=0: startup patch)"
 elif [[ -n ${scaled_output:-} ]]; then
+    early=${BB_UPSCALE_EARLY:-}
+    if [[ -z $early && -f $BB_CONFIG ]]; then
+        while IFS= read -r line || [[ -n $line ]]; do
+            [[ $line =~ ^upscale_before_post=([01]) ]] && early=${BASH_REMATCH[1]}
+        done < "$BB_CONFIG"
+    fi
+    if [[ $early == 1 ]] && (( ${scaled_output%x*} % 4 == 0 && ${scaled_output#*x} % 4 == 0 )); then
+        scaled_render=$scaled_output
+        export BB_UPSCALE_EARLY=1
+    else
+        unset BB_UPSCALE_EARLY
+    fi
     export BB_RENDER_RES=$scaled_render BB_OUTPUT_RES=$scaled_output BB_AUTO_RENDER_RES=1
     export BB_DMEM_MB=${BB_DMEM_MB:-9152}
     echo "Output ${scaled_output}: scene ${scaled_render}, direct memory ${BB_DMEM_MB} MiB (live_resolution=1: live changes)"

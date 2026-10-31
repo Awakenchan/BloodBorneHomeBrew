@@ -378,6 +378,24 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy
           vs_runtime.hw_stage == Shader::HwStage::Vertex && vs_runtime.hw.vs.motion_vectors)) {
         return false;
     }
+    static const bool motion_layout_guard = [] {
+        const char* env = std::getenv("BB_WARMUP_MOTION_GUARD");
+        return !(env && env[0] == '0');
+    }();
+    if (motion_layout_guard && !sel.graphics_key.motion_vectors &&
+        sel.graphics_key.stage_hashes[u32(Shader::SwStage::Vertex)] &&
+        vs_runtime.hw_stage == Shader::HwStage::Vertex && vs_runtime.hw.vs.motion_vectors) {
+        static std::atomic<u32> left_out{0};
+        const u32 count = left_out.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 20) {
+            std::printf("GPU cache: pipeline key %u left out, a motion vertex shader without motion in "
+                        "its key: vs 0x%016llx, fs 0x%016llx (BB_WARMUP_MOTION_GUARD=0: built)\n",
+                        count,
+                        (unsigned long long)sel.graphics_key.stage_hashes[u32(Shader::SwStage::Vertex)],
+                        (unsigned long long)sel.graphics_key.stage_hashes[u32(Shader::SwStage::Fragment)]);
+        }
+        return false;
+    }
 
     if (graphics_pipelines.contains(sel.graphics_key)) {
         return true;

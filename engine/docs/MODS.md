@@ -74,7 +74,7 @@ New folders are enabled automatically and added at the end in alphabetical order
 `BB_MODS_CONFIG` changes the profile's path. `BB_MOD_TRACE=1` with `BB_MODS_DIR` prints the first
 reads of the files actually used, for diagnosis.
 
-# Third-party patches (shadPS4 XML, and TOML on Windows)
+# Third-party patches (shadPS4 XML and TOML)
 
 The `patches/` folder in the data folder (in bbport's AppImage `~/.local/share/bbport/patches/`;
 in the launcher the **Third-party patches** group, where another folder can be chosen too). Patch
@@ -92,7 +92,7 @@ message in the log. Third-party patches are applied after the built-in ones
 (`patches/Bloodborne.xml`): where they overlap, the third-party one wins. From a terminal:
 `BB_PATCHES_DIR=/path BB_PATCHES_CONFIG=/path/patches.json bash run.sh`.
 
-TOML patch files go in the same folder (Windows). `[patch]` has `name`, `description`, `author`, `order` and `group`;
+TOML patch files go in the same folder. `[patch]` has `name`, `description`, `author`, `order` and `group`;
 each `[site.x]` has `address` (a patch address like the XML ones), `bytes` and optionally `expect`, the bytes the game must
 hold there. A patch whose `expect` differs is skipped whole, and only one patch of a `group` is used, the lowest `order` first.
 

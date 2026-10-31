@@ -40,12 +40,20 @@ def scaled_rate_values(fps):
     }
 
 
+EFFECT_SECOND_STEP=0x4D27C4C
+
+
 def rate_scaled(writes, fps):
     """The 90 FPS++ writes with their frame-rate values for `fps`."""
     values=scaled_rate_values(fps)
+    sixtieth,step=struct.pack('<f',1/60),struct.pack('<f',1/fps)
+    step_fix=os.environ.get('BB_FRAME_STEP_FIX','1')!='0'
     out,seen=[],set()
     for offset,data in writes:
         value=values.get(offset+EBOOT_BASE)
+        if step_fix and value is None and data==sixtieth and offset+EBOOT_BASE!=EFFECT_SECOND_STEP:
+            out.append((offset,step))
+            continue
         if value is not None:
             if len(value)!=len(data): raise ValueError(f'{SCALED_BASE}: {offset+EBOOT_BASE:#x} changed size')
             data=value
@@ -94,15 +102,31 @@ def follow_camera_write(at, data, fps):
     return data
 
 
-def corrected_frame_rate(writes, fps, elf=None):
+CAMERA_JUMP,CAMERA_WALL_ESCAPE=0x183DC96,0x183DCFE
+
+
+def camera_retune(at, size):
+    """A write of the FPS++ follow camera's retune, not of the game's own camera."""
+    return (at in CAMERA_DEFAULTS or at in (CAMERA_JUMP,CAMERA_WALL_ESCAPE) or
+            any(at<hi and at+size>lo for lo,hi in CAMERA_PARAMETER_BLOCKS))
+
+
+def corrected_frame_rate(writes, fps, elf=None, game_camera=False):
     """The frame-rate preset's writes with the corrections above, for `fps` (None: uncapped, whose
     rate is unknown here: only the effects' rate and the status effects are put right). `elf`, when
-    given, must have the game's bytes where a correction adds a write."""
-    camera=bool(fps) and os.environ.get('BB_CAMERA_FIX','0')=='1'
+    given, must have the game's bytes where a correction adds a write. `game_camera`: the follow
+    camera as the game has it, its eases converted from 30 FPS, without FPS++'s retune."""
+    camera=bool(fps) and not game_camera and os.environ.get('BB_CAMERA_FIX','0')=='1'
+    game_camera=game_camera and bool(fps)
     out=[]
     for offset,data in writes:
         at=offset+EBOOT_BASE
         if at in EFFECT_DATA_RATE: continue
+        if game_camera:
+            if camera_retune(at,len(data)): continue
+            if at in CAMERA_GAME_EASES:
+                out.append((offset,struct.pack('<f',per_frame(CAMERA_GAME_EASES[at],30/fps))))
+                continue
         if camera: data=follow_camera_write(at,data,fps)
         out.append((offset,data))
     unchanged=lambda at,was: elf is None or original_bytes(elf,at-EBOOT_BASE,len(was))==was
@@ -262,10 +286,15 @@ def ui_size(settings, out):
     sides (engine/widescreen.cpp) - is drawn there instead of being cut off at the 16:9 box."""
     w,h=out
     if settings.get('widescreen','1')=='0' or w*OUTPUT_SIZE[1]==h*OUTPUT_SIZE[0]:
-        return OUTPUT_SIZE
-    if w*OUTPUT_SIZE[1]>h*OUTPUT_SIZE[0]:
-        return (min(8192,round(OUTPUT_SIZE[1]*w/h/2)*2),OUTPUT_SIZE[1])
-    return (OUTPUT_SIZE[0],min(8192,round(OUTPUT_SIZE[0]*h/w/2)*2))
+        ui=OUTPUT_SIZE
+    elif w*OUTPUT_SIZE[1]>h*OUTPUT_SIZE[0]:
+        ui=(min(8192,round(OUTPUT_SIZE[1]*w/h/2)*2),OUTPUT_SIZE[1])
+    else:
+        ui=(OUTPUT_SIZE[0],min(8192,round(OUTPUT_SIZE[0]*h/w/2)*2))
+    if os.environ.get('BB_SHARP_UI')=='1':
+        k=min(w/ui[0],h/ui[1])
+        if k>1: ui=(min(8192,round(ui[0]*k/2)*2),min(8192,round(ui[1]*k/2)*2))
+    return ui
 
 
 def resolution_writes(xml,size,app_version,segments,ui=OUTPUT_SIZE):
@@ -455,16 +484,79 @@ def same_app_version(value, app_version):
         return False
 
 
+def toml_value(raw, number):
+    if len(raw)>=2 and raw[0]=='"':
+        close=raw.find('"',1)
+        if close<0: raise ValueError(f'line {number}: unclosed string')
+        rest=raw[close+1:].strip()
+        if rest and rest[0]!='#': raise ValueError(f'line {number}: text after the value')
+        return raw[1:close]
+    value=raw.split('#',1)[0].strip()
+    if not value or not value.isdigit(): raise ValueError(f'line {number}: only strings and whole numbers are read')
+    return value
+
+
+def toml_hex(value, number):
+    text=''.join(value.split())
+    if not text or len(text)%2: raise ValueError(f'line {number}: not whole bytes')
+    try:
+        bytes.fromhex(text)
+    except ValueError:
+        raise ValueError(f'line {number}: not hexadecimal') from None
+    return text
+
+
+def toml_patch_as_xml(text, fallback_name):
+    """A .toml patch file as the XML the patches list reads: [patch] with name, description, author,
+    order and group, and [site.*] with address, bytes and expect."""
+    fields={'name':fallback_name,'description':'','author':'','order':'0','group':''}
+    sites=[]
+    section=None
+    for number,line in enumerate(text.split('\n'),1):
+        line=line.strip()
+        if not line or line[0]=='#': continue
+        if line[0]=='[':
+            section='patch' if line=='[patch]' else 'site' if line.startswith('[site.') and line[-1]==']' else None
+            if section is None: raise ValueError(f'line {number}: unknown section')
+            if section=='site': sites.append({})
+            continue
+        key,equals,raw=line.partition('=')
+        if not equals: raise ValueError(f'line {number}: expected key = value')
+        key,value=key.strip(),toml_value(raw.strip(),number)
+        if section=='patch':
+            if key in fields: fields[key]=value
+        elif section=='site':
+            if key=='address': sites[-1]['address']=value
+            elif key in ('expect','bytes'): sites[-1][key]=toml_hex(value,number)
+        else:
+            raise ValueError(f'line {number}: a value outside any section')
+    if not sites: raise ValueError('no patch sites')
+    root=ET.Element('Patch')
+    meta=ET.SubElement(root,'Metadata',{'Name':fields['name'],'Note':fields['description'],'Author':fields['author'],
+                                        'AppVer':'01.09','AppElf':'eboot.bin','isEnabled':'false',
+                                        'Order':fields['order'],'Group':fields['group']})
+    listing=ET.SubElement(meta,'PatchList')
+    for site in sites:
+        if not site.get('address') or not site.get('bytes'): raise ValueError('a site without an address or bytes')
+        if site.get('expect') and len(site['expect'])!=len(site['bytes']):
+            raise ValueError(f'a site at {site["address"]} expects a different length than it writes')
+        line={'Type':'bytes','Address':site['address'],'Value':site['bytes']}
+        if site.get('expect'): line['Expect']=site['expect']
+        ET.SubElement(listing,'Line',line)
+    return root
+
+
 def external_patches(directory, app_version='01.09', exclude=Path(__file__).resolve().parent.parent/'patches/Bloodborne.xml'):
     """[(key, file, metadata)] of eboot patches for this version in directory/*.xml.
     key is "<file name>/<patch name>" (the launcher's selection, patches.json)."""
     found=[]
     directory=Path(directory)
-    for path in sorted(directory.glob('*.xml')) if directory.is_dir() else []:
+    for path in sorted([*directory.glob('*.xml'),*directory.glob('*.toml')]) if directory.is_dir() else []:
         if path.resolve()==Path(exclude).resolve() or path.name.lower()==Path(exclude).name.lower(): continue
         try:
-            root=ET.parse(path).getroot()
-        except ET.ParseError as error:
+            root=(toml_patch_as_xml(path.read_text(encoding='utf-8-sig'),path.stem) if path.suffix.lower()=='.toml'
+                  else ET.parse(path).getroot())
+        except (ET.ParseError,ValueError,OSError) as error:
             print(f'Patches: {path.name}: {error}',file=sys.stderr)
             continue
         ids={e.text.strip() for e in root.iter('ID') if e.text}
@@ -514,8 +606,18 @@ def external_selection(found, config):
     if config and Path(config).is_file():
         settings=json.loads(Path(config).read_text())
     enabled,disabled=set(settings.get('enabled',[])),set(settings.get('disabled',[]))
-    return [(key,path,meta) for key,path,meta in found
+    chosen=[(key,path,meta) for key,path,meta in found
             if key in enabled or (key not in disabled and meta.get('isEnabled','false').lower()=='true')]
+    chosen.sort(key=lambda entry: int(entry[2].get('Order','0') or 0) if (entry[2].get('Order','0') or '0').isdigit() else 0)
+    kept,groups=[],set()
+    for entry in chosen:
+        group=entry[2].get('Group','')
+        if group and group in groups:
+            print(f'Patches: skipped {entry[0]}: another patch of its group {group} is on',file=sys.stderr)
+            continue
+        groups.add(group)
+        kept.append(entry)
+    return kept
 
 
 REGION_FUNCTION=(0x1fb9190,0x1fb91e3)
@@ -545,7 +647,7 @@ def skip_for_online(key):
           'server (Play online would fail); it applies again with online off',file=sys.stderr)
 
 
-def compile_external(selected, segments, resolution=None):
+def compile_external(selected, segments, resolution=None, elf=None):
     """Writes of the selected external patches; a patch with unsupported lines is skipped whole.
     `resolution`: (footprint, output size) while the output resolution sets the game's resolution
     and UI itself: a patch that writes them too is left out, unless the player kept it (the
@@ -560,6 +662,11 @@ def compile_external(selected, segments, resolution=None):
                 data=encode(line)
                 if not any(start<=offset and offset+len(data)<=end for start,end in segments):
                     raise ValueError(f'address {line.get("Address")} is outside the eboot')
+                if line.get('Expect') and elf is not None:
+                    wanted=bytes.fromhex(line.get('Expect'))
+                    original=original_bytes(elf,offset,len(data))
+                    if (original!=wanted if original is not None else any(wanted)):
+                        raise ValueError(f'the game\'s code at {line.get("Address")} is not what it expects')
                 ours.append((offset,data))
         except ValueError as error:
             print(f'Patches: skipped {key}: {error}',file=sys.stderr)
@@ -637,7 +744,12 @@ def main():
         writes=rate_scaled(writes,SCALED_FPS[a.fps])
         print(f'Patches: {a.fps} FPS: {SCALED_BASE} with its frame-rate values for {a.fps}')
     if preset and preset[0] in names:
-        writes=corrected_frame_rate(writes,{'60':60,'90':90,**SCALED_FPS}.get(a.fps),elf)
+        fps={'60':60,'90':90,**SCALED_FPS}.get(a.fps)
+        tuning=os.environ.get('BB_CAMERA_TUNING',read_settings(a.settings).get('camera_tuning','original')).lower()
+        writes=corrected_frame_rate(writes,fps,elf,tuning!='fps++')
+        if fps:
+            print('Patches: follow camera '+('as the game has it, its eases converted from 30 FPS' if tuning!='fps++'
+                                             else 'with the FPS++ retune (camera_tuning=fps++)'))
     writes+=old_hunters_writes(elf)
     pools=render_pool_writes(elf)
     if pools:
@@ -658,7 +770,7 @@ def main():
     if a.patches_dir:
         resolution=(resolution_footprint(a.xml,a.app_version,segments),out) if out!=OUTPUT_SIZE else None
         writes+=compile_external(external_selection(external_patches(a.patches_dir,a.app_version,a.xml),
-                                                    a.patches_config),segments,resolution)
+                                                    a.patches_config),segments,resolution,elf)
     heap_bytes={offset+i for offset,data in compile_patches(a.xml,[HEAP_PATCH],a.app_version,segments)
                 for i in range(len(data))}
     heaps=any(offset+i in heap_bytes for offset,data in writes for i in range(len(data)))

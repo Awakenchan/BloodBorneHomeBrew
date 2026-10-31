@@ -11,7 +11,7 @@ namespace BbRoom {
 
 enum class LinkState { Unknown, Good, Slow, Reconnecting };
 
-enum class PartyLineKind { EnteredRoom, JoinedWorld, Left, Kicked, Reconnected, Died, BackOnline, WarpAsked, WarpSeen, WarpOff, WarpNoAnswer, BringFar, LampAsked, LampSeen, LampAgreed, LampRefused, LampNoAnswer, Visitor };
+enum class PartyLineKind { EnteredRoom, JoinedWorld, Left, Kicked, Reconnected, Died, BackOnline, WarpAsked, WarpSeen, WarpOff, WarpNoAnswer, BringFar, LampAsked, LampSeen, LampAgreed, LampRefused, LampNoAnswer, Visitor, HostTravels, TravelLost, StayedWithParty };
 
 struct PeerStatus {
     int slot = 0;

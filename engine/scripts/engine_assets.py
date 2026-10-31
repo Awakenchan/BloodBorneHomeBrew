@@ -318,7 +318,7 @@ def prepare_lamp2lamp(game, update, patch, cache):
     return root.resolve()
 
 
-def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
+def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False, host_title='', guest_title=''):
     """Generate bbhost's native option movie and messages from the player's own dump.
 
     Validate every language, source and cached output together before publishing the
@@ -326,6 +326,9 @@ def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
     """
     verify_executable(elf_path)
     game, tool = Path(game), Path(tool)
+    os.environ['BB_PLATE_HOST_TITLE'] = '=' + host_title
+    os.environ['BB_PLATE_GUEST_TITLE'] = '=' + guest_title
+    plates = f'={host_title}|={guest_title}'
     root = Path(cache) / 'pc-menus'
     movie = Path('dvdroot_ps4/menu/optionsetting.gfx')
     sources = [(movie, 'movie')]
@@ -350,7 +353,8 @@ def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
         digest = sha(source.read_bytes())
         prior = previous.get('files', {}).get(relative.as_posix(), {})
         current = None
-        if previous.get('generator') == generator and prior.get('input') == digest:
+        if (previous.get('generator') == generator and prior.get('input') == digest and
+                (kind != 'messages' or prior.get('plates') == plates)):
             try:
                 current = sha(destination.read_bytes())
                 if current != prior.get('output'):
@@ -369,7 +373,7 @@ def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):
                 os.replace(temporary, destination)
             finally:
                 temporary.unlink(missing_ok=True)
-        rows[relative.as_posix()] = {'input': digest, 'output': current}
+        rows[relative.as_posix()] = {'input': digest, 'output': current, 'plates': plates}
     root.mkdir(parents=True, exist_ok=True)
     temporary = manifest_path.with_suffix(f'.{os.getpid()}.tmp')
     temporary.write_text(json.dumps({'generator': generator, 'files': rows}, indent=2), encoding='utf-8')

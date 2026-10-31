@@ -17,6 +17,61 @@ constexpr bool CanKeep(std::uint32_t lamp) {
     return lamp && area != kDreamArea && area != kDungeonArea;
 }
 
+constexpr bool CanKeepMap(std::uint32_t map) {
+    const std::uint32_t area = map >> 24;
+    return area && area != kDreamArea && area != kDungeonArea;
+}
+
+constexpr std::int32_t kNoType = -1, kOwnType = 0, kOwnGreyType = 8;
+constexpr int kPhaseSummonedLoad = 3;
+
+constexpr bool PhantomType(std::int32_t type) {
+    return type >= 0 && type < 14 && (0x3006u >> type & 1) != 0;
+}
+
+constexpr bool WrongTypeForOwnWorld(int phase, bool own_world, std::int32_t remembered, std::int32_t pending) {
+    if (phase == kPhaseSummonedLoad || !own_world) return false;
+    return pending == kNoType ? PhantomType(remembered) : PhantomType(pending);
+}
+
+constexpr std::int32_t OwnWorldType(std::int32_t home) {
+    return home == kOwnGreyType ? kOwnGreyType : kOwnType;
+}
+
+constexpr bool HoldsHit(std::uint64_t hits, int count, std::uint64_t stride, std::uint64_t hit) {
+    return hit >= hits && count > 0 && hit < hits + std::uint64_t(count) * stride && (hit - hits) % stride == 0;
+}
+
+constexpr std::int32_t kSnatcherEvent = 13201803;
+
+constexpr bool StoryWarp(std::int32_t event) {
+    switch (event) {
+    case 3503:
+    case 12200131:
+    case 12405263:
+    case 12800430:
+    case 12800431:
+    case 13200310:
+    case 13200311:
+    case kSnatcherEvent: return true;
+    default: return false;
+    }
+}
+
+constexpr bool HoldForHost(bool link_up, bool host_here, bool past_limit) {
+    return link_up && !host_here && !past_limit;
+}
+
+constexpr std::uint32_t kPlaceTextBase = 70000000;
+
+constexpr std::uint32_t LampMapText(std::uint32_t lamp) {
+    return kPlaceTextBase + lamp / 10000 * 10;
+}
+
+constexpr std::uint32_t LampText(std::uint32_t lamp) {
+    return lamp % 1000 < 950 ? LampMapText(lamp) : LampMapText(lamp) + lamp % 1000 - 950;
+}
+
 constexpr std::uint32_t SceneSeenFlag(std::uint32_t event) {
     switch (event) {
     case 12405263: return 12401000;

@@ -228,7 +228,7 @@ namespace BloodborneLauncher.Core
             // its optional patches, off until switched on here.
             // A copy of Bloodborne.xml in another patches folder (an older package's) is never listed: it would
             // apply its frame-rate patches over the port's own (scripts/patches.py does the same).
-            var files = (Directory.Exists(directory) ? Directory.GetFiles(directory, "*.xml").Concat(OperatingSystem.IsWindows() ? Directory.GetFiles(directory, "*.toml") : Array.Empty<string>()) : Array.Empty<string>()).Where(p => !string.Equals(Path.GetFileName(p), Path.GetFileName(builtIn), StringComparison.OrdinalIgnoreCase));
+            var files = (Directory.Exists(directory) ? Directory.GetFiles(directory, "*.xml").Concat(Directory.GetFiles(directory, "*.toml")) : Array.Empty<string>()).Where(p => !string.Equals(Path.GetFileName(p), Path.GetFileName(builtIn), StringComparison.OrdinalIgnoreCase));
             if (File.Exists(builtIn)) files = files.Prepend(builtIn);
             foreach (var path in files.Distinct().ToList())
             {

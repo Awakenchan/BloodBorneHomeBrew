@@ -22,6 +22,10 @@ SHADNET_WEBAPI = f'http://{SHADNET_HOST}:31315'
 DEFAULT_P2P_PORT = 3658
 # Seconds a summon sign entry waits for its host (the game's 180; engine/online_fixes.cpp).
 DEFAULT_SIGN_TIMEOUT = 30
+SEAMLESS_SERVER = 'https://185-244-28-175.sslip.io'
+SEAMLESS_DIRECT_PORT = '38765'
+ROOM_ENV = ('BB_ROOM_SERVER', 'BB_ROOM_NAME', 'BB_ROOM_PLAYER', 'BB_ROOM_HOST', 'BB_ROOM_HTTP_PORT',
+            'BB_ROOM_LOCAL_PORT', 'BB_ROOM_VISITOR')
 THD_ENV = ('BB_NET_BACKEND', 'BB_THD_SERVER', 'BB_THD_AUTH', 'BB_THD_TOKEN', 'BB_THD_ONLINE_ID',
            'BB_THD_RULESET')
 ONLINE_ENV = ('BB_ONLINE', 'BB_SHADNET_SERVER', 'BB_SHADNET_WEBAPI', 'BB_SHADNET_NPID',
@@ -70,7 +74,69 @@ def game_overrides(game_api):
 ONLINE_PAUSED = os.environ.get('BB_ONLINE_PAUSED', '0') == '1'
 
 
+def plate_name(text):
+    name = ''
+    for c in text.strip():
+        if 0x20 <= ord(c) < 0x7f and c not in '"\\' and not (c == ' ' and (not name or name[-1] == ' ')):
+            name += c
+        if len(name) == 16:
+            break
+    return name.rstrip() or 'Hunter'
+
+
+def configure_seamless(settings, data, env):
+    """Seamless co-op: the room backend (BB_NET_BACKEND=room). The game's servers go to the room's
+    local server; the password comes from the launcher."""
+    get = lambda key: settings.get(key, '').strip()
+    server = get('seamless_server') or SEAMLESS_SERVER
+    host = get('seamless_role') == 'host'
+    room = get('seamless_host_room' if host else 'seamless_room')
+    if not room:
+        raise ValueError("Open the launcher's Online page once to make your room" if host
+                         else "Paste the host's invite code on the launcher's Online page")
+    p2p = int(p2p_port(settings))
+    http = p2p + 1 if p2p < 65535 else p2p - 1
+    local = f'http://127.0.0.1:{http}'
+    overrides = {'*.scej-network.jp': local, GAME_STATUS_ORIGIN: local}
+    overrides.update({h: local for h in PLAY_LOG_HOSTS})
+    destination = write_overrides(data, overrides)
+    for key in ONLINE_ENV:
+        env.pop(key, None)
+    direct_port = get('seamless_direct_port') or SEAMLESS_DIRECT_PORT
+    direct = get('seamless_direct') == '1'
+    env.pop('BB_ROOM_LOCAL_PORT', None)
+    if direct and not host:
+        address = get('seamless_direct_host')
+        if not address:
+            raise ValueError("Paste the host's invite code, or type the host's address on the launcher's Online page")
+        server = 'ws://' + (address if ':' in address else f'{address}:{direct_port}')
+    elif direct:
+        port = int(direct_port) if direct_port.isdigit() else 0
+        if not 1024 <= port <= 65535:
+            raise ValueError("The direct room's port must be between 1024 and 65535")
+        server = f'ws://127.0.0.1:{port}'
+        env['BB_ROOM_LOCAL_PORT'] = str(port)
+    elif server.startswith('ws://'):
+        server = SEAMLESS_SERVER
+    env.pop('BB_ROOM_VISITOR', None)
+    if not host and not direct and get('seamless_visitor') == '1':
+        env['BB_ROOM_VISITOR'] = '1'
+    if host:
+        env['BB_ROOM_PASSWORD'] = env.get('BB_ROOM_HOST_PASSWORD', '')
+    env.update(BB_ONLINE='1', BB_NET_BACKEND='room', BB_ROOM_SERVER=server, BB_ROOM_NAME=room,
+               BB_ROOM_PLAYER=plate_name(get('seamless_player')), BB_ROOM_HOST='1' if host else '0',
+               BB_ROOM_HTTP_PORT=str(http), BB_P2P_PORT=str(p2p),
+               SHADPS4_HTTP_HOST_OVERRIDES_JSON=str(destination.resolve()))
+    timeout = get('online_sign_timeout')
+    env['BB_SIGN_TIMEOUT'] = str(min(max(int(timeout), 0), 600)) if timeout.isdigit() else str(DEFAULT_SIGN_TIMEOUT)
+    return destination
+
+
 def configure_online(settings, data, env):
+    if settings.get('seamless_enabled') == '1' and settings.get('online_enabled') == '1':
+        return configure_seamless(settings, data, env)
+    for key in ROOM_ENV:
+        env.pop(key, None)
     # The Hunter's Dream pool is the reworked connection: the pause is the shadNet pool's.
     if (settings.get('online_pool') == 'huntersdream' and settings.get('online_enabled') == '1' and
             settings.get('online_connected', '1') == '1'):

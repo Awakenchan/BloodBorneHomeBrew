@@ -73,7 +73,14 @@ namespace BloodborneLauncher.Views
         private readonly SymbolIcon _icon = new() { FontSize = 18, Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Top };
         private readonly SelectableTextBlock _title = new() { FontWeight = FontWeight.SemiBold, FontSize = 13.5, TextWrapping = TextWrapping.Wrap };
         private readonly SelectableTextBlock _message = new() { FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
+        private readonly ContentControl _content = new() { Margin = new Thickness(0, 8, 0, 0), IsVisible = false };
         private InfoBarSeverity _severity;
+
+        public object? Content
+        {
+            get => _content.Content;
+            set { _content.Content = value; _content.IsVisible = value != null; }
+        }
 
         public InfoBar()
         {
@@ -86,6 +93,7 @@ namespace BloodborneLauncher.Views
             var text = new StackPanel();
             text.Children.Add(_title);
             text.Children.Add(_message);
+            text.Children.Add(_content);
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
             grid.Children.Add(_icon);
             Grid.SetColumn(text, 1);

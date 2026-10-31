@@ -30,6 +30,11 @@ def settings_value(config, key):
     return None
 
 
+def plate_title(config, key):
+    title = ''.join(c for c in (settings_value(config, key) or '') if ord(c) >= 0x20 and c != chr(0x7f))
+    return title.encode()[:48].decode(errors='ignore')
+
+
 def prepare(game, out, data, config):
     env = {}
     try:
@@ -41,13 +46,20 @@ def prepare(game, out, data, config):
                 print(f'Engine: Dream mirror prepared locally: {asset}', flush=True)
             except (OSError, ValueError, IndexError, struct.error, zlib.error) as error:
                 print(f'Engine: Dream mirror skipped: {error}', flush=True)
+        if settings_value(config, 'ui_4k') != '0':
+            ui = data / 'engine-assets' / 'ui-4k'
+            if (ui / 'complete').is_file():
+                env['BB_UI_4K'] = str(ui)
+                print(f'Engine: 4K menu textures from {ui}', flush=True)
         if (any(settings_value(config, key) == '1' for key in ('change_appearance', 'camera_controls', 'rebirth', 'graphics_controls'))
                 or any(settings_value(config, key) != '0' for key in ('pc_controls', 'widescreen'))):
             tool = next((out / name for name in ('bb-engine-assets', 'bb-engine-assets.exe') if (out / name).is_file()),
                         out / 'bb-engine-assets')
             try:
                 rebirth = settings_value(config, 'rebirth') == '1'
-                menus = prepare_menu_assets(game, out / 'eboot.elf', data / 'engine-assets', tool, rebirth=rebirth)
+                menus = prepare_menu_assets(game, out / 'eboot.elf', data / 'engine-assets', tool, rebirth=rebirth,
+                                            host_title=plate_title(config, 'plate_host_title'),
+                                            guest_title=plate_title(config, 'plate_guest_title'))
                 env['BB_PC_MENU_ASSETS'] = str(menus)
                 print(f'Engine: native PC menus prepared locally: {menus}', flush=True)
                 if rebirth:
