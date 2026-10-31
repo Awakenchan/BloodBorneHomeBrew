@@ -9,6 +9,8 @@ on:
       - "engine/src/isa_*.c"
       - "engine/src/isa_*.h"
       - "engine/src/probe.c"
+      - "engine/scripts/run_windows.py"
+      - "engine/build.sh"
       - "engine/tools/isa-scan/**"
       - "engine/tools/setup/**"
       - "engine/build.sh"
@@ -36,6 +38,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test standalone scanner
         run: cargo test --manifest-path engine/tools/isa-scan/Cargo.toml
+      - name: Syntax-check Windows build and launch scripts
+        run: |
+          bash -n engine/build.sh
+          python3 -m py_compile engine/scripts/run_windows.py
       - name: Compile ISA loader and general-register-only emulator
         run: |
           clang -std=gnu11 -O2 -Wall -Wextra -Werror -Iengine/src \
