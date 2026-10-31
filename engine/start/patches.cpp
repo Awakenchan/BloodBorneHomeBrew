@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "patches.h"
 #include "elf.h"
+#include "toml_patch.h"
 #include "xml.h"
 
 #include <nlohmann/json.hpp>
@@ -158,14 +159,18 @@ struct Segments {
 
 Segments EbootSegments(const Bytes& elf) {
     Segments s;
+    std::uint64_t size = 0;
     for (const Ph& p : ProgramHeaders(elf))
-        if (p.type == 1) s.ranges.emplace_back(p.vaddr, p.vaddr + p.memsz);
+        if (p.type == 1) size = std::max(size, p.vaddr + p.memsz);
+    for (const Ph& p : ProgramHeaders(elf))
+        if (p.type == 1) s.ranges.emplace_back(p.vaddr, std::min(p.vaddr + ((p.memsz + 0x3fffu) & ~std::uint64_t(0x3fff)), size));
     return s;
 }
 
 class PatchFile {
 public:
     explicit PatchFile(const fs::path& path) : path_(path), root_(ParseXml(path)) {}
+    PatchFile(const fs::path& path, std::unique_ptr<XmlElement> root) : path_(path), root_(std::move(root)) {}
     const fs::path& FilePath() const { return path_; }
     const XmlElement& Root() const { return *root_; }
 
@@ -552,7 +557,8 @@ void ExternalPatches(const fs::path& directory, const std::string& app_version, 
     if (!fs::is_directory(directory, error)) return;
     std::vector<fs::path> paths;
     for (const auto& entry : fs::directory_iterator(directory, error))
-        if (entry.is_regular_file(error) && Lower(Utf8(entry.path().extension())) == ".xml") paths.push_back(entry.path());
+        if (entry.is_regular_file(error) && (Lower(Utf8(entry.path().extension())) == ".xml" || Lower(Utf8(entry.path().extension())) == ".toml"))
+            paths.push_back(entry.path());
     std::sort(paths.begin(), paths.end(), [](const fs::path& a, const fs::path& b) {
         return Lower(Utf8(a.filename())) < Lower(Utf8(b.filename()));
     });
@@ -561,7 +567,11 @@ void ExternalPatches(const fs::path& directory, const std::string& app_version, 
         if (fs::equivalent(path, builtin, error) || Lower(Utf8(path.filename())) == builtin_name) continue;
         std::unique_ptr<PatchFile> file;
         try {
-            file = std::make_unique<PatchFile>(path);
+            if (Lower(Utf8(path.extension())) == ".toml") {
+                file = std::make_unique<PatchFile>(path, TomlPatchAsXml(ReadText(path), Utf8(path.stem())));
+            } else {
+                file = std::make_unique<PatchFile>(path);
+            }
         } catch (const Error& e) {
             Log("Patches: %s: %s", Utf8(path.filename()).c_str(), e.what());
             continue;
@@ -578,7 +588,7 @@ void ExternalPatches(const fs::path& directory, const std::string& app_version, 
     }
 }
 
-Writes CompileExternal(const std::vector<External>& selected, const Segments& segments,
+Writes CompileExternal(const std::vector<External>& selected, const Segments& segments, const Bytes& elf,
                        const std::optional<std::pair<std::set<std::uint64_t>, Size>>& resolution) {
     Writes writes;
     for (const External& patch : selected) {
@@ -591,6 +601,12 @@ Writes CompileExternal(const std::vector<External>& selected, const Segments& se
                 const std::uint64_t offset = std::uint64_t(*value) - kBase;
                 Bytes data = Encode(*line);
                 if (!segments.Contains(offset, data.size())) throw Error("address " + address + " is outside the eboot");
+                if (const auto expect = line->Get("Expect")) {
+                    const Bytes wanted = FromHex(*expect);
+                    const auto original = OriginalBytes(elf, offset, data.size());
+                    const bool same = original ? *original == wanted : std::all_of(wanted.begin(), wanted.end(), [](std::uint8_t b) { return b == 0; });
+                    if (!same) throw Error("the game's code at " + address + " is not what it expects");
+                }
                 ours.emplace_back(offset, std::move(data));
             }
         } catch (const Error& error) {
@@ -856,7 +872,17 @@ PatchResult CompilePatches(const PatchRequest& request) {
         for (const External& e : found)
             if (enabled.count(e.key) || (!disabled.count(e.key) && Lower(e.meta->Get("isEnabled", "false")) == "true"))
                 chosen.push_back(e);
-        const Writes external = CompileExternal(chosen, segments, resolution);
+        std::stable_sort(chosen.begin(), chosen.end(), [](const External& a, const External& b) {
+            return ParseInt(a.meta->Get("Order", "0")).value_or(0) < ParseInt(b.meta->Get("Order", "0")).value_or(0);
+        });
+        std::set<std::string> groups;
+        chosen.erase(std::remove_if(chosen.begin(), chosen.end(), [&](const External& e) {
+            const std::string group = e.meta->Get("Group", "");
+            if (group.empty() || groups.insert(group).second) return false;
+            Log("Patches: skipped %s: another patch of its group %s is on", e.key.c_str(), group.c_str());
+            return true;
+        }), chosen.end());
+        const Writes external = CompileExternal(chosen, segments, elf, resolution);
         writes.insert(writes.end(), external.begin(), external.end());
     }
     if (Env("BB_OTHER_EDITION", "") == "1") {

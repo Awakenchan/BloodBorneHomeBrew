@@ -13,7 +13,7 @@ namespace BloodborneLauncher.Core
 {
     /// <summary>
     /// Settings › Appearance › App icon (app_icon): the launcher window's and the game window's
-    /// icon. Auto is the build's own (the red lantern for betas, the blue one for stable releases);
+    /// icon. The purple lantern is the main one and the orange lantern its variant;
     /// Your picture is one the player chose, made into an icon file. The exe file keeps the build's
     /// icon whatever is chosen.
     /// </summary>
@@ -21,10 +21,8 @@ namespace BloodborneLauncher.Core
     {
         public static readonly Choice[] Choices =
         {
-            new(L.T("Auto"), "auto", L.T("Red lantern in betas, blue in stable releases")),
-            new(L.T("Red lantern"), "red"),
-            new(L.T("Blue lantern"), "blue"),
-            new(L.T("Lantern by j3loo"), "j3loo", L.T("Fan art by j3loo")),
+            new(L.T("Purple lantern"), "auto"),
+            new(L.T("Orange lantern"), "orange"),
             new(L.T("Your picture"), "custom"),
         };
 
@@ -36,10 +34,15 @@ namespace BloodborneLauncher.Core
 
         private static string Resource(string choice) => choice switch
         {
-            "red" => "lantern-beta.ico",
-            "blue" => "lantern-stable.ico",
-            "j3loo" => "lantern-j3loo.ico",
+            "orange" => "lantern-orange.ico",
             _ => "app.ico",
+        };
+
+        public static string? Backdrop(string mode) => mode switch
+        {
+            "lantern" => "lantern-purple.png",
+            "lantern-orange" => "lantern-orange.png",
+            _ => null,
         };
 
         /// <summary>The chosen icon's .ico file, as the launcher carries it (Your picture: as made,
@@ -115,7 +118,8 @@ namespace BloodborneLauncher.Core
         {
             if (!OperatingSystem.IsWindows()) return;
             var bytes = choice == "auto" ? null : Bytes(choice);
-            var sign = choice + ":" + (bytes == null ? "" : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..12]);
+            var drawn = Bytes(choice);
+            var sign = choice + ":" + (drawn == null ? "" : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(drawn))[..12]);
             Task.Run(() =>
             {
                 try

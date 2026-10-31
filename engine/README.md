@@ -73,6 +73,9 @@ they combine GPL-2.0-or-later code (shadPS4, bbport, bloodborne_pc) with the onl
 The Hunter's Dream from [droogie/bbhost](https://github.com/droogie/bbhost) (GPL-3.0-or-later,
 `licenses/BBHOST-PORTS.md`). Copyright in each part stays with its authors.
 
+The built-in Lamp2Lamp patch is the work of Disschorde:
+[Lamp2Lamp - Warp Between Lamps](https://www.nexusmods.com/bloodborne/mods/455).
+
 Lantern Engine's own code, the launcher and the built-in game patches are © Awaken, under the
 GNU GPL v3 or later with additional terms (GPL-3.0 section 7, see `NOTICE`): anything that uses
 or ships them must keep the credit "Lantern Engine by Awaken" in its source, its about or
@@ -91,3 +94,7 @@ fonts and Lantern Menu SC (a Noto Sans SC subset, SIL OFL 1.1). The built-in gam
 Renderer fixes from AwesomeObserver's and deadinside28's bloodborne_pc forks and 0xCydral's FSR 4
 Vulkan path keep their GPL-2.0-or-later notices. AMD's FSR 4 DLLs and NVIDIA's DLSS files are not
 distributed here.
+
+fromsoftserve contributed the optional lighting effects (GTAO, indirect lighting, contact shadows,
+PCSS, improved reflections, POM cavity, volumetric sunlight and lamp fog, point light shadows, shadow
+resolution choices, motion blur quality) and the conservative occlusion fix, from their BBFSS fork.

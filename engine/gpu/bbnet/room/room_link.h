@@ -17,7 +17,7 @@
 namespace BbRoom {
 
 struct Event {
-    enum class Kind { Connected, Joined, Left, Host, Data, Disconnected, Refused, GaveUp, Announcement };
+    enum class Kind { Connected, Joined, Left, Host, Data, Disconnected, Refused, GaveUp, Announcement, Visitor };
     Kind kind = Kind::Data;
     int slot = 0;
     std::vector<std::uint8_t> data;
@@ -39,6 +39,11 @@ public:
     bool SendGame(int target, const std::uint8_t* data, std::size_t size);
     bool SendPaced(int target, const std::uint8_t* data, std::size_t size);
     void SetHost(bool host);
+    void SetVisitor(bool visitor) { visitor_ = visitor; }
+    void SetOpen(bool open);
+    bool OpenListed() const { return open_listed_.load(); }
+    bool IsVisitor(int slot) const;
+    void SendAway(int slot);
     std::vector<Event> Drain();
     bool WaitEvent(int timeout_ms);
 
@@ -55,6 +60,7 @@ private:
     bool Session();
     void Handle(const std::string& text);
     void Push(Event event);
+    void SendOpen(WebSocket& socket);
 
     std::string url_;
     Secret secret_;
@@ -65,11 +71,17 @@ private:
     std::atomic<int> host_{0};
     std::atomic<bool> want_host_{false};
     std::atomic<bool> lossy_targets_{false};
+    std::atomic<bool> visitor_{false};
+    std::atomic<bool> want_open_{false};
+    std::atomic<bool> open_listed_{false};
+    std::string name_;
+    std::string password_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<Event> events_;
     std::vector<int> members_;
     std::vector<int> devs_;
+    std::vector<int> visitors_;
     std::mutex socket_mutex_;
     std::shared_ptr<WebSocket> socket_;
     std::string last_error_;

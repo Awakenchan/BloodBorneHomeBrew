@@ -66,6 +66,12 @@ int main() {
     Check(given.First(21000, start + std::chrono::seconds(5)), "another boss's lot is its own");
     Check(given.First(31000, start + std::chrono::minutes(11)), "a later fight gives the lot again");
 
+    Check(BbEngine::SharedProgress::HostStepIsNewer(0b100, 0b010), "a guest behind the host's quest step takes it");
+    Check(!BbEngine::SharedProgress::HostStepIsNewer(0b010, 0b100), "a guest ahead of the host keeps its quest step");
+    Check(!BbEngine::SharedProgress::HostStepIsNewer(0b010, 0b010), "the same quest step writes nothing");
+    Check(BbEngine::SharedProgress::HostStepIsNewer(0b001, 0), "a guest who never started takes the first step");
+    Check(!BbEngine::SharedProgress::HostStepIsNewer(0, 0b001), "an empty block never wipes a guest's quest");
+
     if (failures) return 1;
     std::printf("shared-progress-test: ok\n");
     return 0;

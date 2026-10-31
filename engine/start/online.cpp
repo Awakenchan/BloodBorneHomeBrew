@@ -18,7 +18,7 @@ const char* const kThdEnv[] = {"BB_NET_BACKEND", "BB_THD_SERVER", "BB_THD_AUTH",
                                "BB_THD_RULESET"};
 const char* const kSeamlessServer = "https://185-244-28-175.sslip.io";
 const char* const kDirectPort = "38765";
-const char* const kRoomEnv[] = {"BB_ROOM_SERVER", "BB_ROOM_NAME", "BB_ROOM_PLAYER", "BB_ROOM_HOST", "BB_ROOM_HTTP_PORT", "BB_ROOM_LOCAL_PORT"};
+const char* const kRoomEnv[] = {"BB_ROOM_SERVER", "BB_ROOM_NAME", "BB_ROOM_PLAYER", "BB_ROOM_HOST", "BB_ROOM_HTTP_PORT", "BB_ROOM_LOCAL_PORT", "BB_ROOM_VISITOR"};
 const char* const kOnlineEnv[] = {"BB_ONLINE", "BB_SHADNET_SERVER", "BB_SHADNET_WEBAPI", "BB_SHADNET_NPID",
                                   "BB_SHADNET_PASSWORD", "BB_SHADNET_TOKEN", "BB_UPNP", "BB_P2P_PORT",
                                   "SHADPS4_HTTP_HOST_OVERRIDES_JSON", "BB_SIGN_TIMEOUT"};
@@ -196,6 +196,8 @@ bool ConfigureSeamless(const std::map<std::string, std::string>& settings, const
     SetEnv("BB_ROOM_NAME", room);
     SetEnv("BB_ROOM_PLAYER", player);
     SetEnv("BB_ROOM_HOST", host ? "1" : "0");
+    if (!host && !direct && get("seamless_visitor") == "1") SetEnv("BB_ROOM_VISITOR", "1");
+    else UnsetEnv("BB_ROOM_VISITOR");
     if (host) SetEnv("BB_ROOM_PASSWORD", Env("BB_ROOM_HOST_PASSWORD", ""));
     SetEnv("BB_ROOM_HTTP_PORT", std::to_string(http));
     SetEnv("BB_P2P_PORT", std::to_string(p2p));

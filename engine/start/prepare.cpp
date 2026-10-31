@@ -309,7 +309,7 @@ Boot PrepareBoot(const fs::path& game, Module& main, const fs::path& engine) {
     }
     CheckGame(game, boot.image, engine);
     boot.entry = main.exe.entry;
-    for (const Ph* p : loads) boot.segments.push_back({p->vaddr, p->memsz, p->flags});
+    for (const Ph* p : loads) boot.segments.push_back({p->vaddr, std::min((p->memsz + 0x3fffu) & ~std::uint64_t(0x3fff), size - p->vaddr), p->flags});
     std::map<std::uint32_t, std::size_t> imports;
     std::vector<std::uint32_t> import_order;
     for (const Relocation& r : main.relocs) {

@@ -30,9 +30,10 @@
     <Compile Include="..\BloodborneLauncher\GlobalUsings.cs" Link="GlobalUsings.cs" />
     <!-- The window icons (Core/AppIcon.cs reads them by file name). -->
     <EmbeddedResource Include="..\BloodborneLauncher\app.ico" LogicalName="app.ico" />
-    <EmbeddedResource Include="..\BloodborneLauncher\lantern-beta.ico" LogicalName="lantern-beta.ico" />
-    <EmbeddedResource Include="..\BloodborneLauncher\lantern-stable.ico" LogicalName="lantern-stable.ico" />
-    <EmbeddedResource Include="..\BloodborneLauncher\lantern-j3loo.ico" LogicalName="lantern-j3loo.ico" />
+    <EmbeddedResource Include="..\BloodborneLauncher\lantern-purple.ico" LogicalName="lantern-purple.ico" />
+    <EmbeddedResource Include="..\BloodborneLauncher\lantern-orange.ico" LogicalName="lantern-orange.ico" />
+    <EmbeddedResource Include="..\BloodborneLauncher\Assets\lantern-purple.png" LogicalName="lantern-purple.png" />
+    <EmbeddedResource Include="..\BloodborneLauncher\Assets\lantern-orange.png" LogicalName="lantern-orange.png" />
     <EmbeddedResource Include="..\BloodborneLauncher\Localization\*.json" LogicalName="BloodborneLauncher.Localization.%(Filename)%(Extension)" />
     <!-- The Discord status preview's picture (Settings › Community). -->
     <AvaloniaResource Include="..\BloodborneLauncher\Assets\discord-logo.png" Link="Assets\discord-logo.png" />

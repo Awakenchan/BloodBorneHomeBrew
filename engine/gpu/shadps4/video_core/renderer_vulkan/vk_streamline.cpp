@@ -324,6 +324,10 @@ PFN_vkGetInstanceProcAddr LoadBeforeVulkan() {
     preferences.applicationId = 231313132; // NVIDIA's id for unregistered applications (as NGX)
     preferences.engine = sl::EngineType::eCustom;
     preferences.engineVersion = "Lantern Engine";
+    if (const char* use_project_id = std::getenv("BB_DLSS_PROJECT_ID"); use_project_id && use_project_id[0] == '1') {
+        preferences.engineVersion = "0.9.39";
+        preferences.projectId = "5c1f3a9e-7b42-4d86-9e31-0f6a2b7cd481";
+    }
     preferences.renderAPI = sl::RenderAPI::eVulkan;
     if (const sl::Result r = sl_init(preferences, sl::kSDKVersion); r != sl::Result::eOk) {
         static std::string why;

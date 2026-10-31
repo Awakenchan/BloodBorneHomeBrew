@@ -21,9 +21,10 @@
   <ItemGroup>
     <Resource Include="app.ico" />
     <EmbeddedResource Include="Localization\*.json" LogicalName="BloodborneLauncher.Localization.%(Filename)%(Extension)" />
-    <Resource Include="lantern-beta.ico" />
-    <Resource Include="lantern-stable.ico" />
-    <Resource Include="lantern-j3loo.ico" />
+    <Resource Include="lantern-purple.ico" />
+    <Resource Include="lantern-orange.ico" />
+    <Resource Include="Assets\lantern-purple.png" />
+    <Resource Include="Assets\lantern-orange.png" />
     <Resource Include="Assets\discord-logo.png" />
   </ItemGroup>
   <ItemGroup>

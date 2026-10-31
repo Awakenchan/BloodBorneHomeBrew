@@ -161,20 +161,28 @@ void StagingBufferPool::FreeDeferred(const StagingBufferRef& ref) {
 
 void StagingBufferPool::TickFrame() {
     ++frame;
-    for (Ring& ring : rings) {
-        TrimRing(ring);
-    }
-    for (auto& cache : large_caches) {
-        TrimLarge(cache);
+    static const bool low_vram = [this] {
+        const char* env = std::getenv("BB_LOW_VRAM_STAGING");
+        return instance.IsLowVramAmd() && !(env && env[0] == '0');
+    }();
+    static const u64 vram_idle_frames = [] {
+        const char* env = std::getenv("BB_STAGING_VRAM_IDLE_FRAMES");
+        return env && env[0] ? std::strtoull(env, nullptr, 10) : u64{300};
+    }();
+    const u32 device_local = u32(VideoCore::MemoryType::DeviceLocal);
+    for (u32 i = 0; i < NUM_TYPES; ++i) {
+        const bool vram = low_vram && i == device_local;
+        TrimRing(rings[i], vram ? 2 : keep_blocks, vram ? vram_idle_frames : RING_IDLE_FRAMES);
+        TrimLarge(large_caches[i], vram ? vram_idle_frames : LARGE_IDLE_FRAMES);
     }
     PublishStats();
 }
 
-void StagingBufferPool::TrimRing(Ring& ring) {
+void StagingBufferPool::TrimRing(Ring& ring, u64 keep, u64 idle_frames) {
     auto& blocks = ring.blocks;
     for (size_t i = blocks.size(); i-- > 0;) {
         const Block& block = blocks[i];
-        if (blocks.size() <= keep_blocks || frame - block.last_used_frame < RING_IDLE_FRAMES ||
+        if (blocks.size() <= keep || frame - block.last_used_frame < idle_frames ||
             !scheduler.IsFree(block.buffer->LastTick())) {
             continue;
         }
@@ -190,9 +198,9 @@ void StagingBufferPool::TrimRing(Ring& ring) {
     }
 }
 
-void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache) {
-    std::erase_if(cache, [this](const LargeBuffer& entry) {
-        return !entry.held && frame - entry.last_used_frame >= LARGE_IDLE_FRAMES &&
+void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache, u64 idle_frames) {
+    std::erase_if(cache, [this, idle_frames](const LargeBuffer& entry) {
+        return !entry.held && frame - entry.last_used_frame >= idle_frames &&
                scheduler.IsFree(entry.tick);
     });
 }

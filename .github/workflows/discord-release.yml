@@ -2,6 +2,8 @@ name: Discord release notice
 
 # Posts every published release to Discord: pre-releases to the beta channel, the rest to the
 # stable one. The webhook URLs are repository secrets (DISCORD_WEBHOOK_BETA, DISCORD_WEBHOOK_STABLE).
+# Long notes go out as several messages of one embed each, since Discord allows 4096 characters
+# in an embed and 6000 in a message; the last one links the full notes on GitHub.
 on:
   release:
     types: [published]
@@ -19,13 +21,54 @@ jobs:
           BODY: ${{ github.event.release.body }}
         run: |
           if [ -z "$WEBHOOK" ]; then echo "No webhook secret for this channel"; exit 0; fi
-          jq -n --arg title "$TITLE" --arg url "$URL" --arg body "$BODY" --arg pre "$PRERELEASE" '{
-            username: "Bloodborne PC",
-            embeds: [{
-              title: $title,
-              url: $url,
-              description: (($body | .[0:3800]) + "\n\n[Download](" + $url + ")"),
-              color: (if $pre == "true" then 15105570 else 10038562 end),
-              footer: { text: (if $pre == "true" then "Beta: not tested yet" else "Stable release" end) }
-            }]
-          }' | curl -sSf -H "Content-Type: application/json" -d @- "$WEBHOOK"
+          python3 - <<'PY'
+          import json, os, time, urllib.error, urllib.request
+
+          LIMIT = 3800
+          pre = os.environ["PRERELEASE"] == "true"
+          title, url = os.environ["TITLE"], os.environ["URL"]
+          closing = f"\n\nFull notes and download: [GitHub release]({url})"
+
+          chunks, current = [], ""
+          for line in os.environ["BODY"].replace("\r\n", "\n").split("\n"):
+              while len(line) > LIMIT:
+                  if current:
+                      chunks.append(current)
+                      current = ""
+                  chunks.append(line[:LIMIT])
+                  line = line[LIMIT:]
+              if current and len(current) + len(line) + 1 > LIMIT:
+                  chunks.append(current)
+                  current = line
+              else:
+                  current = f"{current}\n{line}" if current else line
+          if current.strip() or not chunks:
+              chunks.append(current)
+          chunks = [c.strip("\n") for c in chunks if c.strip()] or [""]
+
+          for index, text in enumerate(chunks):
+              last = index == len(chunks) - 1
+              embed = {
+                  "title": title if len(chunks) == 1 else f"{title} ({index + 1}/{len(chunks)})",
+                  "url": url,
+                  "description": text + (closing if last else ""),
+                  "color": 15105570 if pre else 10038562,
+              }
+              if last:
+                  embed["footer"] = {"text": "Beta: not tested yet" if pre else "Stable release"}
+              payload = json.dumps({"username": "Bloodborne PC", "embeds": [embed]}).encode()
+              if os.environ.get("DISCORD_DRY_RUN"):
+                  print(index + 1, len(chunks), len(embed["description"]), len(embed["title"]), repr(text[:40]))
+                  continue
+              for attempt in range(5):
+                  request = urllib.request.Request(os.environ["WEBHOOK"], data=payload, headers={
+                      "Content-Type": "application/json", "User-Agent": "LanternEngine-release-notice"})
+                  try:
+                      urllib.request.urlopen(request).read()
+                      break
+                  except urllib.error.HTTPError as error:
+                      if error.code != 429 or attempt == 4:
+                          raise
+                      time.sleep(float(json.loads(error.read()).get("retry_after", 2)) + 0.5)
+              time.sleep(1)
+          PY

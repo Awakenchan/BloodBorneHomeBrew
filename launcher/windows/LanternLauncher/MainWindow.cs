@@ -505,6 +505,7 @@ namespace BloodborneLauncher
             Tab(L.T("Display"), typeof(DisplayPage));
             Tab(L.T("Graphics"), typeof(GraphicsPage));
             _controlsItem = Tab(L.T("Controls"), typeof(ControlsPage));
+            Tab(L.T("Looks"), typeof(LooksPage));
             Tab(L.T("Trophies"), typeof(TrophiesPage));
             _onlineItem = Tab(L.T("Online"), typeof(OnlinePage));
             _settingsItem = Tab(L.T("Settings"), typeof(SettingsPage));
@@ -551,6 +552,7 @@ namespace BloodborneLauncher
             _classicPlay = Item(SymbolRegular.Play24, L.T("Play"), typeof(PlayPage));
             _classicSaves = Item(SymbolRegular.Save24, L.T("Saves"), typeof(SavesPage));
             _classicControls = Item(SymbolRegular.XboxController24, L.T("Controls"), typeof(ControlsPage));
+            Item(SymbolRegular.Sparkle24, L.T("Looks"), typeof(LooksPage));
             Item(SymbolRegular.Trophy24, L.T("Trophies"), typeof(TrophiesPage));
             _classicOnline = Item(SymbolRegular.Globe24, L.T("Online"), typeof(OnlinePage));
             Header(L.T("SIGHT"), new Thickness(18, 18, 0, 6));
@@ -798,6 +800,11 @@ namespace BloodborneLauncher
             {
                 image = await Task.Run(() =>
                 {
+                    if (AppIcon.Backdrop(mode) is { } builtIn)
+                    {
+                        using var carried = typeof(AppIcon).Assembly.GetManifestResourceStream(builtIn);
+                        if (carried != null) return Bitmap.DecodeToWidth(carried, width);
+                    }
                     string? art = mode == "custom" && File.Exists(own)
                         ? own
                         : new[] { "pic1.png", "pic0.png" }

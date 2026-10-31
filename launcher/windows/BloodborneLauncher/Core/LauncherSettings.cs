@@ -62,13 +62,14 @@ namespace BloodborneLauncher.Core
             ["cheat_bullets_amount"] = 20,
             ["update_channel"] = "", // empty: beta builds follow beta, others stable
             ["ui_layout"] = "modern",
-            ["ui_navigation"] = "tabs", // tabs | sidebar (Modern layout; Classic has the sidebar)
+            ["ui_navigation"] = "sidebar", // sidebar | tabs (Modern layout; Classic has the sidebar)
             ["ui_theme"] = "default",
             ["ui_theme_colour"] = "#C41E3A",
-            ["ui_background"] = "game", // game | custom | none
+            ["ui_background"] = "lantern", // lantern | lantern-orange | game | custom | none
+            ["lantern_art_default"] = true,
             ["ui_background_image"] = "",
             ["ui_background_blur"] = "strong", // strong | light | off
-            ["app_icon"] = "auto", // auto | red | blue | j3loo | custom (AppIcon)
+            ["app_icon"] = "auto", // auto | orange | custom (AppIcon)
             ["app_icon_image"] = "", // custom: the picture chosen (AppIcon.CustomFile holds it as an icon)
             ["ui_window_buttons"] = "mac", // mac | windows
             ["ui_window_buttons_side"] = "usual", // usual (mac left, windows right) | left | right
@@ -130,6 +131,12 @@ namespace BloodborneLauncher.Core
                     // Defaults(), so a stable launcher saved it beside its own default (off) and a
                     // player moving from stable to a beta kept the 40% marks (RTX 4060 at 3.4-4.3
                     // GB of 2486 MiB: evictions, re-uploads and tiled write-backs every frame).
+                    if (!saved.ContainsKey("lantern_art_default"))
+                    {
+                        if (Str("app_icon") is "red" or "blue" or "j3loo") _data["app_icon"] = "auto";
+                        if (Str("ui_background") == "game") _data["ui_background"] = "lantern";
+                        _data["ui_navigation"] = "sidebar";
+                    }
                     if (Updater.CurrentBeta > 0 && !saved.ContainsKey("vram_budget_beta_on"))
                         _data["exp_vram_budget"] = true;
                     // 0.9.37 beta 8: beta builds write the frame statistics into the log, switched

@@ -115,10 +115,16 @@ void Set(Values& v, const std::string& key, const std::string& value) {
             std::printf("Settings: unknown reflex '%s' (expected off, on or boost); on\n", value.c_str());
         }
         v.reflex = mode < 0 ? ReflexOn : mode;
+    } else if (key == "anti_lag") {
+        v.anti_lag = i != 0;
     } else if (key == "render_scale") {
         v.render_scale = Clamp(std::isfinite(f) && f > 0.0f ? f : 1.3f, RenderScaleMin, RenderScaleMax);
     } else if (key == "mip_bias") {
         v.mip_bias = Clamp(std::isfinite(f) ? f : 0.0f, MipBiasMin, MipBiasMax);
+    } else if (key == "upscale_before_post") {
+        v.upscale_before_post = i != 0;
+    } else if (key == "dlss_jitter_fade") {
+        v.dlss_jitter_fade = i != 0;
     } else if (key == "dlss_auto_exposure") {
         v.dlss_auto_exposure = i != 0;
     } else if (key == "preset") {
@@ -164,6 +170,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.coop_notices = i != 0;
     } else if (key == "coop_warp_requests") {
         v.coop_warp_requests = i != 0;
+    } else if (key == "coop_open_room") {
+        v.coop_open_room = i != 0;
     } else if (key == "voice_enabled") {
         v.voice_enabled = i != 0;
     } else if (key == "voice_push_to_talk") {
@@ -290,6 +298,20 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.graphics_vignette=i!=0;
     } else if (key == "graphics_ao_strength") {
         v.graphics_ao_strength=Clamp(std::isfinite(f)?f:1.0f,0.0f,5.0f);
+    } else if (key == "graphics_gi_strength") {
+        v.graphics_gi_strength=Clamp(std::isfinite(f)?f:6.0f,0.0f,12.0f);
+    } else if (key == "graphics_volumetric_intensity") {
+        v.graphics_volumetric_intensity=Clamp(std::isfinite(f)?f:1.0f,0.0f,3.0f);
+    } else if (key == "graphics_point_fog_intensity") {
+        v.graphics_point_fog_intensity=Clamp(std::isfinite(f)?f:1.0f,0.0f,3.0f);
+    } else if (key == "graphics_ssr_intensity") {
+        v.graphics_ssr_intensity=Clamp(std::isfinite(f)?f:1.0f,0.0f,3.0f);
+    } else if (key == "graphics_shadow_resolution") {
+        v.graphics_shadow_resolution=std::clamp(i,0,2);
+    } else if (key == "graphics_local_shadow_resolution") {
+        v.graphics_local_shadow_resolution=std::clamp(i,0,2);
+    } else if (key == "graphics_motion_blur_quality") {
+        v.graphics_motion_blur_quality=std::clamp(i,0,1);
     } else if (key == "graphics_shadow_scale") {
         v.graphics_shadow_scale=Clamp(std::isfinite(f)?f:1.0f,0.25f,8.0f);
     } else if (key == "graphics_bloom") {
@@ -442,6 +464,29 @@ const char* MenuText(const char* english, const char* russian) {
     }
 }
 
+void SetValue(const std::string& key, const std::string& value) {
+    Set(Get(), key, value);
+}
+
+std::string SavedValue(const char* key, const char* fallback) {
+    std::string found = fallback;
+    if (FILE* file = std::fopen(Path(), "r")) {
+        char line[512];
+        const std::size_t length = std::strlen(key);
+        while (std::fgets(line, sizeof line, file)) {
+            if (!std::strncmp(line, key, length) && line[length] == '=') {
+                found = line + length + 1;
+                while (!found.empty() && (found.back() == '\n' || found.back() == '\r')) {
+                    found.pop_back();
+                }
+                break;
+            }
+        }
+        std::fclose(file);
+    }
+    return found;
+}
+
 void Load() {
     auto& v = Get();
     for (int e = 0; e < EffectCount; ++e) {
@@ -490,7 +535,7 @@ void Load() {
         {"BB_FRAME_GEN_CAP", "frame_gen_cap"},     {"BB_DLSS_PRESET", "dlss_preset"},
         {"BB_DLSS_MIP_BIAS", "dlss_mip_bias"},   {"BB_FRAME_GEN_FRAMES", "frame_gen_frames"},
         {"BB_REFLEX", "reflex"},                   {"BB_RENDER_SCALE", "render_scale"},
-        {"BB_MIP_BIAS", "mip_bias"},
+        {"BB_MIP_BIAS", "mip_bias"},               {"BB_DLSS_JITTER_FADE", "dlss_jitter_fade"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env)) {
@@ -504,6 +549,9 @@ void Load() {
     v.startup_render_scale = v.render_scale;
     v.startup_frame_gen = v.frame_gen;
     v.startup_upscaler = v.upscaler;
+    v.startup_motion_blur_quality = v.graphics_motion_blur_quality;
+    v.startup_shadow_resolution = v.graphics_shadow_resolution;
+    v.startup_local_shadow_resolution = v.graphics_local_shadow_resolution;
     v.startup_object_motion = v.object_motion;
     for (int e = 0; e < EffectCount; ++e) {
         v.startup_effects[e] = v.effects[e];
@@ -585,6 +633,7 @@ void Save() {
     put("frame_gen_cap", flag(v.frame_gen_cap));
     put("frame_gen_frames", std::to_string(std::clamp(v.frame_gen_frames.load(), 1, FrameGenFramesMax)));
     put("reflex", ReflexNames[std::clamp(v.reflex.load(), 0, ReflexCount - 1)]);
+    put("anti_lag", flag(v.anti_lag));
     put("render_scale", fixed(v.render_scale, 2));
     put("mip_bias", fixed(v.mip_bias, 2));
     put("sharpen", flag(v.sharpen));
@@ -607,6 +656,7 @@ void Save() {
     put("coop_hud_ping", flag(v.coop_hud_ping));
     put("coop_notices", flag(v.coop_notices));
     put("coop_warp_requests", flag(v.coop_warp_requests));
+    put("coop_open_room", flag(v.coop_open_room));
     put("voice_enabled", flag(v.voice_enabled));
     put("voice_push_to_talk", flag(v.voice_push_to_talk));
     put("voice_mic_muted", flag(v.voice_mic_muted));
@@ -636,6 +686,8 @@ void Save() {
     put("dlss_preset", DlssPresetText(v.dlss_preset));
     put("dlss_mip_bias", flag(v.dlss_mip_bias));
     put("dlss_auto_exposure", flag(v.dlss_auto_exposure));
+    put("dlss_jitter_fade", flag(v.dlss_jitter_fade));
+    put("upscale_before_post", flag(v.upscale_before_post));
     put("optiscaler_compat", flag(v.optiscaler_compat));
     put("optiscaler_ngx_lock", flag(v.optiscaler_ngx_lock));
     put("optiscaler_clean_thread", flag(v.optiscaler_clean_thread));
@@ -656,6 +708,13 @@ void Save() {
     put("graphics_controls",flag(v.graphics_controls));
     put("graphics_vignette",flag(v.graphics_vignette));
     put("graphics_ao_strength",fixed(v.graphics_ao_strength,2));
+    put("graphics_gi_strength",fixed(v.graphics_gi_strength,2));
+    put("graphics_volumetric_intensity",fixed(v.graphics_volumetric_intensity,2));
+    put("graphics_point_fog_intensity",fixed(v.graphics_point_fog_intensity,2));
+    put("graphics_ssr_intensity",fixed(v.graphics_ssr_intensity,2));
+    put("graphics_shadow_resolution",std::to_string(std::clamp(v.graphics_shadow_resolution.load(),0,2)));
+    put("graphics_local_shadow_resolution",std::to_string(std::clamp(v.graphics_local_shadow_resolution.load(),0,2)));
+    put("graphics_motion_blur_quality",std::to_string(std::clamp(v.graphics_motion_blur_quality.load(),0,1)));
     put("graphics_shadow_scale",fixed(v.graphics_shadow_scale,2));
     put("graphics_bloom",fixed(v.graphics_bloom,2));
     put("graphics_saturation",fixed(v.graphics_saturation,2));

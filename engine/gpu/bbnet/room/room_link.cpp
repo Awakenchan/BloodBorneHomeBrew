@@ -42,6 +42,9 @@ bool Link::Start(const std::string& server, const std::string& name, const std::
         member.push_back(digits[byte & 15]);
     }
     url_ = RoomUrl(server, secret_.room_id, path) + "/" + member;
+    if (visitor_ && path == "room") url_ += "?visitor=1";
+    name_ = name;
+    password_ = password;
     stop_ = false;
     thread_ = std::thread([this] { Run(); });
     return true;
@@ -62,8 +65,10 @@ void Link::Stop() {
     connected_ = false;
     slot_ = 0;
     host_ = 0;
+    open_listed_ = false;
     std::lock_guard lock(mutex_);
     members_.clear();
+    visitors_.clear();
 }
 
 bool Link::Send(int target, const std::uint8_t* data, std::size_t size) {
@@ -132,6 +137,39 @@ void Link::SetHost(bool host) {
     }
     const std::string text = host ? R"({"t":"host"})" : R"({"t":"unhost"})";
     if (socket && connected_) socket->Send(text.data(), text.size(), false);
+}
+
+void Link::SendOpen(WebSocket& socket) {
+    const std::string text = want_open_
+        ? nlohmann::json{{"t", "open"}, {"room", name_}, {"password", password_}}.dump()
+        : std::string(R"({"t":"unopen"})");
+    socket.Send(text.data(), text.size(), false);
+}
+
+void Link::SetOpen(bool open) {
+    if (want_open_.exchange(open) == open) return;
+    if (!open) open_listed_ = false;
+    std::shared_ptr<WebSocket> socket;
+    {
+        std::lock_guard lock(socket_mutex_);
+        socket = socket_;
+    }
+    if (socket && connected_) SendOpen(*socket);
+}
+
+void Link::SendAway(int slot) {
+    std::shared_ptr<WebSocket> socket;
+    {
+        std::lock_guard lock(socket_mutex_);
+        socket = socket_;
+    }
+    const std::string text = nlohmann::json{{"t", "away"}, {"slot", slot}}.dump();
+    if (socket && connected_) socket->Send(text.data(), text.size(), false);
+}
+
+bool Link::IsVisitor(int slot) const {
+    std::lock_guard lock(mutex_);
+    return std::find(visitors_.begin(), visitors_.end(), slot) != visitors_.end();
 }
 
 std::vector<Event> Link::Drain() {
@@ -204,6 +242,7 @@ bool Link::Session() {
                 if (want_host_) {
                     const std::string text = R"({"t":"host"})";
                     socket->Send(text.data(), text.size(), false);
+                    if (want_open_) SendOpen(*socket);
                 }
             }
             return;
@@ -222,9 +261,11 @@ bool Link::Session() {
         {
             std::lock_guard lock(mutex_);
             members_.clear();
+            visitors_.clear();
         }
         slot_ = 0;
         host_ = 0;
+        open_listed_ = false;
         Push({Event::Kind::Disconnected, 0, {}});
     } else if (!welcomed && !stop_) {
         Push({Event::Kind::Refused, 0, {}});
@@ -253,6 +294,12 @@ void Link::Handle(const std::string& text) {
                     if (d.is_number_integer()) devs_.push_back(d.get<int>());
                 }
             }
+            visitors_.clear();
+            if (message.contains("visitors") && message["visitors"].is_array()) {
+                for (const auto& v : message["visitors"]) {
+                    if (v.is_number_integer()) visitors_.push_back(v.get<int>());
+                }
+            }
         }
         slot_ = slot;
         host_ = message.value("host", 0);
@@ -275,8 +322,17 @@ void Link::Handle(const std::string& text) {
             std::lock_guard lock(mutex_);
             members_.erase(std::remove(members_.begin(), members_.end(), slot), members_.end());
             devs_.erase(std::remove(devs_.begin(), devs_.end(), slot), devs_.end());
+            visitors_.erase(std::remove(visitors_.begin(), visitors_.end(), slot), visitors_.end());
         }
         Push({Event::Kind::Left, slot, {}});
+    } else if (type == "visitor") {
+        {
+            std::lock_guard lock(mutex_);
+            if (std::find(visitors_.begin(), visitors_.end(), slot) == visitors_.end()) visitors_.push_back(slot);
+        }
+        Push({Event::Kind::Visitor, slot, {}});
+    } else if (type == "opened") {
+        open_listed_ = message.value("on", false);
     } else if (type == "host") {
         host_ = slot;
         Push({Event::Kind::Host, slot, {}});

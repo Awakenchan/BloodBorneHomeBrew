@@ -50,7 +50,7 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12, kBring = 13, kVoice = 14, kBossLot = 15, kBossTrophy = 16, kPiece = 17, kPartyCall = 18, kTravelFlags = 19, kPing = 20, kPong = 21, kWarpAsk = 22, kWarpAnswer = 23 };
+enum : std::uint8_t { kRequest = 1, kReply = 2, kEvent = 3, kDatagram = 4, kBatch = 5, kVitals = 6, kTravel = 7, kProgress = 8, kDungeon = 9, kChalices = 10, kPortrait = 11, kBundle = 12, kBring = 13, kVoice = 14, kBossLot = 15, kBossTrophy = 16, kPiece = 17, kPartyCall = 18, kTravelFlags = 19, kPing = 20, kPong = 21, kWarpAsk = 22, kWarpAnswer = 23, kLampAsk = 24, kLampAnswer = 25 };
 constexpr std::size_t kVitalsFixed = 1 + 1 + 4 * 4 + 2 + 3 * 4 + 4;
 constexpr std::size_t kBatchBytes = 16000;
 constexpr std::size_t kBundleBytes = 60000;
@@ -1151,6 +1151,28 @@ void OnFrame(int sender, const std::vector<std::uint8_t>& data) {
         S().status.GuestAnswered(data[1], Clock::now());
         return;
     }
+    if (kind == kLampAsk) {
+        if (data.size() != 5 || !S().host) return;
+        bool member = false;
+        for (const auto& [slot, name] : PartyMembers()) member = member || slot == sender;
+        std::uint32_t lamp = 0;
+        std::memcpy(&lamp, data.data() + 1, 4);
+        bool take = member && S().warp_requests.load();
+        if (take) {
+            std::lock_guard lock(S().status_mu);
+            take = S().status.LampAsk(sender, lamp, Clock::now());
+        }
+        if (take) Log("slot %d asks the party to travel to lamp %u", sender, lamp);
+        const std::uint8_t answer[2] = {kLampAnswer, take ? std::uint8_t(kLampGot) : std::uint8_t(kLampRefused)};
+        S().link.Send(sender, answer, sizeof answer);
+        return;
+    }
+    if (kind == kLampAnswer) {
+        if (data.size() != 2 || sender != S().link.HostSlot()) return;
+        std::lock_guard lock(S().status_mu);
+        S().status.GuestLampAnswered(data[1], Clock::now());
+        return;
+    }
     if (kind == kPiece) {
         if (data.size() <= kPieceHead) return;
         const std::uint8_t id = data[1], index = data[2], count = data[3];
@@ -1348,6 +1370,9 @@ void LinkLoop() {
                 Log("could not join the room (%s): it may be full (5 players), or your connection already has another "
                     "room open (one room per player); retrying",
                     S().link.LastError().empty() ? "refused" : S().link.LastError().c_str());
+                break;
+            case Event::Kind::Visitor:
+                AddPartyLine(PartyLineKind::Visitor, {});
                 break;
             case Event::Kind::Announcement:
                 if (AnnouncementServer(Env("BB_ROOM_SERVER"))) {
@@ -1736,6 +1761,7 @@ void Start(int game_p2p_port) {
     S().http_port = std::atoi(Env("BB_ROOM_HTTP_PORT").c_str());
     if (S().http_port <= 0 || S().http_port > 65535) S().http_port = game_p2p_port + 1;
     S().link.SetHost(S().host);
+    S().link.SetVisitor(!S().host && Env("BB_ROOM_VISITOR") == "1");
     if (const int local = std::atoi(Env("BB_ROOM_LOCAL_PORT").c_str()); S().host && local > 0) {
         std::string error;
         if (!S().local_room.Start(local, Derive(Env("BB_ROOM_NAME"), Env("BB_ROOM_PASSWORD")).room_id, error)) {
@@ -1800,7 +1826,26 @@ bool Kick(int slot) {
     std::lock_guard lock(S().host_mu);
     const bool done = KickLocked(slot, false);
     if (done) Log("the host sent slot %d home", slot);
-    return done;
+    if (!S().link.IsVisitor(slot)) return done;
+    S().link.SendAway(slot);
+    Log("the host sent the visitor in slot %d away from the room", slot);
+    return true;
+}
+
+bool OpenRoomAllowed() {
+    return IsHost() && AnnouncementServer(Env("BB_ROOM_SERVER"));
+}
+
+void SetOpenRoom(bool on) {
+    S().link.SetOpen(on && OpenRoomAllowed());
+}
+
+bool OpenRoomListed() {
+    return S().link.OpenListed();
+}
+
+bool IsVisitorSlot(int slot) {
+    return S().link.IsVisitor(slot);
 }
 
 bool LeaveParty() {
@@ -1945,6 +1990,41 @@ bool WarpWaiting() {
 
 void SetWarpRequests(bool on) {
     S().warp_requests = on;
+}
+
+void SendLampAsk(std::uint32_t lamp) {
+    if (S().host || !S().started.load()) return;
+    const auto now = Clock::now();
+    std::lock_guard lock(S().status_mu);
+    if (S().status.GuestLampWaiting(now)) return;
+    const int host = S().link.HostSlot();
+    std::uint8_t frame[5] = {kLampAsk};
+    std::memcpy(frame + 1, &lamp, 4);
+    if (!host || !S().link.Connected() || !S().link.Send(host, frame, sizeof frame)) {
+        S().status.AddLine(PartyLineKind::LampNoAnswer, {}, now);
+        return;
+    }
+    S().status.GuestLampAsked(now);
+    Log("asked the host to take the party to lamp %u", lamp);
+}
+
+bool PendingLampAsk(int& slot, std::string& who, std::uint32_t& lamp) {
+    std::lock_guard lock(S().status_mu);
+    return S().status.LampAskNow(Clock::now(), slot, who, lamp);
+}
+
+void AnswerLampAsk(bool yes) {
+    int slot = 0;
+    std::string who;
+    std::uint32_t lamp = 0;
+    {
+        std::lock_guard lock(S().status_mu);
+        if (!S().status.LampAskNow(Clock::now(), slot, who, lamp)) return;
+        S().status.LampAskDone();
+    }
+    const std::uint8_t answer[2] = {kLampAnswer, yes ? std::uint8_t(kLampAgreed) : std::uint8_t(kLampRefused)};
+    S().link.Send(slot, answer, sizeof answer);
+    Log("the host %s the party's travel to lamp %u", yes ? "accepted" : "refused", lamp);
 }
 
 void NoteBringFar() {

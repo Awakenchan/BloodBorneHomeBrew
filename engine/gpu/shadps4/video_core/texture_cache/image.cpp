@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "bbport_toggles.h"
+#include <cstdio>
 #include <mutex>
 #include <ranges>
 #include <tuple>
 #include <unordered_map>
 #include "common/assert.h"
+#include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -146,11 +148,13 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
             dedicated = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         }
     }
-    const VmaAllocationCreateInfo alloc_ci = {
+    const u32 vram_types = low_vram_image_types.load(std::memory_order_relaxed);
+    VmaAllocationCreateInfo alloc_ci = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | dedicated,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
         .requiredFlags = 0,
         .preferredFlags = 0,
+        .memoryTypeBits = vram_types,
         .pool = VK_NULL_HANDLE,
         .pUserData = nullptr,
     };
@@ -160,6 +164,24 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     VmaAllocationInfo alloc_info{};
     VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
                                      &allocation, &alloc_info);
+    if (result != VK_SUCCESS && vram_types != 0) {
+        alloc_ci.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+        result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image, &allocation,
+                                &alloc_info);
+        bool anywhere = false;
+        if (result != VK_SUCCESS) {
+            anywhere = true;
+            alloc_ci.memoryTypeBits = 0;
+            result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
+                                    &allocation, &alloc_info);
+        }
+        static std::atomic<u32> reported{0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 10) {
+            std::printf("GPU: an image did not fit the VRAM budget; %s: %s\n",
+                        anywhere ? "any memory" : "in VRAM past the budget",
+                        vk::to_string(vk::Result{result}).c_str());
+        }
+    }
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};

@@ -301,7 +301,8 @@ struct Section {
 constexpr Section kSections[] = {
     {"PCGraphics", 117020, 6, true}, {"PCControls", 118020, 8, false}, {"PCKeys", 119020, 8, false},
     {"PCEffects", 120020, 5, true},  {"PCCamera", 121020, 3, true},    {"PCEnhance", 124020, 3, true},
-    {"PCColour", 125020, 5, true},
+    {"PCColour", 125020, 5, true},   {"PCLighting", 126020, 8, true},  {"PCDetail", 127020, 8, true},
+    {"PCLooks", 128020, 1, false},
 };
 constexpr int kDonorRows = 6, kDonorDefaults = 6;
 constexpr std::uint16_t kFirstSectionDepth = 383;

@@ -1859,6 +1859,13 @@ void TextureCache::GarbageCollectImages() {
                                .count());
     if (instance.CanReportMemoryUsage()) {
         total_used_memory = instance.GetDeviceMemoryUsage();
+        static const bool low_vram_gc = [this] {
+            const char* env = std::getenv("BB_LOW_VRAM_GC");
+            return instance.IsLowVramAmd() && !(env && env[0] == '0');
+        }();
+        if (low_vram_gc) {
+            total_used_memory -= std::min(total_used_memory, instance.GetVmaFreeInBlocks());
+        }
         // bbport: on integrated GPUs (Steam Deck) the usage covers system-memory heaps holding
         // much more than images (buffers backing guest memory), and the startup budget left
         // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
@@ -1881,10 +1888,13 @@ void TextureCache::GarbageCollectImages() {
             // bbport: discrete GPUs (see DiscretePressurePercent); the budget once a second.
             gc_budget_second = second;
             if (const u64 budget = instance.GetDeviceMemoryBudgetNow(); budget != 0) {
-                pressure_gc_memory = std::max(static_pressure_gc_memory, budget / 100 * percent);
+                pressure_gc_memory = low_vram_gc
+                                         ? budget / 100 * percent
+                                         : std::max(static_pressure_gc_memory, budget / 100 * percent);
                 critical_gc_memory =
-                    std::max({static_critical_gc_memory, budget / 100 * (percent + 10),
-                              pressure_gc_memory});
+                    low_vram_gc ? budget / 100 * (percent + 10)
+                                : std::max({static_critical_gc_memory, budget / 100 * (percent + 10),
+                                            pressure_gc_memory});
             }
         }
     }

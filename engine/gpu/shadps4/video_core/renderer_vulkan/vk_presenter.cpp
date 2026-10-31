@@ -16,6 +16,7 @@
 #include "bbport_settings.h"
 #include "bbport_timeline.h"
 #include "face_shot.h"
+#include "lantern_anti_lag.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -1449,6 +1450,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // this frame go out right before (none for a frame shown again).
     const DlssFrameInfo* dlss_info = real_game_frame ? &frame->dlss : nullptr;
     dlss_fg->BeforePresent(dlss_info, BbOverlay::MenuOpen(), hdr_output);
+    if (real_game_frame) {
+        LanternAntiLag::BeforePresent();
+    }
     bool presented;
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};

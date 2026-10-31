@@ -45,6 +45,7 @@ void PartyStatus::Vitals(int slot, std::int32_t hp, std::int32_t hp_max, std::ui
 
 void PartyStatus::Left(int slot, Time now) {
     asks_.erase(slot);
+    if (slot == lamp_slot_) LampAskDone();
     const auto it = peers_.find(slot);
     if (it == peers_.end()) return;
     const std::string name = it->second.name;
@@ -78,6 +79,10 @@ void PartyStatus::Tick(Time now) {
     if (guest_asked_ != Time{} && !guest_answered_ && now - guest_asked_ >= kWarpAnswerWithin) {
         guest_asked_ = {};
         AddLine(PartyLineKind::WarpNoAnswer, {}, now);
+    }
+    if (guest_lamp_at_ != Time{} && now - guest_lamp_at_ >= (guest_lamp_seen_ ? kLampAskLasts : kLampAnswerWithin)) {
+        guest_lamp_at_ = {};
+        AddLine(PartyLineKind::LampNoAnswer, {}, now);
     }
     if (down_) return;
     for (auto& [slot, peer] : peers_) {
@@ -124,6 +129,57 @@ void PartyStatus::GuestBrought() {
 
 bool PartyStatus::GuestWaiting(Time now) const {
     return guest_asked_ != Time{} && now - guest_asked_ < kWarpAskLasts;
+}
+
+bool PartyStatus::LampAsk(int slot, std::uint32_t lamp, Time now) {
+    int current = 0;
+    std::string name;
+    std::uint32_t asked = 0;
+    if (LampAskNow(now, current, name, asked) && current != slot) return false;
+    lamp_slot_ = slot;
+    lamp_ = lamp;
+    lamp_at_ = now;
+    const auto peer = peers_.find(slot);
+    AddLine(PartyLineKind::LampAsked, peer == peers_.end() ? std::string() : peer->second.name, now);
+    return true;
+}
+
+bool PartyStatus::LampAskNow(Time now, int& slot, std::string& name, std::uint32_t& lamp) const {
+    if (!lamp_slot_ || now - lamp_at_ >= kLampAskLasts) return false;
+    const auto peer = peers_.find(lamp_slot_);
+    slot = lamp_slot_;
+    name = peer == peers_.end() ? std::string() : peer->second.name;
+    lamp = lamp_;
+    return true;
+}
+
+void PartyStatus::LampAskDone() {
+    lamp_slot_ = 0;
+    lamp_ = 0;
+    lamp_at_ = {};
+}
+
+void PartyStatus::GuestLampAsked(Time now) {
+    guest_lamp_at_ = now;
+    guest_lamp_seen_ = false;
+}
+
+void PartyStatus::GuestLampAnswered(std::uint8_t answer, Time now) {
+    if (guest_lamp_at_ == Time{}) return;
+    if (answer == kLampGot) {
+        if (!guest_lamp_seen_) {
+            guest_lamp_at_ = now;
+            AddLine(PartyLineKind::LampSeen, {}, now);
+        }
+        guest_lamp_seen_ = true;
+        return;
+    }
+    guest_lamp_at_ = {};
+    AddLine(answer == kLampAgreed ? PartyLineKind::LampAgreed : PartyLineKind::LampRefused, {}, now);
+}
+
+bool PartyStatus::GuestLampWaiting(Time now) const {
+    return guest_lamp_at_ != Time{} && now - guest_lamp_at_ < kLampAskLasts;
 }
 
 void PartyStatus::AddLine(PartyLineKind kind, const std::string& name, Time now) {

@@ -75,6 +75,9 @@ namespace BloodborneLauncher.Views
                 L.T("Keeps the GPU's queue short for lower input lag. Always on while DLSS Frame Generation runs"),
                 Choices.Reflex, "reflex");
             _reflexCard = (SettingRow)Body.Children[^1];
+            IniToggle(SymbolRegular.Flash24, L.T("AMD Anti-Lag 2"),
+                L.T("Lower input lag on AMD drivers that offer it; does nothing on other GPUs. Turns itself off until the next start if the driver holds the game too long"),
+                "anti_lag");
             IniToggle(SymbolRegular.Timer24, L.T("Frame generation: even pacing (Uncapped)"),
                 L.T("With the Uncapped frame rate: the game at the refresh rate divided by the frames shown per game frame, so every generated frame reaches the screen. The fixed rates (30 to 144) are left as they are"), "frame_gen_cap");
             _frameGenCapCard = (SettingRow)Body.Children[^1];
@@ -129,6 +132,15 @@ namespace BloodborneLauncher.Views
                 IniToggle(EffectIcon(effect.Key), effect.Title, effect.Hint, effect.Key, changed: motionBlur ? UpdateUpscaler : null);
                 if (motionBlur) _motionBlurHint = ((SettingRow)Body.Children[^1]).Hint;
             }
+
+            Group(L.T("Lighting"));
+            IniCombo(SymbolRegular.Lightbulb24, L.T("Sun shadow resolution"), L.T("Applied when the game starts"), Choices.ShadowResolution, "graphics_shadow_resolution");
+            IniCombo(SymbolRegular.Lightbulb24, L.T("Lamp shadow resolution"), L.T("Applied when the game starts"), Choices.LocalShadowResolution, "graphics_local_shadow_resolution");
+            IniCombo(SymbolRegular.Lightbulb24, L.T("Motion blur quality"), L.T("Applied when the game starts"), Choices.MotionBlurQuality, "graphics_motion_blur_quality");
+            IniSlider(SymbolRegular.Lightbulb24, L.T("Indirect lighting strength"), 0, 12, "graphics_gi_strength", fallback: 6);
+            IniSlider(SymbolRegular.Lightbulb24, L.T("Reflection strength"), 0, 3, "graphics_ssr_intensity");
+            IniSlider(SymbolRegular.Lightbulb24, L.T("Volumetric sunlight strength"), 0, 3, "graphics_volumetric_intensity");
+            IniSlider(SymbolRegular.Lightbulb24, L.T("Lamp fog strength"), 0, 3, "graphics_point_fog_intensity");
 
             Ws.PortChanged += UpdateUpscaler;
         }

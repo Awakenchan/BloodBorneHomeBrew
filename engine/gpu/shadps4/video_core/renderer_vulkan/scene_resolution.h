@@ -12,6 +12,10 @@ struct Size {
 };
 /// bbport: `scale` is output / render (BbSettings::PresetScale; the Custom preset's is any ratio
 /// from 1 to 3).
+inline Size& Native() {
+    static Size native{};
+    return native;
+}
 inline Size ForScale(double scale, Size output = {}) {
     // Multiples of 4: even for half-resolution effects, and the game pads its targets to 4 (an
     // undrawn column at the right edge otherwise); the preset labels show the same sizes.

@@ -68,6 +68,9 @@ namespace BloodborneLauncher.Views
             _newRoom = Add(Card(SymbolRegular.ArrowSync24, L.T("New room"),
                 L.T("Makes a new room with a new invite code; the old code stops working"),
                 SmallButton(L.T("New room"), SymbolRegular.ArrowSync24, (_, _) => NewRoom()), out _));
+            _openRoom = RowOf(IniToggle(SymbolRegular.PeopleCommunity24, L.T("Open my room to visitors"),
+                L.T("While on, your game gives your room's invite code to Lantern's co-op server, and the Lantern event team can see it in Discord and join for surprise events, so your room is not private from them. Everyone in the room sees a line when a visitor joins, and you can Kick them. Nobody is moved: guests keep control of their own summons. Off or leaving takes the room off the list at once; New room retires a code they already saw"),
+                "coop_open_room"));
             EnsureHostRoom();
             ShowRoom();
 
@@ -142,11 +145,13 @@ namespace BloodborneLauncher.Views
         private readonly Button _copy;
         private readonly Button _paste;
         private readonly SettingRow _newRoom;
+        private readonly SettingRow _openRoom;
         private readonly FrameworkElement _connection;
         private readonly SettingRow _directAddress;
         private readonly SettingRow _directPort;
         private readonly SettingRow _directHost;
         private const string InvitePrefix = "LANTERN-ROOM:";
+        private const string VisitorPrefix = "LANTERN-VISIT:";
 
         private static string RandomText(int length)
         {
@@ -204,6 +209,7 @@ namespace BloodborneLauncher.Views
             _paste.Visibility = host ? Visibility.Collapsed : Visibility.Visible;
             _newRoom.Visibility = host ? Visibility.Visible : Visibility.Collapsed;
             var direct = Ini.Get("seamless_direct") == "1";
+            _openRoom.Visibility = host && !direct && Ini.Get("seamless_server").Length == 0 ? Visibility.Visible : Visibility.Collapsed;
             _directAddress.Visibility = host && direct ? Visibility.Visible : Visibility.Collapsed;
             _directPort.Visibility = host && direct ? Visibility.Visible : Visibility.Collapsed;
             _directHost.Visibility = !host && direct ? Visibility.Visible : Visibility.Collapsed;
@@ -247,11 +253,14 @@ namespace BloodborneLauncher.Views
         private void PasteInvite()
         {
             var text = System.Windows.Clipboard.ContainsText() ? System.Windows.Clipboard.GetText().Trim() : "";
-            var start = text.IndexOf(InvitePrefix, StringComparison.OrdinalIgnoreCase);
+            var visitorAt = text.IndexOf(VisitorPrefix, StringComparison.OrdinalIgnoreCase);
+            var visitor = visitorAt >= 0;
+            var start = visitor ? visitorAt + VisitorPrefix.Length : text.IndexOf(InvitePrefix, StringComparison.OrdinalIgnoreCase);
+            if (!visitor && start >= 0) start += InvitePrefix.Length;
             string[] parts = Array.Empty<string>();
             if (start >= 0)
             {
-                var body = new string(text[(start + InvitePrefix.Length)..].TakeWhile(c => char.IsLetterOrDigit(c) || c == '-' || c == '_').ToArray())
+                var body = new string(text[start..].TakeWhile(c => char.IsLetterOrDigit(c) || c == '-' || c == '_').ToArray())
                     .Replace('-', '+').Replace('_', '/');
                 body = body.PadRight(body.Length + (4 - body.Length % 4) % 4, '=');
                 try { parts = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(body)).Split('\n'); }
@@ -268,6 +277,7 @@ namespace BloodborneLauncher.Views
                 return;
             }
             Ini.Set("seamless_room", parts[0]);
+            Ini.Set("seamless_visitor", visitor ? "1" : "0");
             S.SeamlessPassword = parts[1];
             var direct = parts.Length > 2 && parts[2].StartsWith("ws://", StringComparison.OrdinalIgnoreCase);
             Ini.Set("seamless_server", parts.Length > 2 && !direct ? parts[2] : "");
@@ -279,7 +289,7 @@ namespace BloodborneLauncher.Views
             else if (_role is System.Windows.Controls.ComboBox box) box.SelectedIndex = 0;
             Ws.SaveNow();
             ShowRoom();
-            Ws.Log(L.T("Invite code pasted: you join that room"), LogLevel.Good);
+            Ws.Log(visitor ? L.T("Visitor invite pasted: you join that room, and everyone there is told you are a visitor") : L.T("Invite code pasted: you join that room"), LogLevel.Good);
         }
 
         private readonly Button _hdButton;

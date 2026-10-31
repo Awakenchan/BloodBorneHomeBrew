@@ -7,7 +7,8 @@
 # The port takes the next free blocks - 116000 PC Settings, 117000 PC
 # Graphics, 118000 PC Controls, 119000 Key Bindings, 120000 PC Effects, 121000
 # PC Camera, 122000 the title menu's Quit to Desktop, 123000 Steam Deck (shown on a
-# Deck only), 124000 PC Enhancements, 125000 PC Colour - and 110006..110014 for the System rows
+# Deck only), 124000 PC Enhancements, 125000 PC Colour, 126000 PC Lighting, 127000 PC Lighting
+# Detail, 128000 PC Looks - and 110006..110014, 110016 to 110018 for the System rows
 # that open them, 110015 the System list's Quit to Desktop. All are unused in the shipped menu.msgbnd. (Motion blur,
 # depth of field and chromatic aberration moved to PC Effects with their
 # 117000 ids.)
@@ -72,6 +73,40 @@
 125001	Contrast	The difference between dark and bright. 5 is the game's own.	对比度	暗部与亮部的差异。5 为游戏原始值。	Контраст	Разница между тёмными и светлыми участками. 5 — как в оригинале
 125002	Saturation	Colour. 5 is the game's own; 0 is black and white.	饱和度	色彩浓度。5 为游戏原始值；0 为黑白画面。	Насыщенность	Цвет. 5 — как в оригинале; 0 — чёрно-белое изображение
 125003	Hue	Shifts every colour. 5 is the game's own.	色相	整体偏移画面颜色。5 为游戏原始值。	Оттенок	Сдвигает все цвета. 5 — как в оригинале
+110016	PC Lighting	Optional lighting effects, off by default. They cost performance.	PC 光照	可选光照效果，默认关闭。会影响性能。	Освещение (ПК)	Дополнительные эффекты освещения, по умолчанию выключены. Снижают производительность.
+110017	PC Lighting Detail	Reflections, surfaces, lamp shadows and shadow sizes.	PC 光照细节	反射、表面、灯光阴影和阴影尺寸。	Детали освещения (ПК)	Отражения, поверхности, тени ламп и размеры теней.
+126020	PC Lighting		PC 光照		Освещение (ПК)
+127020	PC Lighting Detail		PC 光照细节		Детали освещения (ПК)
+126000	Better AO (Experimental)	GTAO in place of the game's shader; Ambient Occlusion must be on. Requires a restart.	增强环境光遮蔽（实验性）	用 GTAO 替换游戏着色器；需开启环境光遮蔽。需要重启。	Улучшенное затенение (эксп.)	GTAO вместо шейдера игры; затенение должно быть включено. Нужен перезапуск.
+126001	Contact Shadows	Fine shadows where objects meet surfaces.	接触阴影	物体与表面接触处的细腻阴影。	Контактные тени	Тонкие тени там, где предметы касаются поверхностей.
+126002	Soft Sun Shadows	PCSS: shadows soften the farther they fall from what casts them.	柔和太阳阴影	PCSS：阴影离投射物越远越柔和。	Мягкие тени от солнца	PCSS: чем дальше от предмета, тем мягче тень.
+126003	Indirect Lighting	One bounce of light from nearby surfaces. Heavy.	间接光照	来自附近表面的一次反弹光。开销大。	Непрямое освещение	Один отскок света от ближних поверхностей. Тяжёлый эффект.
+126004	Indirect Light Strength	5 is the default.	间接光强度	5 为默认值。	Сила непрямого света	5 по умолчанию.
+126005	Volumetric Sunlight	Light in the air along the sun's direction. Heavy.	体积阳光	沿太阳方向的空气光效。开销大。	Объёмный солнечный свет	Свет в воздухе по направлению солнца. Тяжёлый эффект.
+126006	Volumetric Strength	5 is the default.	体积阳光强度	5 为默认值。	Сила объёмного света	5 по умолчанию.
+126007	Fog Around Lamps	Light in the air around lamps. Heavy.	灯光周围的雾	灯光周围的空气光效。开销大。	Туман вокруг ламп	Свет в воздухе вокруг ламп. Тяжёлый эффект.
+127000	Improved Reflections	Sharper, steadier reflections; Screen-space Reflections must be on in the launcher. Requires a restart.	增强反射	更清晰稳定的反射；需在启动器中开启屏幕空间反射。需要重启。	Улучшенные отражения	Более чёткие и стабильные отражения; экранные отражения должны быть включены в лаунчере. Нужен перезапуск.
+127001	Reflection Strength	Needs Improved Reflections. 5 is the default.	反射强度	需要增强反射。5 为默认值。	Сила отражений	Нужны улучшенные отражения. 5 по умолчанию.
+127002	Deeper Parallax Surfaces	Requires a restart.	更深的视差表面	需要重启。	Глубокие параллакс-поверхности	Нужен перезапуск.
+127003	Point Shadows (Experimental)	Screen-space shadows from lamps. Heavy.	点光源阴影（实验性）	灯光的屏幕空间阴影。开销大。	Тени от точечных (эксп.)	Экранные тени от ламп. Тяжёлый эффект.
+127004	Lamp Fog Strength	Needs Fog Around Lamps. 5 is the default.	灯光雾强度	需要灯光周围的雾。5 为默认值。	Сила тумана от ламп	Нужен туман вокруг ламп. 5 по умолчанию.
+127005	Sun Shadow Resolution	Higher needs more video memory. Requires a restart.	太阳阴影分辨率	越高需要越多显存。需要重启。	Разрешение теней от солнца	Чем выше, тем больше видеопамяти. Нужен перезапуск.
+127006	Lamp Shadow Resolution	Higher needs more video memory. Requires a restart.	灯光阴影分辨率	越高需要越多显存。需要重启。	Разрешение теней от ламп	Чем выше, тем больше видеопамяти. Нужен перезапуск.
+127007	Motion Blur Quality	Motion Blur must be on. Requires a restart.	动态模糊质量	需开启动态模糊。需要重启。	Качество размытия	Размытие в движении должно быть включено. Нужен перезапуск.
+127010	Game's Own		游戏自带		Как в игре
+127011	4096	
+127012	8192	
+127013	High		高		Высокое
+127014	Very High		很高		Очень высокое
+110018	PC Looks	Lighting presets, including BB Remastered, and a way back to your settings.	PC 画面风格	光照预设（含 BB Remastered），并可恢复你的设置。	Образы (ПК)	Пресеты освещения, включая BB Remastered, и возврат к вашим настройкам.
+128020	PC Looks		PC 画面风格		Образы (ПК)
+128000	Look	Applies at once. Reflections, parallax and shadow sizes need a restart.	风格	立即应用。反射、视差和阴影尺寸需要重启。	Образ	Применяется сразу. Отражения, параллакс и размеры теней требуют перезапуска.
+128010	Keep My Settings		保留我的设置		Мои настройки
+128011	Original Look		原版风格		Исходный вид
+128012	Performance		性能		Производительность
+128013	Better Shadows		增强阴影		Лучшие тени
+128014	BB Remastered		BB Remastered		BB Remastered
+128015	Back to My Settings		恢复我的设置		Вернуть мои настройки
 121020	PC Camera		PC 镜头		Камера (ПК)
 121000	Camera Distance	How far behind the character the camera sits. 5 is the game's own.	镜头距离	镜头在角色后方的距离。5 为游戏原始值。	Дистанция камеры	Как далеко позади персонажа находится камера. 5 — как в оригинале
 121001	Camera Height	How high above the character the camera looks. 5 is the game's own.	镜头高度	镜头在角色上方的高度。5 为游戏原始值。	Высота камеры	Высота камеры над персонажем. 5 — как в оригинале

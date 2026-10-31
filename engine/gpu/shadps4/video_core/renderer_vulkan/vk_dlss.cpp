@@ -36,6 +36,10 @@ constexpr bool Failed(NgxResult r) {
 constexpr unsigned kNgxApiVersion = 0x15;
 constexpr int kFeatureSuperSampling = 1;
 constexpr unsigned long long kApplicationId = 231313132; // NVIDIA's id for unregistered apps
+constexpr const char* kProjectId = "5c1f3a9e-7b42-4d86-9e31-0f6a2b7cd481";
+constexpr const char* kEngineVersion = "0.9.39";
+constexpr int kEngineCustom = 0;
+constexpr unsigned kPresetF = 6;
 
 enum DlssFlags : int {
     FlagIsHdr = 1 << 0,
@@ -89,6 +93,10 @@ using PFN_InitExt2 = NgxResult (*)(unsigned long long app_id, const wchar_t* dat
                                    VkInstance, VkPhysicalDevice, VkDevice, PFN_vkGetInstanceProcAddr,
                                    PFN_vkGetDeviceProcAddr, unsigned version,
                                    const FeatureCommonInfo*);
+using PFN_InitProject = NgxResult (*)(const char* project_id, int engine, const char* engine_version,
+                                      const wchar_t* data_path, VkInstance, VkPhysicalDevice, VkDevice,
+                                      PFN_vkGetInstanceProcAddr, PFN_vkGetDeviceProcAddr, unsigned version,
+                                      const FeatureCommonInfo*);
 using PFN_GetParameters = NgxResult (*)(NgxParameter**);
 using PFN_DestroyParameters = NgxResult (*)(NgxParameter*);
 using PFN_CreateFeature1 = NgxResult (*)(VkDevice, VkCommandBuffer, int feature, NgxParameter*,
@@ -224,6 +232,7 @@ struct DlssUpscaler::Impl {
     void* core = nullptr;
 #endif
     PFN_InitExt2 init = nullptr;
+    PFN_InitProject init_project = nullptr;
     PFN_GetParameters get_capability_parameters = nullptr;
     PFN_GetParameters allocate_parameters = nullptr;
     PFN_DestroyParameters destroy_parameters = nullptr;
@@ -317,6 +326,7 @@ struct DlssUpscaler::Impl {
             Fail("NVIDIA NGX core not found (an NVIDIA driver with DLSS support is needed)", true);
             return false;
         }
+        Load(init_project, "NVSDK_NGX_VULKAN_Init_ProjectID_Ext");
         if (!Load(init, "NVSDK_NGX_VULKAN_Init_Ext2") ||
             !Load(get_capability_parameters, "NVSDK_NGX_VULKAN_GetCapabilityParameters") ||
             !Load(allocate_parameters, "NVSDK_NGX_VULKAN_AllocateParameters") ||
@@ -390,11 +400,21 @@ struct DlssUpscaler::Impl {
             .logging = {&Log, std::getenv("BB_DLSS_LOG") ? 2 : 0, false},
         };
         const auto& dispatcher = VULKAN_HPP_DEFAULT_DISPATCHER;
-        const NgxResult r =
-            init(kApplicationId, data_path.c_str(), VkInstance(instance.GetInstance()),
-                 VkPhysicalDevice(instance.GetPhysicalDevice()), VkDevice(instance.GetDevice()),
-                 dispatcher.vkGetInstanceProcAddr, dispatcher.vkGetDeviceProcAddr, kNgxApiVersion,
-                 &info);
+        const char* use_project_id = std::getenv("BB_DLSS_PROJECT_ID");
+        NgxResult r = 0xBAD00000u;
+        if (init_project && use_project_id && use_project_id[0] == '1') {
+            r = init_project(kProjectId, kEngineCustom, kEngineVersion, data_path.c_str(),
+                             VkInstance(instance.GetInstance()), VkPhysicalDevice(instance.GetPhysicalDevice()),
+                             VkDevice(instance.GetDevice()), dispatcher.vkGetInstanceProcAddr,
+                             dispatcher.vkGetDeviceProcAddr, kNgxApiVersion, &info);
+            std::printf("DLSS: NGX project id init: %#x\n", r);
+        }
+        if (Failed(r)) {
+            r = init(kApplicationId, data_path.c_str(), VkInstance(instance.GetInstance()),
+                     VkPhysicalDevice(instance.GetPhysicalDevice()), VkDevice(instance.GetDevice()),
+                     dispatcher.vkGetInstanceProcAddr, dispatcher.vkGetDeviceProcAddr, kNgxApiVersion,
+                     &info);
+        }
         if (Failed(r)) {
             Fail(fmt_hex("NGX initialization failed", r), true);
             return;
@@ -517,10 +537,11 @@ struct DlssUpscaler::Impl {
         // bbport: the reactive mask (menu) as DLSS's bias towards the current colour: 1 trusts this
         // frame alone where blended effects changed it. Null clears the previous frame's.
         ResourceVk bias{};
-        if (f.reactive.view) {
+        const bool bias_mask = f.reactive.view && applied_preset == kPresetF;
+        if (bias_mask) {
             bias = Resource(f.reactive, vk::ImageAspectFlagBits::eColor, false);
         }
-        SetP(params, "DLSS.Input.Bias.Current.Color.Mask", f.reactive.view ? &bias : nullptr);
+        SetP(params, "DLSS.Input.Bias.Current.Color.Mask", bias_mask ? &bias : nullptr);
         SetUI(params, "DLSS.Input.Bias.Current.Color.Subrect.Base.X", 0);
         SetUI(params, "DLSS.Input.Bias.Current.Color.Subrect.Base.Y", 0);
         SetF(params, "Jitter.Offset.X", f.jitter[0]);

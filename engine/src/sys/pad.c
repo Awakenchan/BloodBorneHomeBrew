@@ -113,6 +113,7 @@ static SYS_ABI int32_t pad_close(int32_t handle) {
 static SYS_ABI int32_t pad_read_state(int32_t handle, PadData *pad) {
     if (!handle_ok(handle)) return PAD_ERROR_HANDLE;
     if (!pad) return PAD_ERROR_ARGUMENT;
+    bbgpu_anti_lag_before_input();
     host_lock(&lock);
     sample(pad);
     ++reads;

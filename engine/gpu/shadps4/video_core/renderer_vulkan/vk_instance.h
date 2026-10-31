@@ -387,6 +387,10 @@ public:
         return low_latency_boost;
     }
 
+    bool IsLowVramAmd() const {
+        return low_vram_amd;
+    }
+
     /// Returns the vendor ID of the physical device
     u32 GetVendorID() const {
         return properties.vendorID;
@@ -588,6 +592,8 @@ public:
     /// (VK_EXT_memory_budget: what this process can use now, other processes included).
     [[nodiscard]] u64 GetDeviceMemoryBudgetNow() const;
 
+    [[nodiscard]] u64 GetVmaFreeInBlocks() const;
+
     /// Returns the total memory budget available to the device.
     [[nodiscard]] u64 GetTotalMemoryBudget() const {
         return total_memory_budget;
@@ -686,6 +692,8 @@ private:
     bool full_screen_exclusive{};   // bbport: VK_EXT_full_screen_exclusive (Windows)
     bool hdr_metadata{};            // bbport: VK_EXT_hdr_metadata
     bool low_latency_boost{};       // bbport: VK_NV_low_latency2 (+ VK_KHR_present_id), boost hint
+    bool anti_lag{};
+    bool low_vram_amd{};
     bool cooperative_matrix{};      // bbport: VK_KHR_cooperative_matrix (FSR 4.1.1 FP8 variant)
     bool shader_float8{};           // bbport: VK_EXT_shader_float8 with FP8 matrices (RDNA4)
     bool supports_memory_budget{};

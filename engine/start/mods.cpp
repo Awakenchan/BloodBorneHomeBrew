@@ -77,7 +77,7 @@ std::optional<std::pair<fs::path, fs::path>> ContentRoot(const fs::path& folder)
     if (folders.size() == 1 && std::none_of(entries.begin(), entries.end(), [](const fs::path& e) {
             if (!IsFile(e)) return false;
             const std::wstring ext = Fold(e.extension().native());
-            return ext != L".txt" && ext != L".md" && ext != L".jpg" && ext != L".png" && ext != L".ini";
+            return ext != L".txt" && ext != L".md" && ext != L".jpg" && ext != L".png" && ext != L".ini" && ext != L".toml";
         }))
         return ContentRoot(folders[0]);
     return std::nullopt;
@@ -417,8 +417,9 @@ void RemoveOverlay(const fs::path& path) {
 }
 
 fs::path BuildModsOverlay(const fs::path& game, const fs::path& out, const fs::path& mods_dir, const fs::path& config,
-                          bool enabled) {
+                          bool enabled, const std::vector<fs::path>& first_layers) {
     std::vector<std::pair<std::wstring, fs::path>> layers;
+    for (const fs::path& layer : first_layers) layers.emplace_back(layer.filename().native(), layer);
     if (enabled) {
         fs::path legacy = fs::canonical(game);
         legacy += L"-mods";
@@ -431,5 +432,7 @@ fs::path BuildModsOverlay(const fs::path& game, const fs::path& out, const fs::p
     }
     return BuildOverlay(game, out, layers, UpdateFolder(fs::canonical(game)));
 }
+
+std::optional<fs::path> GameUpdateFolder(const fs::path& game) { return UpdateFolder(fs::canonical(game)); }
 
 }

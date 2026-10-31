@@ -103,12 +103,12 @@ flicker of a still camera. DLSS trusts the new frame more in motion, so part of 
 its output. Other things tried, with the camera still: the extra -1 mip bias (flicker 0.58 with it,
 0.54 without), bloom off (no better), preset E (0.79, worse), FSR 3.1 (0.67).
 
-The camera's own movement already gives the sub-pixel coverage, so with DLSS the jitter now fades out
-as the camera moves: full up to 0.25 render px a frame, none from 1 px a frame
-(`BB_JITTER_MOTION_MIN`, the amount left at speed; 1: always full jitter). Mean second difference of
-the shift: 0.32 px before, 0.035 px after; sharpness 63.5-65.6 before, 63.4 after, within noise. A
-still camera keeps full jitter. FSR 3.1 got less regular with reduced jitter, so it keeps its full
-jitter.
+The camera's own movement already gives sub-pixel coverage, so with DLSS the jitter can fade out as
+the camera moves: full up to 0.25 render px a frame, none from 1 px a frame. Mean second difference of
+the shift: 0.32 px with full jitter, 0.035 px with the fade; sharpness 63.5-65.6 and 63.4, within noise.
+NVIDIA's guide (8.4) lists jitter only on a static camera among differences that can cause corruption,
+so the fade is an experimental setting, off by default (`dlss_jitter_fade`, the menu,
+`BB_DLSS_JITTER_FADE`). See [dlss-audit.md](dlss-audit.md).
 
 **Not measured yet:** slower pans, walking, and the 1440p path (`RunScaled`, tonemapped input).
 

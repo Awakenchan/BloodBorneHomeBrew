@@ -38,6 +38,8 @@ std::vector<std::uint8_t> Snapshot() {
 int main() {
     using namespace BbEngine::KeptTravel;
     using std::chrono::seconds;
+    Check(SceneSeenFlag(12410000) == 12410000, "a run-once scene is seen when its own event flag is set");
+    Check(SceneSeenFlag(12405263) == 12401000 && SceneSeenFlag(12200130) == 12204020 && SceneSeenFlag(12800431) == 12800434, "repeating scene events have a flag of their own");
 
     Check(CanKeep(2412951), "a lamp in Yharnam keeps the party");
     Check(!CanKeep(2102961), "the Hunter's Dream goes through each hunter's own Dream");

@@ -454,6 +454,13 @@
                             </StackPanel>
                         </RadioButton>
                         <RadioButton GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:LooksPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Sparkle24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Looks&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton GroupName="Classic" Style="{StaticResource SidebarItem}"
                                      Tag="{x:Type views:TrophiesPage}" Checked="SidebarItem_Checked">
                             <StackPanel Orientation="Horizontal">
                                 <ui:SymbolIcon Symbol="Trophy24" Style="{StaticResource SidebarIcon}" />
@@ -544,6 +551,8 @@
                                  Tag="{x:Type views:GraphicsPage}" Checked="SidebarItem_Checked" />
                     <RadioButton x:Name="ControlsItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Controls&#x27;}"
                                  Tag="{x:Type views:ControlsPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Looks&#x27;}"
+                                 Tag="{x:Type views:LooksPage}" Checked="SidebarItem_Checked" />
                     <RadioButton Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Trophies&#x27;}"
                                  Tag="{x:Type views:TrophiesPage}" Checked="SidebarItem_Checked" />
                     <RadioButton x:Name="OnlineItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Online&#x27;}"

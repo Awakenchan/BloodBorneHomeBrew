@@ -212,16 +212,16 @@ int main(int argc, char** argv) {
     assert(refused);
 
     const Bytes movie = OptionMovie(Movie());
-    for (const char* name : {"PCGraphics", "PCControls", "PCKeys", "PCEffects", "PCCamera", "PCEnhance", "PCColour"})
+    for (const char* name : {"PCGraphics", "PCControls", "PCKeys", "PCEffects", "PCCamera", "PCEnhance", "PCColour", "PCLighting", "PCDetail", "PCLooks"})
         assert(Count(movie, std::string(name) + '\0') == 1);
-    for (const char* title : {"117020", "118020", "119020", "120020", "121020", "124020", "125020"})
+    for (const char* title : {"117020", "118020", "119020", "120020", "121020", "124020", "125020", "126020", "127020", "128020"})
         assert(Count(movie, std::string("StaticText_") + title) == 1);
     assert(Count(movie, "StaticText_113020") == 1);
-    assert(Count(movie, "Item_7_0") == 2);
-    assert(Count(movie, "Item_6_0") == 1 + 1 + 2);
-    assert(Count(movie, "Item_3_0") == 1 + 1 + 7);
+    assert(Count(movie, "Item_7_0") == 4);
+    assert(Count(movie, "Item_6_0") == 1 + 1 + 4);
+    assert(Count(movie, "Item_3_0") == 1 + 1 + 9);
     assert(Count(movie, "ScrollBarV") == 2);
-    assert(Count(movie, "OptionSetting_fla._ControllSetting") == 8);
+    assert(Count(movie, "OptionSetting_fla._ControllSetting") == 11);
     assert(movie[4] == (movie.size() & 0xff) && movie[5] == (movie.size() >> 8 & 0xff));
     refused = false;
     try { OptionMovie(movie); } catch (const Error&) { refused = true; }

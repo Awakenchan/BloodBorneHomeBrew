@@ -124,10 +124,39 @@
             new("effect_game_aa", L.T("Game's own anti-aliasing"), false),
             new("effect_dynamic_shadows", L.T("Shadows from dynamic lights"), true),
             new("effect_ssr", L.T("Screen-space reflections"), false, L.T("Not in the original game")),
+            new("effect_gtao", L.T("Better ambient occlusion (GTAO)") + L.T(" (experimental)"), false, L.T("Replaces the game's SSAO shader; needs Ambient occlusion on")),
+            new("effect_modern_ssr", L.T("Improved reflections"), false, L.T("Needs Screen-space reflections on")),
+            new("effect_pom_cavity", L.T("Deeper parallax surfaces"), false),
+            new("effect_contact_shadows", L.T("Contact shadows"), false),
+            new("effect_pcss", L.T("Soft sun shadows (PCSS)"), false),
+            new("effect_gi", L.T("Indirect lighting (GI)"), false, L.T("Heavy")),
+            new("effect_volumetric_light", L.T("Volumetric sunlight"), false, L.T("Heavy")),
+            new("effect_point_fog", L.T("Fog around lamps"), false, L.T("Heavy")),
+            new("effect_point_shadows", L.T("Point light shadows") + L.T(" (experimental)"), false, L.T("Heavy")),
             new("skip_intro", L.T("Skip intro videos"), false),
             new("debug_camera", L.T("Free camera"), false, L.T("Toggle with Cross + L3 / Space + Z")),
             new("debug_menu", L.T("Debug menu"), false,
                 L.T("Left touchpad / Tab. Needs the adhoc folder from Nexus mod #253 (adhoc/font) in the game's dvdroot_ps4 or as a mod; without it the patch is not applied")),
+        };
+
+        public static readonly Choice[] ShadowResolution =
+        {
+            new(L.T("Game's own"), "0"),
+            new("4096", "1", L.T("Needs more video memory")),
+            new("8192", "2", L.T("Needs much more video memory")),
+        };
+
+        public static readonly Choice[] LocalShadowResolution =
+        {
+            new(L.T("Game's own"), "0"),
+            new(L.T("High"), "1", L.T("Needs more video memory")),
+            new(L.T("Very high"), "2", L.T("Needs much more video memory")),
+        };
+
+        public static readonly Choice[] MotionBlurQuality =
+        {
+            new(L.T("Game's own"), "0"),
+            new(L.T("High"), "1"),
         };
 
         public static readonly Choice[] CameraTuning =

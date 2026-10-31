@@ -20,7 +20,7 @@ Also accepted:
 
 - `Mod name/app0/dvdroot_ps4/...` and `Mod name/CUSA03173/dvdroot_ps4/...`;
 - an extra wrapper folder, as after unpacking an archive into a folder of its name:
-  `Mod name/Mod name v1.2/dvdroot_ps4/...` (readmes and pictures may lie next to it);
+  `Mod name/Mod name v1.2/dvdroot_ps4/...` (readmes, pictures and `.toml` files may lie next to it);
 - a mod without `dvdroot_ps4` that holds the game's folders directly: `Mod name/chr/...`,
   `Mod name/parts/...` (`chr`, `parts`, `map`, `menu`, `msg`, `param`, `sfx`, `sound`, `font` and
   the other `dvdroot_ps4` folders).
@@ -74,7 +74,7 @@ New folders are enabled automatically and added at the end in alphabetical order
 `BB_MODS_CONFIG` changes the profile's path. `BB_MOD_TRACE=1` with `BB_MODS_DIR` prints the first
 reads of the files actually used, for diagnosis.
 
-# Third-party patches (shadPS4 XML)
+# Third-party patches (shadPS4 XML, and TOML on Windows)
 
 The `patches/` folder in the data folder (in bbport's AppImage `~/.local/share/bbport/patches/`;
 in the launcher the **Third-party patches** group, where another folder can be chosen too). Patch
@@ -91,6 +91,10 @@ with `mask` lines (pattern search) or with an address outside the eboot is skipp
 message in the log. Third-party patches are applied after the built-in ones
 (`patches/Bloodborne.xml`): where they overlap, the third-party one wins. From a terminal:
 `BB_PATCHES_DIR=/path BB_PATCHES_CONFIG=/path/patches.json bash run.sh`.
+
+TOML patch files go in the same folder (Windows). `[patch]` has `name`, `description`, `author`, `order` and `group`;
+each `[site.x]` has `address` (a patch address like the XML ones), `bytes` and optionally `expect`, the bytes the game must
+hold there. A patch whose `expect` differs is skipped whole, and only one patch of a `group` is used, the lowest `order` first.
 
 Patches that write pointers into the game's tables are moved by the loader to the image's real
 address. Such patches used to stop the start with the error

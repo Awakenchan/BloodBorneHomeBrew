@@ -17,6 +17,7 @@ namespace BloodborneLauncher.Core
     public static class DiscordPresence
     {
         private const string LanternApp = "1561836572364505089";
+        private const string LogoLink = "https://lantern-engine.netlify.app/lantern-logo.png";
         /// <summary>A second app named "Bloodborne"; empty until it is registered.</summary>
         private const string BloodborneApp = "";
 
@@ -101,7 +102,7 @@ namespace BloodborneLauncher.Core
         private static JsonObject ToActivity(Look look, DateTime? startedUtc)
         {
             var assets = new JsonObject();
-            if (look.Image.Length > 0) assets["large_image"] = look.Image;
+            if (look.Image.Length > 0) assets["large_image"] = look.Image == "logo" ? LogoLink : look.Image;
             if (look.ImageText.Length >= 2) assets["large_text"] = Cut(look.ImageText, 128);
             if (look.Badge.Length > 0)
             {

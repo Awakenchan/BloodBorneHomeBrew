@@ -35,6 +35,9 @@ bool ComputeGuestInPlace();
 bool ComputeWriteTracking();
 } // namespace Detail
 
+inline std::atomic<u32> low_vram_image_types{0};
+inline std::atomic<bool> low_vram_buffers{false};
+
 /// bbport BB_GUEST_IN_PLACE=1: the GPU uses the game's direct memory where it is (the arena is bound to
 /// the Vulkan chunks it lives in, gpu/shim/bbport_guest_memory.cpp) instead of copies in VRAM.
 inline bool GuestInPlace() {

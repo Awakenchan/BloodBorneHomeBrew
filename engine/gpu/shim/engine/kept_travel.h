@@ -17,6 +17,15 @@ constexpr bool CanKeep(std::uint32_t lamp) {
     return lamp && area != kDreamArea && area != kDungeonArea;
 }
 
+constexpr std::uint32_t SceneSeenFlag(std::uint32_t event) {
+    switch (event) {
+    case 12405263: return 12401000;
+    case 12200130: return 12204020;
+    case 12800431: return 12800434;
+    default: return event;
+    }
+}
+
 inline std::uint32_t ReadWord(const std::uint8_t* data, std::size_t word) {
     std::uint32_t value = 0;
     std::memcpy(&value, data + word * 4, 4);

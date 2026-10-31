@@ -82,6 +82,17 @@ int main() {
     s.rebirth=false;s.graphics_bloom=1.0f;
     BbSettings::Load();
     assert(s.change_appearance && s.rebirth && s.graphics_controls && s.graphics_bloom==0.7f && s.graphics_shadow_scale==1.4f);
+    for (int e = BbSettings::EffectFirstLighting; e < BbSettings::EffectCount; ++e) {
+        assert(!BbSettings::Effects[e].default_on);
+    }
+    { std::ofstream file(path); file << "effect_gi=1\ngraphics_gi_strength=99\ngraphics_ssr_intensity=-1\ngraphics_volumetric_intensity=nan\ngraphics_shadow_resolution=9\ngraphics_motion_blur_quality=1\n"; }
+    BbSettings::Load();
+    assert(s.effects[BbSettings::EffectGi] && s.graphics_gi_strength == 12.0f && s.graphics_ssr_intensity == 0.0f);
+    assert(s.graphics_volumetric_intensity == 1.0f && s.graphics_shadow_resolution == 2);
+    assert(s.startup_motion_blur_quality == 1 && s.startup_effects[BbSettings::EffectGi]);
+    BbSettings::Save();
+    BbSettings::Load();
+    assert(s.effects[BbSettings::EffectGi] && s.graphics_gi_strength == 12.0f && s.graphics_shadow_resolution == 2);
     { std::ofstream file(path); file << "camera_fov_scale=nan\ncamera_distance_scale=-10\ncamera_height_scale=inf\n"; }
     BbSettings::Load();
     assert(s.camera_fov_scale == 1.0f && s.camera_distance_scale == 0.5f && s.camera_height_scale == 1.0f);

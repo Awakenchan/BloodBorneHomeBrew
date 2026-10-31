@@ -110,6 +110,7 @@ struct Site {
 struct Rule {
     const char* name;
     std::initializer_list<Site> sites;
+    const char* off_switch = nullptr;
 };
 
 const Rule kBellRules[] = {
@@ -124,6 +125,10 @@ const Rule kBellRules[] = {
       {0x18700d3,
        {0x84, 0xc0, 0x41, 0xbd, 0xff, 0xff, 0xff, 0xff, 0x44, 0x0f, 0x44, 0xeb, 0x41, 0xc1, 0xed, 0x1f},
        {0x45, 0x31, 0xed, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90}}}},
+    {"the bell's X is gone in every area and on every floor",
+     {{0x191a8c3, {0x7d, 0x04, 0x88, 0xc1, 0xeb, 0x02}, {0xb1, 0x01, 0x90, 0x90, 0xeb, 0x02}},
+      {0x1506a2c, {0x45, 0x20, 0xfc}, {0x41, 0xb4, 0x01}}},
+     "BB_BELL_NO_X"},
     {"bells after the area boss is dead",
      {{0x18749e8, {0x0f, 0x85, 0x48, 0x01, 0x00, 0x00}, {0x90, 0x90, 0x90, 0x90, 0x90, 0x90}},
       {0x18749f0, {0x0f, 0x88, 0x40, 0x01, 0x00, 0x00}, {0x90, 0x90, 0x90, 0x90, 0x90, 0x90}},
@@ -166,6 +171,7 @@ const Rule kBellRules[] = {
 bool BellRules(std::uint8_t* image, std::size_t size) {
     bool any = false;
     for (const Rule& rule : kBellRules) {
+        if (const char* off = rule.off_switch ? std::getenv(rule.off_switch) : nullptr; off && std::strcmp(off, "0") == 0) continue;
         const bool all = std::all_of(rule.sites.begin(), rule.sites.end(), [&](const Site& site) {
             return Matches(image, size, site.at, site.original.begin(), site.original.size());
         });
@@ -407,10 +413,13 @@ constexpr std::size_t kEmevdDispatch = 0x17b93a0;
 constexpr std::uint8_t kEmevdDispatchEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x53, 0x50, 0x48, 0x8b,
                                                 0x86, 0xb0, 0x00, 0x00, 0x00, 0x8b, 0x08};
 constexpr std::int32_t kLampEvent = 7200;
+constexpr std::int32_t kSceneBank = 2002, kScenePlay = 3;
 std::atomic<int> g_role{-1};
 std::atomic<std::uint32_t> g_lamp_talk{0};
 std::atomic<std::int64_t> g_own_lamp_ms{0};
 std::atomic<std::uint32_t> g_solo_travel{0};
+std::atomic<std::uint32_t> g_lamp_ask{0};
+std::atomic<int> g_lamp_answer{0};
 constexpr int kGuestHpEffect = 9006;
 constexpr std::int64_t kOwnLampMs = 120000;
 std::atomic<bool> g_solo_lamp{false};
@@ -1216,7 +1225,8 @@ std::int64_t __attribute__((sysv_abi)) OnLampWarp(std::uint64_t, const std::uint
     const bool hosting = role == kRoleHost;
     const std::uint32_t lamp = static_cast<std::uint32_t>(saved[5]);
     if (LampsKeepWorld() && role == kRoleClient && lamp / 100000 != kDungeonArea) {
-        g_solo_travel.store(lamp, std::memory_order_relaxed);
+        if (LampsKeepSession() && KeptTravel::CanKeep(lamp)) g_lamp_ask.store(lamp, std::memory_order_relaxed);
+        else g_solo_travel.store(lamp, std::memory_order_relaxed);
         const_cast<std::uint64_t*>(saved)[-1] = 0;
         return 1;
     }
@@ -1320,6 +1330,26 @@ void SoloTravelTick(int role, std::chrono::steady_clock::time_point now) {
     lamp = 0;
 }
 
+void LampAskTick(int role) {
+    if (const std::uint32_t lamp = g_lamp_ask.exchange(0, std::memory_order_relaxed); lamp && role == kRoleClient) {
+        Say("seamless: a guest's lamp to %u: the host is asked, nobody moves until it accepts", lamp);
+        BbRoom::SendLampAsk(lamp);
+    }
+    const int answer = g_lamp_answer.exchange(0, std::memory_order_relaxed);
+    int slot = 0;
+    std::string who;
+    std::uint32_t lamp = 0;
+    if (!answer || !BbRoom::IsHost() || !BbRoom::PendingLampAsk(slot, who, lamp)) return;
+    const std::uint64_t local = LocalPlayer();
+    const bool can = answer == 1 && role == kRoleHost && local && Hp(local) > 0 && !Loading() && !BossUp() && !g_lead.on && LampMap(lamp);
+    if (answer == 1 && !can) Say("seamless: %s's lamp to %u can't be taken right now: the party stays", who.c_str(), lamp);
+    BbRoom::AnswerLampAsk(can);
+    if (!can) return;
+    Say("seamless: the host accepted %s's lamp to %u: the party travels", who.c_str(), lamp);
+    g_own_lamp_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+    Call(Fn(kLampWarp), lamp);
+}
+
 std::uint32_t OwnMap() {
     return Field<std::uint32_t>(LocalPlayer(), 0x3f8);
 }
@@ -1337,6 +1367,7 @@ void KeptEnd(int role, bool stayed) {
         std::lock_guard lock(g_kept_mu);
         g_kept_flags.clear();
     }
+    if (!stayed) g_bells_off = false;
     if (g_follow.kept) {
         const std::uint64_t transition = Global(kTransition), rules = Global(kReloadRules);
         if (transition) *reinterpret_cast<std::uint8_t*>(transition + kTransitionJoined) = g_kept_joined;
@@ -1400,16 +1431,18 @@ void TravelTick() {
     static std::chrono::steady_clock::time_point last_client;
     if (role == kRoleClient) last_client = now;
     SoloTravelTick(role, now);
+    LampAskTick(role);
     KeptTick(role, now);
     std::uint32_t lamp = 0;
     std::vector<std::uint8_t> flags;
-    const bool following = role == kRoleClient || g_follow.replayed || now - last_client < std::chrono::seconds(60);
+    const bool following = role == kRoleClient || ((g_follow.replayed || now - last_client < std::chrono::seconds(60)) && !g_bells_off.load());
     if (following && !Loading() && LocalPlayer() && BbRoom::TakeTravel(lamp, &flags)) {
         if (lamp / 100000 == kDungeonArea) {
             Say("seamless: the host went to a chalice dungeon's lamp %u: this hunter is summoned into it instead", lamp);
             return;
         }
         const bool again = g_follow.kept;
+        g_bells_off = false;
         g_follow = {};
         g_follow.lamp = lamp;
         g_follow.replayed = true;
@@ -1468,7 +1501,7 @@ void LampNotes() {
         Say("seamless: lamp t%u: its 'in multiplayer' check answered 'no', so the %s can use it", talk,
             Role() == kRoleClient ? "guest" : "host");
     if (g_solo_lamp.exchange(false, std::memory_order_relaxed))
-        Say("seamless: a guest's lamp: this guest travels alone and leaves the host's world");
+        Say("seamless: a guest's lamp: the host is asked, or for the Dream this guest goes alone");
     static bool told_wall = false;
     if (g_wall_kept_down.exchange(false, std::memory_order_relaxed) && !told_wall) {
         told_wall = true;
@@ -1530,11 +1563,32 @@ void NoteBossTrophy(std::uint64_t event, std::int32_t event_id) {
     g_boss_trophies_out.push_back(trophy);
 }
 
+bool OwnSaveHasFlag(std::uint32_t id);
+
+bool SkipSeenScene(std::uint64_t event, std::int32_t event_id) {
+    const std::uint64_t instr = *reinterpret_cast<const std::uint64_t*>(event + 0xb0);
+    if (!instr || *reinterpret_cast<const std::int32_t*>(instr) != kSceneBank || *reinterpret_cast<const std::int32_t*>(instr + 4) != kScenePlay ||
+        g_role.load(std::memory_order_relaxed) != kRoleClient)
+        return false;
+    static const bool play = [] {
+        const char* v = std::getenv("BB_GUEST_SCENES");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    if (play || !OwnSaveHasFlag(KeptTravel::SceneSeenFlag(static_cast<std::uint32_t>(event_id)))) return false;
+    static std::set<std::int32_t> told;
+    if (told.insert(event_id).second) Say("seamless: event %d's scene: this hunter's own save has seen it, skipped for this hunter only", event_id);
+    return true;
+}
+
 std::int64_t __attribute__((sysv_abi)) OnEmevdStep(std::uint64_t, const std::uint64_t* saved) {
     const std::uint64_t event = saved[4];
     if (!event) return 0;
     const std::int32_t event_id = *reinterpret_cast<const std::int32_t*>(event + 0x28);
     NoteBossTrophy(event, event_id);
+    if (SkipSeenScene(event, event_id)) {
+        const_cast<std::uint64_t*>(saved)[-1] = 1;
+        return 1;
+    }
     if (event_id != kLampEvent && event_id != kCoopWalls[0].event && event_id != kCoopWalls[1].event &&
         event_id != kCoopWalls[2].event)
         return 0;
@@ -1562,7 +1616,7 @@ bool LampTravel(std::uint8_t* image, std::size_t size) {
         return false;
     }
     const char* keep_switch = std::getenv("BB_LAMP_KEEP_PARTY");
-    const bool keep_parts = keep_switch && std::strcmp(keep_switch, "1") == 0 &&
+    const bool keep_parts = !(keep_switch && std::strcmp(keep_switch, "0") == 0) &&
                             Matches(image, size, kStageEndStopCall, kStageEndStopCallBytes, sizeof kStageEndStopCallBytes) &&
                             Matches(image, size, kStageEndTasksCall, kStageEndTasksCallBytes, sizeof kStageEndTasksCallBytes) &&
                             Matches(image, size, kFlagSnapshot, kFlagSnapshotEntry, sizeof kFlagSnapshotEntry) &&
@@ -1585,10 +1639,119 @@ bool LampTravel(std::uint8_t* image, std::size_t size) {
     g_keep_parts = keep_parts;
     WriteCode(image + kLampGate, kLampGateOpen, sizeof kLampGateOpen);
     g_lamp_travel = true;
-    Say("seamless: lamps work in a party: the host's lamp takes everyone along (%s), a guest's lamp "
-        "takes only that guest; no multiplayer fog walls outside boss fights",
-        LampsKeepSession() ? "the session stays, the bells only if that fails" : "the bells ring by themselves");
+    Say("seamless: lamps work in a party: the host's lamp takes everyone along (%s), %s; no multiplayer fog walls outside boss fights",
+        LampsKeepSession() ? "the session stays, the bells only if that fails" : "the bells ring by themselves",
+        LampsKeepSession() ? "a guest's lamp asks the host" : "a guest's lamp takes only that guest");
     return true;
+}
+
+constexpr std::size_t kItemCheck = 0x157f200;
+constexpr std::uint8_t kItemCheckEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
+                                            0x41, 0x54, 0x53, 0x48, 0x81, 0xec, 0xe8, 0x01, 0x00, 0x00};
+constexpr std::size_t kGoodsRow = 0x1f1e3d0, kGoodsChrState = 0x1f1e910, kAreaCheck = 0x191a750, kGroundCheck = 0x18c96d0, kMenuLocks = 0x176b7e0;
+constexpr std::size_t kItemTimers = 0x5540508, kRegion = 0x278, kOnlineOk = 0x1590;
+constexpr std::int32_t kBellGoods[] = {120, 200, 201, 205, 206, 225, 226};
+constexpr int kBellEffects[] = {9000, 9003, 9004, 9005, 9008, 9009};
+thread_local bool g_in_item_check = false;
+std::atomic<bool> g_bell_trace{false};
+std::atomic<bool> g_bell_trace_ring{false};
+
+std::string BellRefusals(std::int32_t item, std::uint64_t chr, std::uint64_t effects, int type) {
+    std::uint64_t row[2] = {};
+    Call(Fn(kGoodsRow), row, item);
+    const std::uint64_t goods = row[1];
+    if (!goods) return "no goods row";
+    std::string out;
+    const auto add = [&](const char* why) {
+        out += out.empty() ? "" : ",";
+        out += why;
+    };
+    const std::uint32_t bits = Field<std::uint32_t>(goods, 0x42);
+    const std::uint8_t type_bit = type == 8   ? std::uint8_t(bits >> 0x11)
+                                  : type == 2 ? std::uint8_t(bits >> 0x13)
+                                  : type == 1 ? std::uint8_t(bits >> 0x12)
+                                              : Field<std::uint8_t>(goods, 0x44);
+    const std::uint64_t transition = Global(kTransition), timers = Global(kItemTimers);
+    const int members = Field<std::int32_t>(Field<std::uint64_t>(transition, 0x16f8), 0x18);
+    if (Field<std::uint32_t>(chr, 0x1e1) & 0x400) add("chr flag 0x400");
+    if (!(type_bit & 1)) add("player type bit");
+    if (!(bits & 0x100000) && members > 1) add("members>1");
+    if ((bits & 0x200000) && !Field<std::uint8_t>(transition, kOnlineOk)) add("+0x1590 off");
+    if (effects && !(Call(Field<std::uint64_t>(Field<std::uint64_t>(effects, 0), 0x10), effects, item) & 0xff)) add("effect list");
+    if (Field<std::uint8_t>(goods, 0x3a) < 6 && (0x26u >> Field<std::uint8_t>(goods, 0x3a) & 1)) add("goods kind");
+    if (Field<std::uint8_t>(goods, 0x3f) ? Field<std::uint8_t>(timers, 0x3ff8) != 0 : Field<float>(timers, 0x400c) > 0.0f) add("item timer");
+    const std::int64_t state = Call(Field<std::uint64_t>(Field<std::uint64_t>(chr, 0), 0x598), chr);
+    if ((Call(Fn(kGoodsChrState), row, state & 0xff) & 0xff) != 1) add("chr state");
+    if (!(Call(Fn(kAreaCheck), Global(kWorldChrMan)) & 0xff)) add("area check");
+    if (!(Call(Fn(kGroundCheck), chr) & 0xff)) add("ground check");
+    return out.empty() ? "nothing seen" : out;
+}
+
+std::int64_t __attribute__((sysv_abi)) OnItemCheck(std::uint64_t, const std::uint64_t* saved) {
+    if (g_in_item_check) return 0;
+    g_in_item_check = true;
+    const auto item = static_cast<std::int32_t>(saved[5]);
+    const std::int64_t result = Call(Fn(kItemCheck), saved[5], saved[4], saved[3], saved[2], saved[1], saved[0], saved[7]);
+    if (!(result & 0xff) && saved[4] == LocalPlayer() && std::find(std::begin(kBellGoods), std::end(kBellGoods), item) != std::end(kBellGoods)) {
+        static std::mutex mu;
+        static std::set<std::uint64_t> told;
+        const std::uint64_t key = std::uint64_t(Field<std::uint32_t>(saved[4], kRegion)) << 32 | std::uint32_t(item);
+        std::lock_guard lock(mu);
+        if (told.insert(key).second)
+            Say("bell trace: goods %d refused at region %u, map %08x, role %d: %s", item, Field<std::uint32_t>(saved[4], kRegion),
+                Field<std::uint32_t>(saved[4], kPlayerMap), Role(),
+                BellRefusals(item, saved[4], saved[3], static_cast<std::int32_t>(saved[2])).c_str());
+    }
+    g_in_item_check = false;
+    const_cast<std::uint64_t*>(saved)[-1] = static_cast<std::uint64_t>(result);
+    return 1;
+}
+
+void BellTraceTick() {
+    if (!g_bell_trace.load(std::memory_order_relaxed)) return;
+    const std::uint64_t local = LocalPlayer();
+    if (!local || Loading() || Hp(local) <= 0) return;
+    static std::string last;
+    std::string now = "map " + std::to_string(Field<std::uint32_t>(local, kPlayerMap)) + " region " + std::to_string(Field<std::uint32_t>(local, kRegion)) +
+                      " role " + std::to_string(Role());
+    now += " area " + std::to_string(Call(Fn(kAreaCheck), Global(kWorldChrMan)) & 0xff);
+    now += " ground " + std::to_string(Call(Fn(kGroundCheck), local) & 0xff);
+    now += " menu locks " + std::to_string(Call(Fn(kMenuLocks)) & 0x7ffff77f);
+    now += " effects";
+    for (const int effect : kBellEffects)
+        if (EffectNode(local, effect)) now += " " + std::to_string(effect);
+    const std::uint64_t effects = Field<std::uint64_t>(local, 0x1c8);
+    const int type = Field<std::int32_t>(local, 0x78);
+    now += " usable";
+    for (const std::int32_t item : kBellGoods) {
+        g_in_item_check = true;
+        const bool ok = Call(Fn(kItemCheck), item, local, effects, type, -1, -1, 0) & 0xff;
+        g_in_item_check = false;
+        now += " " + std::to_string(item) + "=" + (ok ? "yes" : "NO(" + BellRefusals(item, local, effects, type) + ")");
+    }
+    if (now != last) Say("bell trace: %s", now.c_str());
+    last = std::move(now);
+    static std::uint32_t rung_at = 0;
+    static std::chrono::steady_clock::time_point settled;
+    const std::uint32_t map = Field<std::uint32_t>(local, kPlayerMap);
+    if (g_bell_trace_ring.load(std::memory_order_relaxed) && rung_at != map && Settled(settled, std::chrono::steady_clock::now())) {
+        rung_at = map;
+        Say("bell trace: Small Resonant Bell at map %08x, region %d: %s", map, Field<std::int32_t>(local, kRegion), RingBell(kGuestBell) ? "rung" : "not rung");
+    }
+}
+
+void BellTrace(std::uint8_t* image, std::size_t size) {
+    const char* on = std::getenv("BB_BELL_TRACE");
+    if (!on || (std::strcmp(on, "1") != 0 && std::strcmp(on, "ring") != 0)) return;
+    g_bell_trace_ring = std::strcmp(on, "ring") == 0;
+    Hook hook;
+    if (!Prepare(hook, image, size, kItemCheck, kItemCheckEntry, OnItemCheck)) {
+        Say("bell trace off: the item check is not 1.09's");
+        return;
+    }
+    Commit(std::span(&hook, 1));
+    g_bell_trace = true;
+    Say("bell trace on");
 }
 
 bool DeathRules(std::uint8_t* image, std::size_t size) {
@@ -1795,6 +1958,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
     if (const char* backend = std::getenv("BB_NET_BACKEND"); backend && std::strcmp(backend, "room") == 0) {
         g_image = image;
         any = BellRules(image, size) || any;
+        BellTrace(image, size);
         any = FourPlayers(image, size) || any;
         any = DeathRules(image, size) || any;
         any = LampTravel(image, size) || any;
@@ -2048,6 +2212,27 @@ void GuestProgressTick(int role) {
         for (const std::uint32_t flag : got) pending.push_back({flag, now});
     if (Loading() || !LocalPlayer()) return;
     if (!pending.empty()) {
+        PoolReader own;
+        for (const FlagRange& r : kProgressFlags) {
+            if (r.kind == kKeepSet || r.kind == kDungeonFlag) continue;
+            std::uint32_t host = 0, guest = 0;
+            bool any = false, known = true;
+            for (const Pending& p : pending) {
+                const std::uint32_t id = p.flag & ~kFlagClear;
+                if (id < r.first || id > r.last) continue;
+                any = true;
+                if (p.flag & kFlagClear) host &= ~(1u << (id - r.first));
+                else host |= 1u << (id - r.first);
+            }
+            if (!any) continue;
+            for (std::uint32_t id = r.first; id <= r.last && known; ++id)
+                if (own.On(id, known)) guest |= 1u << (id - r.first);
+            if (!known || SharedProgress::HostStepIsNewer(host, guest)) continue;
+            std::erase_if(pending, [&](const Pending& p) {
+                const std::uint32_t id = p.flag & ~kFlagClear;
+                return id >= r.first && id <= r.last;
+            });
+        }
         const int mode = Field<std::int32_t>(Global(kFlagMan), 0x80, -1);
         const std::uint32_t here = Field<std::uint32_t>(LocalPlayer(), 0x3f8) & 0xffff0000u;
         int changed = 0, held = 0;
@@ -2067,6 +2252,14 @@ void GuestProgressTick(int role) {
             RequestSave();
         }
     }
+}
+
+namespace {
+bool OwnSaveHasFlag(std::uint32_t id) {
+    PoolReader own;
+    bool known = false;
+    return own.On(id, known) && known;
+}
 }
 
 void RequestSave() {
@@ -2572,6 +2765,7 @@ void Tick() {
         Say("seamless: sent home: no more signs until Send sign is pressed");
     }
     SummonTick(role);
+    BellTraceTick();
     LogOwnState(role);
     BringTick(role);
     GuestStatsTick(role);
@@ -2618,6 +2812,14 @@ void StartSummon() {
     g_bells_off = false;
     g_summon = true;
     Say("seamless: %s from the co-op panel", BbRoom::IsHost() ? "summoning the party" : "joining the host");
+}
+
+void AnswerLampAsk(bool yes) {
+    g_lamp_answer = yes ? 1 : 2;
+}
+
+std::string LampPlace(std::uint32_t lamp) {
+    return "lamp " + std::to_string(lamp);
 }
 
 void StopSummon() {

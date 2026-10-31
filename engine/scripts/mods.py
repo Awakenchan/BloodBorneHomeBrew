@@ -303,8 +303,9 @@ def main():
     parser.add_argument('--mods-dir', required=True, type=Path)
     parser.add_argument('--config', type=Path)
     parser.add_argument('--enabled', choices=('0', '1'), default='1')
+    parser.add_argument('--first-layer', type=Path, action='append', default=[])
     args = parser.parse_args()
-    layers = []
+    layers = [(layer.name, layer) for layer in args.first_layer]
     if args.enabled == '1':
         legacy = Path(str(args.game.resolve()) + '-mods')
         if legacy.is_dir():

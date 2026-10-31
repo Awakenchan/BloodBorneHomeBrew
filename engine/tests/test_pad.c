@@ -16,6 +16,7 @@ uint64_t host_monotonic_ns(void) {
     return SDL_GetTicksNS();
 }
 int bbgpu_overlay_captures_input(void) { return capture; }
+void bbgpu_anti_lag_before_input(void) {}
 int bbgpu_pc_input(BbPcPad *pad, const bool *keys, int count, int gamepad) {
     (void)pad;
     (void)keys;

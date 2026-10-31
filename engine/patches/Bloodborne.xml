@@ -17,6 +17,12 @@
             <Line Type="bytes" Address="0x01fb5190" Value="4531c090"/>
         </PatchList>
     </Metadata>
+    <Metadata Title="Bloodborne" Name="Lamp2Lamp (warp between lamps)" Note="Lit lamps offer the other lamps of the same Headstone region, and the Hunter's Dream, without going through the Dream first. Changes the game's event and lamp scripts, so a mod that changes those files takes their place. The new lamp text is English only. Lamp2Lamp by Disschorde: https://www.nexusmods.com/bloodborne/mods/455" Author="Disschorde" PatchVer="1.1.0" AppVer="01.09" AppElf="eboot.bin" isEnabled="false">
+        <PatchList/>
+    </Metadata>
+    <Metadata Title="Bloodborne" Name="Lamp2Lamp: warp to bosses" Note="Includes Lamp2Lamp, so it needs no other switch. Moves most boss lamps to the front of their arena, so you can warp to a boss once you have found it, except Rom, Amy, Mico, Celestial Emissary and Orphan. A mod that changes the same map files takes their place. Lamp2Lamp by Disschorde: https://www.nexusmods.com/bloodborne/mods/455" Author="Disschorde" PatchVer="1.0.1" AppVer="01.09" AppElf="eboot.bin" isEnabled="false">
+        <PatchList/>
+    </Metadata>
     <Metadata Title="Bloodborne" Name="Performance Patch (perf increase)" Note="Lighter settings for the renderer and its debug parameters, shorter waits in worker threads, sleeps capped at a few milliseconds and profiling skipped. Changes some visuals." Author="Lantern Engine" PatchVer="1.0" AppVer="01.09" AppElf="eboot.bin" isEnabled="false">
         <PatchList>
             <Line Type="bytes" Address="0x0547aed0" Value="09"/>

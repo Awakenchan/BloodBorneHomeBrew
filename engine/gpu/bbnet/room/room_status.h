@@ -11,7 +11,7 @@ namespace BbRoom {
 
 enum class LinkState { Unknown, Good, Slow, Reconnecting };
 
-enum class PartyLineKind { EnteredRoom, JoinedWorld, Left, Kicked, Reconnected, Died, BackOnline, WarpAsked, WarpSeen, WarpOff, WarpNoAnswer, BringFar };
+enum class PartyLineKind { EnteredRoom, JoinedWorld, Left, Kicked, Reconnected, Died, BackOnline, WarpAsked, WarpSeen, WarpOff, WarpNoAnswer, BringFar, LampAsked, LampSeen, LampAgreed, LampRefused, LampNoAnswer, Visitor };
 
 struct PeerStatus {
     int slot = 0;
@@ -35,6 +35,7 @@ struct ReconnectNotice {
 };
 
 enum : std::uint8_t { kWarpGot = 1, kWarpRefused = 2 };
+enum : std::uint8_t { kLampGot = 1, kLampAgreed = 2, kLampRefused = 3 };
 
 constexpr auto kPingEvery = std::chrono::seconds(2);
 constexpr auto kSilentAfter = std::chrono::seconds(6);
@@ -43,6 +44,8 @@ constexpr auto kLineLasts = std::chrono::seconds(6);
 constexpr auto kLineFade = std::chrono::milliseconds(600);
 constexpr auto kWarpAskLasts = std::chrono::seconds(60);
 constexpr auto kWarpAnswerWithin = std::chrono::seconds(5);
+constexpr auto kLampAskLasts = std::chrono::seconds(60);
+constexpr auto kLampAnswerWithin = std::chrono::seconds(5);
 constexpr auto kGaveUpShown = std::chrono::seconds(12);
 constexpr int kSlowPingMs = 250;
 constexpr std::size_t kMostLines = 4;
@@ -69,6 +72,13 @@ public:
     void GuestAnswered(std::uint8_t answer, Time now);
     void GuestBrought();
     bool GuestWaiting(Time now) const;
+
+    bool LampAsk(int slot, std::uint32_t lamp, Time now);
+    bool LampAskNow(Time now, int& slot, std::string& name, std::uint32_t& lamp) const;
+    void LampAskDone();
+    void GuestLampAsked(Time now);
+    void GuestLampAnswered(std::uint8_t answer, Time now);
+    bool GuestLampWaiting(Time now) const;
 
     void AddLine(PartyLineKind kind, const std::string& name, Time now);
     std::vector<PartyLine> Lines(Time now);
@@ -101,6 +111,11 @@ private:
     bool down_ = false;
     Time guest_asked_{};
     bool guest_answered_ = false;
+    int lamp_slot_ = 0;
+    std::uint32_t lamp_ = 0;
+    Time lamp_at_{};
+    Time guest_lamp_at_{};
+    bool guest_lamp_seen_ = false;
 };
 
 } // namespace BbRoom

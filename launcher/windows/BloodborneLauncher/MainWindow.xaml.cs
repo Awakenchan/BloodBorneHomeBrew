@@ -423,7 +423,10 @@ namespace BloodborneLauncher
             {
                 image = await Task.Run(() =>
                 {
-                    string? art = mode == "custom" && System.IO.File.Exists(own)
+                    var builtIn = AppIcon.Backdrop(mode);
+                    string? art = builtIn != null
+                        ? $"pack://application:,,,/Assets/{builtIn}"
+                        : mode == "custom" && System.IO.File.Exists(own)
                         ? own
                         : new[] { "pic1.png", "pic0.png" }
                             .Select(n => System.IO.Path.Combine(game, "sce_sys", n))

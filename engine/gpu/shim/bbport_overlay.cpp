@@ -20,6 +20,7 @@
 #include "bbport_menu_i18n.h"
 #include "bbport_settings.h"
 #include "bbport_usage.h"
+#include "bbport_looks.h"
 #include "engine/cheats.h"
 #include "engine/graphics.h"
 #include "engine/online_fixes.h"
@@ -610,6 +611,49 @@ void PictureSection() {
     }
     slider("Ambient occlusion strength", "Сила затенения (AO)", s.graphics_ao_strength, 0.0f, 3.0f);
     slider("Shadow distance", "Дальность теней", s.graphics_shadow_scale, 0.5f, 4.0f);
+    slider("Indirect lighting strength", "Сила непрямого освещения (GI)", s.graphics_gi_strength, 0.0f, 12.0f);
+    slider("Reflection strength", "Сила отражений", s.graphics_ssr_intensity, 0.0f, 3.0f);
+    slider("Volumetric sunlight strength", "Сила объёмного света", s.graphics_volumetric_intensity, 0.0f, 3.0f);
+    slider("Lamp fog strength", "Сила тумана ламп", s.graphics_point_fog_intensity, 0.0f, 3.0f);
+    for (int e = BbSettings::EffectFirstLighting; e < BbSettings::EffectCount; ++e) {
+        const auto& effect = BbSettings::Effects[e];
+        if (const char* label = Item(effect.label, effect.label_ru)) {
+            Checkbox(label, s.effects[e]);
+            if (!BbSettings::EffectIsLive(e)) {
+                Hint(BbSettings::MenuText("Applied when the game restarts.", "Применяется после перезапуска игры."));
+                if (s.effects[e] != s.startup_effects[e]) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", BbSettings::MenuText("Applied when the game restarts.",
+                                                                   "Применяется после перезапуска игры."));
+                }
+            }
+            if (e == BbSettings::EffectModernSsr && s.effects[e] &&
+                !s.effects[BbSettings::EffectSsr]) {
+                ImGui::TextDisabled("%s", BbSettings::MenuText("Needs Screen-space reflections on",
+                                                               "Нужны включённые экранные отражения"));
+            }
+        }
+    }
+    if (const char* heading = Item("Looks", "Образы")) {
+        ImGui::TextUnformatted(heading);
+        for (int look = 0; look < BbLooks::PresetCount; ++look) {
+            if (look != 0) {
+                ImGui::SameLine();
+            }
+            if (ImGui::Button(BbSettings::MenuText(BbLooks::PresetName(look), BbLooks::PresetNameRu(look)))) {
+                BbLooks::Apply(look);
+            }
+        }
+        if (BbLooks::HasPrevious()) {
+            if (ImGui::Button(BbSettings::MenuText("Back to my settings", "Вернуть мои настройки"))) {
+                BbLooks::GoBack();
+            }
+        }
+        if (BbLooks::NeedsRestart()) {
+            ImGui::TextDisabled("%s", BbSettings::MenuText("Part of this look applies when the game restarts.",
+                                                           "Часть образа применится после перезапуска игры."));
+        }
+    }
     if (moved && !s.graphics_controls) {
         Store(s.graphics_controls, true, true);
     }
@@ -624,6 +668,10 @@ void PictureSection() {
             Store(s.graphics_vignette, true, true);
             Store(s.graphics_ao_strength, 1.0f, true);
             Store(s.graphics_shadow_scale, 1.0f, true);
+            Store(s.graphics_gi_strength, 6.0f, true);
+            Store(s.graphics_ssr_intensity, 1.0f, true);
+            Store(s.graphics_volumetric_intensity, 1.0f, true);
+            Store(s.graphics_point_fog_intensity, 1.0f, true);
         }
     }
     ImGui::EndDisabled();
@@ -651,7 +699,7 @@ void EffectsSection() {
             ImGui::EndCombo();
         }
     }
-    for (int e = 0; e < BbSettings::EffectCount; ++e) {
+    for (int e = 0; e < BbSettings::EffectFirstLighting; ++e) {
         const auto& effect = BbSettings::Effects[e];
         const char* label = Item(effect.label, effect.label_ru);
         if (!label) {
@@ -900,6 +948,21 @@ void UpscalerSection() {
                 "Generation загружена."));
         }
     }
+    if (s.anti_lag_supported || Searching()) {
+        if (const char* label = Item("AMD Anti-Lag 2")) {
+            bool anti_lag = s.anti_lag.load();
+            if (ImGui::Checkbox(label, &anti_lag)) {
+                Store(s.anti_lag, anti_lag, true);
+            }
+            Hint(BbSettings::MenuText(
+                "Lower input lag: the Radeon driver starts each frame as late as it can. Only on "
+                "AMD drivers that offer it. It turns itself off until the next start if the driver "
+                "holds the game too long.",
+                "Меньше задержка ввода: драйвер Radeon начинает каждый кадр как можно позже. Только "
+                "с драйверами AMD, которые это поддерживают. Выключается до следующего запуска, если "
+                "драйвер слишком долго держит игру."));
+        }
+    }
     const bool upscaler_on = s.upscaler != BbSettings::UpscalerOff;
     const bool taa = s.upscaler == BbSettings::UpscalerTaa;
     ImGui::BeginDisabled(!upscaler_on);
@@ -1071,6 +1134,22 @@ void DlssSection() {
             "DLSS сам определяет экспозицию кадра, и для готового кадра игры (HDR-сцена при 1080p — "
             "всегда). Может успокоить тёмные сцены с гостингом. Меняется сразу (короткая пауза)."));
     }
+    if (const char* label = Item("Upscale before post-processing (experimental)", "Апскейл до постобработки (эксперимент)")) {
+        Checkbox(label, s.upscale_before_post);
+        Hint(BbSettings::MenuText(
+            "Outputs other than 1080p: the upscaler takes the HDR scene before the game's post-processing, as NVIDIA's "
+            "DLSS guide asks, and the post runs at the output size. Uses more GPU time and memory. Applies after a restart.",
+            "Вывод не 1080p: апскейлер берёт HDR-сцену до постобработки игры, как просит руководство NVIDIA по DLSS, а "
+            "постобработка идёт в разрешении вывода. Больше нагрузка на GPU и память. Применяется после перезапуска."));
+    }
+    if (const char* label = Item("DLSS: less wobble while turning (experimental)", "DLSS: меньше дрожания при поворотах (эксперимент)")) {
+        Checkbox(label, s.dlss_jitter_fade);
+        Hint(BbSettings::MenuText(
+            "Fades the sub-pixel jitter out while the camera moves. The image holds steadier, but NVIDIA's "
+            "DLSS guide warns against jitter only on a still camera. Off: as the guide asks. Live.",
+            "Убирает субпиксельный jitter, пока камера движется. Картинка стабильнее, но руководство NVIDIA "
+            "по DLSS предостерегает от jitter только при неподвижной камере. Выкл.: как в руководстве. Меняется сразу."));
+    }
     if (const char* label = Item("DLSS: sharper textures (mip bias -1)", "DLSS: чётче текстуры (mip bias -1)")) {
         Checkbox(label, s.dlss_mip_bias);
         Hint(BbSettings::MenuText(
@@ -1165,8 +1244,8 @@ void MaskSection() {
                               ? BbSettings::MenuText("FSR 3.1 uses it as its reactive mask.",
                                                      "FSR 3.1 берёт её как свою реактивную маску.")
                           : s.upscaler == BbSettings::UpscalerDlss
-                              ? BbSettings::MenuText("DLSS uses it to trust the current frame more (its bias mask).",
-                                                     "DLSS по ней больше доверяет текущему кадру (маска смещения).")
+                              ? BbSettings::MenuText("Current DLSS models do not use it, only the deprecated preset F.",
+                                                     "Текущие модели DLSS её не используют, только устаревший пресет F.")
                           : BbSettings::IsFsr4(s.upscaler)
                               ? BbSettings::MenuText("FSR 4 has no mask input: the marked pixels are blended with "
                                                      "this frame after it.",
@@ -1655,11 +1734,16 @@ const BbRoom::PeerStatus* FindPeer(const std::vector<BbRoom::PeerStatus>& peers,
     return nullptr;
 }
 
+std::string VisitorName(int slot, const std::string& name) {
+    return BbRoom::IsVisitorSlot(slot) ? name + BbSettings::MenuText(" [Visitor]", " [Посетитель]") : name;
+}
+
 void ConnectionList(const std::vector<std::pair<int, std::string>>& listed) {
     if (!BbSettings::Get().coop_status) return;
     for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) {
         if (std::any_of(listed.begin(), listed.end(), [&](const auto& m) { return m.first == peer.slot; })) continue;
-        ImGui::TextUnformatted(peer.name.c_str());
+        if (BbRoom::IsHost() && BbRoom::IsVisitorSlot(peer.slot)) continue;
+        ImGui::TextUnformatted(VisitorName(peer.slot, peer.name).c_str());
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ConnectionColor(peer.state)), "%s", ConnectionText(peer).c_str());
     }
@@ -1689,6 +1773,19 @@ void CoopOptionsSection() {
         Hint(BbSettings::MenuText("A guest asks from the F2 list and the host accepts with Bring. Off: guests cannot ask you, and you cannot ask.",
                                   "Гость просит в списке F2, хозяин принимает кнопкой «Призвать». Выкл.: вас не смогут попросить, и вы не сможете."));
     }
+    if (BbRoom::IsHost() && BbRoom::OpenRoomAllowed()) {
+        if (const char* label = Item("Open my room to visitors", "Открыть мою комнату для посетителей")) {
+            Checkbox(label, s.coop_open_room);
+            BbRoom::SetOpenRoom(s.coop_open_room);
+            Hint(BbSettings::MenuText("While on, your game gives your room's invite code to Lantern's co-op server, and the Lantern event team can see it in Discord and join for surprise events, so your room is not private from them. Everyone in the room sees a line when a visitor joins, and you can Kick them. Nobody is moved: guests keep control of their own summons. Off or leaving takes the room off the list at once; New room in the launcher retires a code they already saw.",
+                                      "Пока включено, ваша игра передаёт код приглашения вашей комнаты серверу Lantern, а команда мероприятий Lantern видит его в Discord и может зайти на неожиданное событие, поэтому от них комната не закрыта. Все в комнате видят строку, когда входит посетитель, и вы можете его выгнать. Никого не переносит: гости сами управляют своими призывами. Выключение или выход сразу убирает комнату из списка; «Новая комната» в лаунчере отменяет уже увиденный код."));
+            if (s.coop_open_room) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", BbRoom::OpenRoomListed() ? BbSettings::MenuText("listed", "в списке")
+                                                                   : BbSettings::MenuText("not listed yet", "пока не в списке"));
+            }
+        }
+    }
 }
 
 void CoopSection() {
@@ -1713,6 +1810,15 @@ void CoopSection() {
         }
         Hint(BbSettings::MenuText("Summons your friends' signs until the party is full. No bell needed; friends press Send sign.",
                                   "Призывает знаки друзей, пока отряд не заполнится. Колокол не нужен; друзья нажимают «Отправить знак»."));
+        int lamp_slot = 0;
+        std::string lamp_who;
+        std::uint32_t lamp_id = 0;
+        if (BbRoom::PendingLampAsk(lamp_slot, lamp_who, lamp_id)) {
+            ImGui::TextWrapped("%s%s (%s)", lamp_who.c_str(), BbSettings::MenuText(" asks the party to travel", " просит отряд отправиться"), Online::LampPlace(lamp_id).c_str());
+            if (ImGui::Button(BbSettings::MenuText("Accept: the whole party travels", "Принять: весь отряд отправится"))) Online::AnswerLampAsk(true);
+            ImGui::SameLine();
+            if (ImGui::Button(BbSettings::MenuText("Stay here", "Остаться здесь"))) Online::AnswerLampAsk(false);
+        }
         const auto members = BbRoom::PartyMembers();
         const auto peers = BbRoom::Connections();
         if (members.empty()) {
@@ -1720,7 +1826,7 @@ void CoopSection() {
         } else {
             for (const auto& [slot, name] : members) {
                 ImGui::PushID(slot);
-                ImGui::TextUnformatted(name.c_str());
+                ImGui::TextUnformatted(VisitorName(slot, name).c_str());
                 const BbRoom::PeerStatus* peer = FindPeer(peers, slot);
                 if (peer && BbSettings::Get().coop_status) {
                     ImGui::SameLine();
@@ -1745,6 +1851,14 @@ void CoopSection() {
             }
             Hint(BbSettings::MenuText("Sends everyone back to their own world. Your room stays open.",
                                       "Отправляет всех в их миры. Комната остаётся открытой."));
+        }
+        for (const BbRoom::PeerStatus& peer : peers) {
+            if (!BbRoom::IsVisitorSlot(peer.slot) || std::any_of(members.begin(), members.end(), [&](const auto& m) { return m.first == peer.slot; })) continue;
+            ImGui::PushID(peer.slot);
+            ImGui::TextUnformatted(VisitorName(peer.slot, peer.name).c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton(BbSettings::MenuText("Kick", "Выгнать"))) BbRoom::Kick(peer.slot);
+            ImGui::PopID();
         }
         ConnectionList(members);
         return;
@@ -1936,9 +2050,12 @@ void Menu() {
     bool restart =
         s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
         s.live_resolution != s.startup_live_resolution || s.hdr != s.startup_hdr ||
+        s.graphics_motion_blur_quality != s.startup_motion_blur_quality ||
+        s.graphics_shadow_resolution != s.startup_shadow_resolution ||
+        s.graphics_local_shadow_resolution != s.startup_local_shadow_resolution ||
         BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        restart |= s.effects[e] != s.startup_effects[e];
+        restart |= !BbSettings::EffectIsLive(e) && s.effects[e] != s.startup_effects[e];
     }
     restart |= Vulkan::OptiScaler::Detect().loaded &&
                (s.optiscaler_compat != s.startup_optiscaler.compat ||
@@ -2107,7 +2224,7 @@ std::vector<BbRoom::PartyLine> ShownPartyLines() {
         const bool warp = line.kind == BbRoom::PartyLineKind::WarpAsked || line.kind == BbRoom::PartyLineKind::WarpSeen ||
                           line.kind == BbRoom::PartyLineKind::WarpOff || line.kind == BbRoom::PartyLineKind::WarpNoAnswer ||
                           line.kind == BbRoom::PartyLineKind::BringFar;
-        if (warp ? s.coop_warp_requests.load() : s.coop_notices.load()) shown.push_back(std::move(line));
+        if (line.kind == BbRoom::PartyLineKind::Visitor || (warp ? s.coop_warp_requests.load() : s.coop_notices.load())) shown.push_back(std::move(line));
     }
     return shown;
 }
@@ -2126,7 +2243,13 @@ std::string PartyLineText(const BbRoom::PartyLine& line) {
     case BbRoom::PartyLineKind::WarpSeen: return BbSettings::MenuText("The host has your request", "Хозяин получил вашу просьбу");
     case BbRoom::PartyLineKind::WarpOff: return BbSettings::MenuText("The host is not taking requests", "Хозяин не принимает просьбы");
     case BbRoom::PartyLineKind::WarpNoAnswer: return BbSettings::MenuText("The host did not answer, maybe an older version", "Хозяин не ответил, возможно старая версия");
+    case BbRoom::PartyLineKind::LampAsked: return who + BbSettings::MenuText(" asks the party to travel, press F2 to answer", " просит отряд отправиться, нажмите F2, чтобы ответить");
+    case BbRoom::PartyLineKind::LampSeen: return BbSettings::MenuText("The host has your request to travel", "Хозяин получил вашу просьбу отправиться");
+    case BbRoom::PartyLineKind::LampAgreed: return BbSettings::MenuText("The host accepted: the party travels", "Хозяин согласился: отряд отправляется");
+    case BbRoom::PartyLineKind::LampRefused: return BbSettings::MenuText("The host stays here, you stay with the party", "Хозяин остаётся здесь, вы остаётесь с отрядом");
+    case BbRoom::PartyLineKind::LampNoAnswer: return BbSettings::MenuText("The host did not answer, you stay with the party", "Хозяин не ответил, вы остаётесь с отрядом");
     case BbRoom::PartyLineKind::BringFar: return BbSettings::MenuText("The host is in another area, use the host's lamp", "Хозяин в другой области, идите через его фонарь");
+    case BbRoom::PartyLineKind::Visitor: return BbSettings::MenuText("A visitor from the event team entered the room", "В комнату вошёл посетитель из команды мероприятий");
     }
     return {};
 }
@@ -2703,6 +2826,7 @@ static OverlayKeys MenuKeys() {
 
 void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) {
     BbRoom::SetWarpRequests(BbSettings::Get().coop_warp_requests);
+    BbRoom::SetOpenRoom(BbSettings::Get().coop_open_room);
     std::scoped_lock lock{imgui_mutex};
     if (initialized) {
         return;
@@ -2953,7 +3077,7 @@ bool CapturesInput() {
     return menu_open || prompt_active || coop_open;
 }
 
-enum class CoopKind { Summon, Member, Player, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, TalkKey, Volume, Listen, Close };
+enum class CoopKind { LampYes, LampNo, Summon, Member, Player, Visitor, BringAll, End, Join, GoTo, Leave, Voice, Mic, Speak, TalkKey, Volume, Listen, Close };
 
 struct CoopItem {
     CoopKind kind;
@@ -2966,14 +3090,21 @@ std::vector<CoopItem> CoopItems() {
     std::vector<CoopItem> items;
     if (BbRoom::Active()) {
         if (BbRoom::IsHost()) {
+            int asker = 0;
+            std::string who;
+            std::uint32_t lamp = 0;
+            if (BbRoom::PendingLampAsk(asker, who, lamp)) {
+                items.push_back({CoopKind::LampYes, asker, who});
+                items.push_back({CoopKind::LampNo, asker, who});
+            }
             items.push_back({CoopKind::Summon});
             const auto members = BbRoom::PartyMembers();
-            for (const auto& [slot, name] : members) items.push_back({CoopKind::Member, slot, name});
-            if (BbSettings::Get().coop_status) {
-                for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) {
-                    const bool member = std::any_of(members.begin(), members.end(), [&](const auto& m) { return m.first == peer.slot; });
-                    if (!member) items.push_back({CoopKind::Player, peer.slot, peer.name});
-                }
+            for (const auto& [slot, name] : members) items.push_back({CoopKind::Member, slot, VisitorName(slot, name)});
+            for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) {
+                const bool member = std::any_of(members.begin(), members.end(), [&](const auto& m) { return m.first == peer.slot; });
+                if (member) continue;
+                if (BbRoom::IsVisitorSlot(peer.slot)) items.push_back({CoopKind::Visitor, peer.slot, VisitorName(peer.slot, peer.name)});
+                else if (BbSettings::Get().coop_status) items.push_back({CoopKind::Player, peer.slot, peer.name});
             }
             if (!members.empty()) {
                 items.push_back({CoopKind::BringAll});
@@ -2981,7 +3112,7 @@ std::vector<CoopItem> CoopItems() {
             }
         } else {
             if (BbSettings::Get().coop_status) {
-                for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) items.push_back({CoopKind::Player, peer.slot, peer.name});
+                for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) items.push_back({CoopKind::Player, peer.slot, VisitorName(peer.slot, peer.name)});
             }
             if (Online::PartyRole() == 6) {
                 if (BbSettings::Get().coop_warp_requests) items.push_back({CoopKind::GoTo});
@@ -3019,6 +3150,12 @@ bool CoopArmed(const std::string& what) {
 void CoopActivate(const CoopItem& item) {
     namespace Online = BbEngine::OnlineFixes;
     switch (item.kind) {
+    case CoopKind::LampYes:
+        if (CoopArmed("lamp")) Online::AnswerLampAsk(true);
+        break;
+    case CoopKind::LampNo:
+        Online::AnswerLampAsk(false);
+        break;
     case CoopKind::Summon:
     case CoopKind::Join:
         if (Online::Summoning()) Online::StopSummon();
@@ -3027,6 +3164,9 @@ void CoopActivate(const CoopItem& item) {
     case CoopKind::Member:
         if (coop_column == 0) BbRoom::SendBring(item.slot);
         else if (CoopArmed("kick:" + std::to_string(item.slot))) BbRoom::Kick(item.slot);
+        break;
+    case CoopKind::Visitor:
+        if (CoopArmed("kick:" + std::to_string(item.slot))) BbRoom::Kick(item.slot);
         break;
     case CoopKind::BringAll:
         BbRoom::SendBring(0);
@@ -3104,9 +3244,22 @@ bool CoopArmedNow(const std::string& what) {
     return coop_armed == what && std::chrono::steady_clock::now() - coop_armed_at < std::chrono::seconds(4);
 }
 
+std::string LampAskPlace() {
+    int slot = 0;
+    std::string who;
+    std::uint32_t lamp = 0;
+    if (!BbRoom::PendingLampAsk(slot, who, lamp)) return {};
+    return " (" + BbEngine::OnlineFixes::LampPlace(lamp) + ")";
+}
+
 std::string CoopLabel(const CoopItem& item, bool chosen) {
     namespace Online = BbEngine::OnlineFixes;
     switch (item.kind) {
+    case CoopKind::LampYes:
+        return chosen && CoopArmedNow("lamp") ? std::string(BbSettings::MenuText("Press again: the whole party travels", "Нажмите ещё раз: весь отряд отправится"))
+                                              : item.name + BbSettings::MenuText(" asks to travel: accept", " просит отправиться: принять") + LampAskPlace();
+    case CoopKind::LampNo:
+        return BbSettings::MenuText("Stay here", "Остаться здесь");
     case CoopKind::Summon:
         return Online::Summoning() ? BbSettings::MenuText("Stop summoning", "Остановить призыв")
                                    : BbSettings::MenuText("Start summon", "Начать призыв");
@@ -3118,6 +3271,9 @@ std::string CoopLabel(const CoopItem& item, bool chosen) {
                                      : BbSettings::MenuText("Ask the host to bring you", "Попросить хозяина перенести вас");
     case CoopKind::Player:
         return item.name;
+    case CoopKind::Visitor:
+        return std::string(chosen && CoopArmedNow("kick:" + std::to_string(item.slot)) ? BbSettings::MenuText("Press again to kick ", "Нажмите ещё раз, чтобы выгнать ")
+                                                                                       : BbSettings::MenuText("Kick ", "Выгнать ")) + item.name;
     case CoopKind::Member:
         if (chosen && CoopArmedNow("kick:" + std::to_string(item.slot)))
             return std::string(BbSettings::MenuText("Press again to send home ", "Нажмите ещё раз, чтобы выгнать ")) + item.name;

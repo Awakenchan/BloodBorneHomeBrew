@@ -3,6 +3,7 @@
 effect fixes and the native menu assets, from the player's own dump. Game files stay local.
 """
 import hashlib
+import shutil
 import os
 import json
 import subprocess
@@ -260,6 +261,61 @@ def prepare_effect_fixes(game, cache, log=print):
         stamp.write_text(sha(out) + '\n', encoding='ascii')
         fixed.append((relative, destination.resolve()))
     return fixed
+
+
+def prepare_lamp2lamp(game, update, patch, cache):
+    file = Path(patch).read_bytes()
+    if file[:4] != b'L2LP':
+        raise RuntimeError('not a Lamp2Lamp patch file')
+    body = zlib.decompress(file[8:])
+    at = 0
+
+    def take(count):
+        nonlocal at
+        if count > len(body) - at:
+            raise RuntimeError('damaged Lamp2Lamp patch file')
+        at += count
+        return body[at - count:at]
+
+    def u32():
+        return struct.unpack('<I', take(4))[0]
+
+    rows = []
+    state = sha(file)
+    for _ in range(u32()):
+        name = take(struct.unpack('<H', take(2))[0]).decode()
+        wanted_in, wanted_out = take(32).hex(), take(32).hex()
+        u32()
+        ops = []
+        for _ in range(u32()):
+            where, length = u32(), u32()
+            ops.append(take(length) if where == 0xFFFFFFFF else (where, length))
+        source = Path(update) / name if update and (Path(update) / name).is_file() else Path(game) / name
+        if not source.is_file():
+            raise RuntimeError(f'{name} is missing from the game')
+        packed = source.read_bytes()
+        state += sha(packed)
+        rows.append((name, wanted_in, wanted_out, ops, packed))
+    root = Path(cache) / Path(patch).stem
+    stamp = root / 'complete'
+    wanted = sha(state.encode())
+    if stamp.is_file() and stamp.read_text().strip() == wanted:
+        return root.resolve()
+    shutil.rmtree(root, ignore_errors=True)
+    for name, wanted_in, wanted_out, ops, packed in rows:
+        raw = dcx_unpack(packed)
+        if sha(raw) != wanted_in:
+            raise RuntimeError(f'{name} is not the 1.09 file')
+        result = bytearray()
+        for op in ops:
+            result += raw[op[0]:op[0] + op[1]] if isinstance(op, tuple) else op
+        if sha(bytes(result)) != wanted_out:
+            raise RuntimeError(f'{name} does not match the verified result')
+        destination = root / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(dcx_pack(bytes(result)))
+    stamp.write_text(wanted + '\n')
+    return root.resolve()
 
 
 def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False):

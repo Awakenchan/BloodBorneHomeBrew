@@ -13,6 +13,9 @@ fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::
 std::vector<std::pair<std::string, fs::path>> PrepareEffectFixes(const fs::path& game, const fs::path& cache,
                                                                  std::vector<std::string>& notes);
 
+fs::path PrepareLamp2Lamp(const fs::path& game, const std::optional<fs::path>& update, const fs::path& patch,
+                          const fs::path& cache);
+
 int RunProgram(const fs::path& program, const std::vector<std::wstring>& arguments, std::string* output = nullptr,
                void* log = nullptr);
 std::wstring CommandLine(const fs::path& program, const std::vector<std::wstring>& arguments);

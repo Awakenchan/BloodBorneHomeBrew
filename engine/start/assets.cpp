@@ -453,4 +453,90 @@ fs::path PrepareMenuAssets(const fs::path& game, const fs::path& elf, const fs::
     return fs::canonical(root);
 }
 
+fs::path PrepareLamp2Lamp(const fs::path& game, const std::optional<fs::path>& update, const fs::path& patch,
+                          const fs::path& cache) {
+    const Bytes file = ReadFile(patch);
+    if (file.size() < 8 || std::memcmp(file.data(), "L2LP", 4)) throw Error("not a Lamp2Lamp patch file");
+    uLongf size = Load<std::uint32_t>(file.data() + 4);
+    Bytes body(size);
+    if (uncompress(body.data(), &size, file.data() + 8, uLong(file.size() - 8)) != Z_OK || size != body.size())
+        throw Error("damaged Lamp2Lamp patch file");
+    std::size_t at = 0;
+    const auto take = [&](std::size_t count) {
+        if (count > body.size() - at) throw Error("damaged Lamp2Lamp patch file");
+        const std::uint8_t* here = body.data() + at;
+        at += count;
+        return here;
+    };
+    const auto u32 = [&] { return Load<std::uint32_t>(take(4)); };
+    const auto hex = [&] {
+        static constexpr char kDigits[] = "0123456789abcdef";
+        const std::uint8_t* raw = take(32);
+        std::string text;
+        for (int i = 0; i < 32; ++i) {
+            text += kDigits[raw[i] >> 4];
+            text += kDigits[raw[i] & 15];
+        }
+        return text;
+    };
+    struct Row {
+        std::string name, input, output;
+        std::uint32_t length;
+        std::size_t operations, count;
+        Bytes packed;
+    };
+    std::vector<Row> rows(u32());
+    std::string state = Sha256Hex(file);
+    std::error_code error;
+    for (Row& row : rows) {
+        const std::size_t name = Load<std::uint16_t>(take(2));
+        const std::uint8_t* text = take(name);
+        row.name.assign(reinterpret_cast<const char*>(text), name);
+        row.input = hex();
+        row.output = hex();
+        row.length = u32();
+        row.count = u32();
+        row.operations = at;
+        for (std::size_t i = 0; i < row.count; ++i) {
+            const std::uint32_t where = u32(), length = u32();
+            if (where == 0xFFFFFFFFu) take(length);
+        }
+        const fs::path source = update && fs::is_regular_file(*update / Path(row.name), error) ? *update / Path(row.name) : game / Path(row.name);
+        if (!fs::is_regular_file(source, error)) throw Error(row.name + " is missing from the game");
+        row.packed = ReadFile(source);
+        state += Sha256Hex(row.packed);
+    }
+    if (at != body.size()) throw Error("damaged Lamp2Lamp patch file");
+    const fs::path root = cache / patch.stem(), stamp = root / "complete";
+    const std::string wanted = Sha256Hex(state.data(), state.size());
+    try {
+        if (Trim(ReadText(stamp)) == wanted) return fs::canonical(root);
+    } catch (const std::exception&) {
+    }
+    fs::remove_all(root, error);
+    for (const Row& row : rows) {
+        const Bytes raw = DcxUnpack(row.packed);
+        if (Sha256Hex(raw) != row.input) throw Error(row.name + " is not the 1.09 file");
+        Bytes result;
+        result.reserve(row.length);
+        at = row.operations;
+        for (std::size_t i = 0; i < row.count; ++i) {
+            const std::uint32_t where = u32(), length = u32();
+            if (where == 0xFFFFFFFFu) {
+                const std::uint8_t* data = take(length);
+                result.insert(result.end(), data, data + length);
+            } else {
+                if (where > raw.size() || length > raw.size() - where) throw Error("damaged Lamp2Lamp patch file");
+                result.insert(result.end(), raw.begin() + std::ptrdiff_t(where), raw.begin() + std::ptrdiff_t(where) + length);
+            }
+        }
+        if (Sha256Hex(result) != row.output) throw Error(row.name + " does not match the verified result");
+        const fs::path destination = root / Path(row.name);
+        fs::create_directories(destination.parent_path());
+        WriteFile(destination, DcxPack(result));
+    }
+    WriteText(stamp, wanted + "\n");
+    return fs::canonical(root);
+}
+
 }

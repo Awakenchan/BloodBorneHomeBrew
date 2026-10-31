@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,6 +26,7 @@ void TestDerive() {
     assert(a.room_id != c.room_id && a.key != c.key);
     assert(a.room_id != d.room_id);
     for (const char ch : a.room_id) assert((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+    assert(Derive("hunters", "blood").room_id == "4344e16951b4fdc22c6d41ddc47bd7e6dd67aa9fe320abe75e253f081bd62f56");
 }
 
 void TestSeal() {
@@ -64,6 +67,81 @@ bool Await(Link& link, Event::Kind kind, Event* out, int timeout_ms = 15000) {
         }
     }
     return false;
+}
+
+bool AwaitAll(Link& link, std::vector<Event::Kind> kinds, int timeout_ms = 15000) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (!kinds.empty() && std::chrono::steady_clock::now() < end) {
+        link.WaitEvent(200);
+        for (const auto& e : link.Drain()) kinds.erase(std::remove(kinds.begin(), kinds.end(), e.kind), kinds.end());
+    }
+    return kinds.empty();
+}
+
+bool Until(const std::function<bool()>& check, int timeout_ms = 5000) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < end) {
+        if (check()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return check();
+}
+
+int TestVisitors(const char* server) {
+    const std::string name = "lantern-open-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    Link host, shut;
+    host.Start(server, name, "secret");
+    Event e;
+    if (!Await(host, Event::Kind::Connected, &e)) return 1;
+    host.SetHost(true);
+    shut.SetVisitor(true);
+    shut.Start(server, name, "secret");
+    if (Await(shut, Event::Kind::Connected, &e, 1500)) {
+        std::printf("live: a visitor joined a room that did not opt in\n");
+        return 1;
+    }
+    shut.Stop();
+    host.SetOpen(true);
+    if (!Until([&] { return host.OpenListed(); })) {
+        std::printf("live: the relay did not list the room\n");
+        return 1;
+    }
+    Link friend_link;
+    friend_link.Start(server, name, "secret");
+    if (!Await(friend_link, Event::Kind::Connected, &e)) return 1;
+    Link visitor;
+    visitor.SetVisitor(true);
+    visitor.Start(server, name, "secret");
+    if (!AwaitAll(visitor, {Event::Kind::Connected, Event::Kind::Announcement})) {
+        std::printf("live: the visitor got no welcome or no line\n");
+        return 1;
+    }
+    const int slot = visitor.Slot();
+    if (!visitor.IsVisitor(slot)) {
+        std::printf("live: the visitor is not tagged\n");
+        return 1;
+    }
+    if (!AwaitAll(host, {Event::Kind::Visitor, Event::Kind::Announcement}) || !host.IsVisitor(slot)) {
+        std::printf("live: the host was not told of the visitor\n");
+        return 1;
+    }
+    if (!AwaitAll(friend_link, {Event::Kind::Visitor, Event::Kind::Announcement}) || !friend_link.IsVisitor(slot)) {
+        std::printf("live: the guest did not see the visitor's line\n");
+        return 1;
+    }
+    host.SendAway(slot);
+    if (!Await(visitor, Event::Kind::Disconnected, &e) || !Await(host, Event::Kind::Left, &e) || e.slot != slot || host.IsVisitor(slot)) {
+        std::printf("live: the visitor was not sent away\n");
+        return 1;
+    }
+    if (Await(visitor, Event::Kind::Connected, &e, 1500)) {
+        std::printf("live: a visitor came back after being sent away\n");
+        return 1;
+    }
+    visitor.Stop();
+    host.SetOpen(false);
+    if (!Until([&] { return !host.OpenListed(); })) return 1;
+    return 0;
 }
 
 int TestLive(const char* server) {
@@ -111,7 +189,9 @@ int TestLive(const char* server) {
         std::printf("live: leave not seen\n");
         return 1;
     }
-    return 0;
+    wrong.Stop();
+    a.Stop();
+    return TestVisitors(server);
 }
 
 int Soak(const char* server, int seconds) {

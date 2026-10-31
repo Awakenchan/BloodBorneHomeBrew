@@ -318,16 +318,26 @@ static void apply_keyboard(PadData *pad, const bool *keys) {
     pad->right_y = keys_to_axis(pad->right_y, key_held(keys, IN_LOOK_UP), key_held(keys, IN_LOOK_DOWN));
 }
 
+static void apply_deadzone(uint8_t *x, uint8_t *y) {
+    float zone = deadzone_percent * 1.28f, dx = *x - 128.0f, dy = *y - 128.0f, length = SDL_sqrtf(dx * dx + dy * dy);
+    if (length <= zone) {
+        *x = *y = 128;
+        return;
+    }
+    float scale = (length - zone) * 128.0f / (128.0f - zone) / length;
+    float nx = 128.0f + dx * scale, ny = 128.0f + dy * scale;
+    *x = (uint8_t)(nx < 0.0f ? 0 : nx > 255.0f ? 255 : (int)(nx + 0.5f));
+    *y = (uint8_t)(ny < 0.0f ? 0 : ny > 255.0f ? 255 : (int)(ny + 0.5f));
+}
+
 static void read_sticks(SDL_Gamepad *g, PadData *pad) {
     pad->left_x = stick_byte(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX));
     pad->left_y = stick_byte(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY));
     pad->right_x = stick_byte(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHTX));
     pad->right_y = stick_byte(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHTY));
     if (deadzone_percent) {
-        int zone = deadzone_percent * 128 / 100;
-        uint8_t *sticks[4] = {&pad->left_x, &pad->left_y, &pad->right_x, &pad->right_y};
-        for (int s = 0; s < 4; ++s)
-            if (*sticks[s] - 128 < zone && 128 - *sticks[s] < zone) *sticks[s] = 128;
+        apply_deadzone(&pad->left_x, &pad->left_y);
+        apply_deadzone(&pad->right_x, &pad->right_y);
     }
     if (swap_sticks) {
         uint8_t t = pad->left_x;

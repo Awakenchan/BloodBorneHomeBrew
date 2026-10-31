@@ -26,6 +26,51 @@ bool HasLine(PartyStatus& status, Clock::time_point now, PartyLineKind kind, con
     return false;
 }
 
+void TestLampAsk() {
+    PartyStatus status;
+    auto now = Clock::now();
+    status.Named(2, "Hunter", now);
+    status.Named(3, "Other", now);
+    int slot = 0;
+    std::string who;
+    std::uint32_t lamp = 0;
+    Check(!status.LampAskNow(now, slot, who, lamp), "no lamp ask to begin with");
+    Check(status.LampAsk(2, 2412950, now), "a guest's lamp ask is taken");
+    Check(HasLine(status, now, PartyLineKind::LampAsked, "Hunter"), "the host is told who asks");
+    Check(status.LampAskNow(now, slot, who, lamp) && slot == 2 && who == "Hunter" && lamp == 2412950, "the ask waits for the host");
+    Check(!status.LampAsk(3, 2402950, now), "a second guest can't push the first one's ask out");
+    Check(status.LampAskNow(now, slot, who, lamp) && slot == 2 && lamp == 2412950, "the first ask stays");
+    Check(!status.LampAskNow(now + kLampAskLasts, slot, who, lamp), "an unanswered ask runs out, nobody moves");
+    Check(status.LampAsk(3, 2402950, now + kLampAskLasts), "after that another guest can ask");
+    status.Left(3, now + kLampAskLasts);
+    Check(!status.LampAskNow(now + kLampAskLasts, slot, who, lamp), "the ask goes with the guest who leaves");
+    Check(status.LampAsk(2, 2412950, now), "ask again");
+    status.LampAskDone();
+    Check(!status.LampAskNow(now, slot, who, lamp), "an answered ask is gone");
+
+    PartyStatus guest;
+    guest.GuestLampAsked(now);
+    Check(guest.GuestLampWaiting(now), "the guest waits");
+    guest.Tick(now + kLampAnswerWithin);
+    Check(!guest.GuestLampWaiting(now + kLampAnswerWithin) && HasLine(guest, now + kLampAnswerWithin, PartyLineKind::LampNoAnswer),
+          "an older host never answers: the guest stays and is told");
+    guest.GuestLampAsked(now);
+    guest.GuestLampAnswered(kLampGot, now);
+    guest.Tick(now + kLampAnswerWithin);
+    Check(guest.GuestLampWaiting(now + kLampAnswerWithin), "a host that has the ask gets its time");
+    guest.GuestLampAnswered(kLampRefused, now + seconds(6));
+    Check(!guest.GuestLampWaiting(now + seconds(6)) && HasLine(guest, now + seconds(6), PartyLineKind::LampRefused), "refused: the guest stays");
+    PartyStatus quiet;
+    quiet.GuestLampAsked(now);
+    quiet.GuestLampAnswered(kLampGot, now);
+    quiet.Tick(now + kLampAskLasts);
+    Check(HasLine(quiet, now + kLampAskLasts, PartyLineKind::LampNoAnswer), "the host sat on it: the guest stays and is told");
+    PartyStatus yes;
+    yes.GuestLampAsked(now);
+    yes.GuestLampAnswered(kLampAgreed, now);
+    Check(!yes.GuestLampWaiting(now) && HasLine(yes, now, PartyLineKind::LampAgreed), "accepted");
+}
+
 void TestPing() {
     PartyStatus status;
     auto now = Clock::now();
@@ -193,6 +238,7 @@ void TestGuestSide() {
 } // namespace
 
 int main() {
+    TestLampAsk();
     TestPing();
     TestSilence();
     TestOlderClient();

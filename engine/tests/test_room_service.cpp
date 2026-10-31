@@ -180,6 +180,16 @@ int HostStatus() {
     }
     if (!asked.asked) return Fail("the guest's request never came");
     if (!HasLine(BbRoom::PartyLineKind::WarpAsked, "GuestHunter")) return Fail("the host saw no request line");
+    for (const bool yes : {false, true}) {
+        int asker = 0;
+        std::string who;
+        std::uint32_t lamp = 0;
+        for (int i = 0; i < 300 && !BbRoom::PendingLampAsk(asker, who, lamp); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (asker != asked.slot || lamp != 2412950) return Fail("the guest's lamp ask never came");
+        BbRoom::AnswerLampAsk(yes);
+        if (BbRoom::PendingLampAsk(asker, who, lamp)) return Fail("an answered lamp ask still waits");
+    }
+    std::printf("host: a guest's lamp ask refused, then accepted\n");
     if (!WaitLine(BbRoom::PartyLineKind::Died, "GuestHunter")) return Fail("no death line for the guest");
     std::printf("host: request and death lines from the guest\n");
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
@@ -206,6 +216,13 @@ int GuestStatus() {
     if (!BbRoom::WarpWaiting()) return Fail("not waiting after asking");
     if (!WaitLine(BbRoom::PartyLineKind::WarpSeen, "")) return Fail("the host did not answer the request");
     if (BbRoom::TakeBring()) return Fail("moved before the host accepted");
+    BbRoom::SendLampAsk(2412950);
+    if (!WaitLine(BbRoom::PartyLineKind::LampSeen, "")) return Fail("the host did not take the lamp ask");
+    if (!WaitLine(BbRoom::PartyLineKind::LampRefused, "")) return Fail("the lamp ask's refusal never came");
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    BbRoom::SendLampAsk(2412950);
+    if (!WaitLine(BbRoom::PartyLineKind::LampAgreed, "")) return Fail("the lamp ask's acceptance never came");
+    std::printf("guest: lamp ask refused, then accepted\n");
     BbRoom::Vitals v;
     v.name = "GuestHunter";
     v.hp_max = 800;

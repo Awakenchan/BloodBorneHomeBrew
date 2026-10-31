@@ -362,8 +362,36 @@ int Main(std::vector<std::wstring> arguments) {
 
     fs::path merged;
     try {
+        const bool own_font = fs::is_regular_file(original / "dvdroot_ps4" / "font" / "DbgFont14h.ccm", error) &&
+                              fs::is_regular_file(original / "dvdroot_ps4" / "font" / "DbgFont14h.tpf", error);
+        const bool debug_font = Setting(settings, "debug_menu") == "1" && !own_font && fs::is_directory(folders.engine / "debug-font", error);
+        std::vector<fs::path> first_layers;
+        if (debug_font) first_layers.push_back(folders.engine / "debug-font");
+        bool lamp2lamp = false, lamp2lamp_bosses = false;
+        try {
+            const auto chosen = nlohmann::json::parse(ReadText(Path(Env("BB_PATCHES_CONFIG", Utf8(data / "patches.json")))));
+            if (chosen.contains("enabled"))
+                for (const auto& key : chosen.at("enabled")) {
+                    lamp2lamp = lamp2lamp || key == "Bloodborne.xml/Lamp2Lamp (warp between lamps)";
+                    lamp2lamp_bosses = lamp2lamp_bosses || key == "Bloodborne.xml/Lamp2Lamp: warp to bosses";
+                }
+        } catch (const std::exception&) {
+        }
+        if (lamp2lamp || lamp2lamp_bosses) {
+            try {
+                const auto update = GameUpdateFolder(original);
+                const fs::path core = PrepareLamp2Lamp(original, update, folders.engine / "lamp2lamp.bin", data / "engine-assets");
+                const fs::path bosses = lamp2lamp_bosses ? PrepareLamp2Lamp(original, update, folders.engine / "lamp2lamp-bosses.bin", data / "engine-assets") : fs::path();
+                first_layers.push_back(core);
+                if (lamp2lamp_bosses) first_layers.push_back(bosses);
+                Log("Engine: Lamp2Lamp on%s", lamp2lamp_bosses ? ", with warps to bosses" : "");
+            } catch (const std::exception& e) {
+                Log("Engine: Lamp2Lamp off: %s", e.what());
+            }
+        }
         merged = BuildModsOverlay(original, out, Path(Env("BB_MODS_DIR", Utf8(data / "mods"))),
-                                  Path(Env("BB_MODS_CONFIG", Utf8(data / "mods.json"))), Env("BB_MODS_ENABLED", "1") == "1");
+                                  Path(Env("BB_MODS_CONFIG", Utf8(data / "mods.json"))), Env("BB_MODS_ENABLED", "1") == "1",
+                                  first_layers);
     } catch (const std::exception& e) {
         Log("Mods: %s", e.what());
         return 1;
@@ -519,6 +547,14 @@ int Main(std::vector<std::wstring> arguments) {
     if (live == "1") {
         Log("Output %s: live resolution changes (live_resolution=0: startup patch)", size_text(scaled->second).c_str());
     } else if (scaled) {
+        std::string early = Env("BB_UPSCALE_EARLY", "");
+        if (early.empty()) early = SettingValue(config, "upscale_before_post").value_or("0");
+        if (early == "1" && scaled->second.w % 4 == 0 && scaled->second.h % 4 == 0) {
+            scaled->first = scaled->second;
+            SetEnv("BB_UPSCALE_EARLY", "1");
+        } else {
+            UnsetEnv("BB_UPSCALE_EARLY");
+        }
         SetEnv("BB_RENDER_RES", size_text(scaled->first));
         SetEnv("BB_OUTPUT_RES", size_text(scaled->second));
         SetEnv("BB_AUTO_RENDER_RES", "1");

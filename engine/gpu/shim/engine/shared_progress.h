@@ -13,6 +13,14 @@ namespace BbEngine::SharedProgress {
 constexpr std::uint32_t kClear = 0x80000000u;
 constexpr std::size_t kLargest = 4096;
 
+inline bool HostStepIsNewer(std::uint32_t host, std::uint32_t guest) {
+    for (std::uint32_t bit = 0x80000000u; bit; bit >>= 1) {
+        if ((host & bit) != (guest & bit)) return (host & bit) != 0;
+        if (host & bit) return false;
+    }
+    return false;
+}
+
 class Ledger {
 public:
     void Record(std::uint32_t flag, const std::set<std::string>& present) {
