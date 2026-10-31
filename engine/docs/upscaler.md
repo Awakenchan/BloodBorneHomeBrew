@@ -43,6 +43,233 @@ measure the exposure of animated objects. Frame-relative blur can legitimately
 shorten at higher frame rates; a fixed-duration shutter is a different behavior.
 No speculative FPS multiplier is applied by either quality mode.
 
+## Native exposure investigation
+
+Bloodborne contains separate YEBIS and GS Presents auto-exposure controls; they
+must not be treated as interchangeable. The native YEBIS path includes luminance
+resources, delayed measurement, log-space adaptation, separate light/dark
+response controls, and a final exposure range clamp. The game-side post job
+enables this path from its YEBIS setting, reads the adapted exposure back into
+its post configuration, and passes that exposure to the existing tonemapper.
+It is not necessary to replace the tone curve merely to introduce adaptation.
+
+The 42 GPARAM profiles examined in the local installation have both authored
+auto-exposure controls disabled. These are installation files, not a verified
+pristine-game dataset. YEBIS manual exposure varies from 2 to 3; its dormant
+auto-exposure range is 0.1 to 10, middle gray is 0.18, and the light/dark response
+settings differ substantially. That 100:1 range is not a calibrated, conservative
+adjustment around each map's authored exposure.
+
+A read-only snapshot of the running game confirmed YEBIS adaptation disabled,
+manual exposure 2.5, an allocated luminance resource, and no completed measurement
+history in that resource. Resource allocation alone therefore does not prove
+that enabled metering/readback works. The disabled-state snapshot does not
+reproduce or establish the cause of the reported broken enabled behavior.
+
+The recommended next investigation is a reversible, bounded YEBIS experiment:
+observe luminance validity, target exposure, adapted exposure, and elapsed time
+through bright/dark transitions before changing the algorithm. Preserve the
+map-authored baseline and native tone curve. If native measurement/readback is
+unreliable, replace only metering/adaptation, not the complete post-processing
+pipeline. Validate load/cut resets, frame-rate independence, UI exclusion, and
+SDR/HDR/upscaler consistency before exposing a user-facing option.
+
+The exposure statistics in `vk_hdr_native.cpp` estimate the relationship between
+the scene and the finished SDR frame for HDR reconstruction; they are not proof
+of native game eye adaptation. Upscaler auto-exposure is likewise a separate
+normalization mechanism.
+
+### Bounded native metering experiment
+
+A subsequent live experiment exercised native YEBIS measurement while leaving
+the game-side manual-exposure branch selected. The native adaptation record was
+bounded to the current authored exposure (2.5); displayed exposure remained 2.5.
+No tone curve, saved setting, GPARAM file, or installed executable was changed.
+The temporary in-memory resource-present enable-store override was removed and
+its original instructions verified after the experiment. YEBIS adaptation is
+disabled again.
+
+Writing the post configuration once was insufficient: the next game parameter
+upload replaced the enable flag and limits. A persistent implementation must
+integrate at the correct per-frame application point rather than repeatedly
+poke the transient post block.
+
+With native metering enabled, its pending state and 17-slot measurement ring
+advanced, but the raw luminance history filled with exactly 1.0, with RGB/A
+readback values also equal to 1.0. The active inverse tone conversion evaluates
+the logarithm of one minus that saturated input; its decoded luminance history
+and output became positive infinity. An independent eight-second run resetting
+the native warm-up counter reproduced the invalid output while manual exposure
+remained fixed. Resetting that counter alone is therefore not a sufficient fix.
+
+A further meter-only capture compared the native reduction target, its GPU
+staging image and the CPU backing address returned by the native texture map.
+Both GPU pixels contained the same valid, nonwhite RGBA bytes (`03 04 05 ED`),
+but CPU staging memory still contained `FF FF FF FF`. The reduction and GPU copy
+therefore produced usable data; the confirmed failure is its visibility in
+guest CPU memory. This does not establish a failure on original hardware.
+Clamping the white sample below 1.0 would hide the result without repairing
+readback.
+
+The engine normally disables bulk linear-image readback. A narrow repair queues
+single-pixel, single-layer/mip, single-sample, linear RGBA8 UNORM images for the
+existing fence-ordered download path, including the compute image-copy fast
+path. It downloads only the four texel bytes, leaving row/allocation padding
+untouched. Larger images, tiled images and other formats do not opt into this
+automatic readback; `BB_READBACK_LINEAR` retains its existing bulk behavior.
+After rebuilding and restarting the game (fresh native meter history), two
+eight-second meter-only runs confirmed the repair. In the first capture both GPU
+pixels and the CPU staging pixel matched (`05 07 09 ED`); decoded native luminance
+stayed finite. A second run facing a brighter sky increased raw luminance from
+approximately 0.026 to 0.042 and decoded luminance from approximately 0.0106 to
+0.0172. Displayed exposure remained exactly 2.5 in both runs. Temporary enable
+overrides were restored and native adaptation disabled afterward.
+
+These results support retaining native metering and the tonemapper rather than
+replacing the exposure pipeline. Before enabling visible adaptation, compare
+against an independent scene-luminance measurement and calibrate a bounded
+response around the authored exposure. Bright/dark visual transitions,
+camera-cut/load resets, frame-rate independence, performance and HDR/upscaler
+behavior remain unverified. Automatic exposure remains disabled; the native
+tonemapper is unchanged.
+
+### Bounded native adaptation calibration
+
+Temporary, fingerprint-checked in-memory previews subsequently exercised the
+existing adapted-exposure branch without changing GPARAMs or saved settings.
+The native record's middle gray, bounds and response were calibrated separately
+from the dormant defaults; the game-side parameter uploads were temporarily
+bypassed only for those record setters. Every preview restored the original
+instructions, native record parameters and manual exposure afterward.
+
+The exponential meter's target is the inverse-tone-decoded middle gray divided
+by its decoded scene luminance. The stock middle gray of 0.18 targets excessive
+exposure in the examined dark scenes even after the readback repair. A neutral
+reference was therefore measured at each area's manual exposure, and its middle
+gray selected to reproduce that exposure. This is a local calibration, not a
+universal replacement GPARAM value or an automatic per-area calibration policy.
+The reference was held fixed during each sun/normal-view comparison.
+
+Two quarter-stop previews were too subtle for the user to judge. At the second
+location, whose manual exposure was 3.0, the user approved a half-stop preview
+with quicker transitions. The repeated sun-facing trial reached exposure 2.1213
+(half a stop below 3.0), then recovered to approximately 3.10 after returning to
+the normal view. All measurements remained finite; the user judged this run
+"Visible and natural." The native curve and color grading were not replaced.
+
+The successful starting configuration used symmetric half-stop bounds around
+the authored exposure, native sensitivity 0.5 in both directions, scale 1.0,
+speed limit 0.5 in both directions and the authored exposure as the response's
+scale reference. Those are native parameters, not a claim of measured
+wall-clock response speed: native timestep still read 1/60, and frame-rate
+independence has not been demonstrated. The calibrated middle gray at this
+particular reference view was approximately 0.04899; do not hardcode it globally.
+
+The preview ended with native adaptation disabled and manual exposure restored
+to 3.0. The user-approved half-stop response is a starting tune, not evidence
+that area transitions, arbitrary camera cuts, different frame rates, performance
+or HDR/upscaler combinations have all been validated.
+
+### Experimental persistent native auto exposure
+
+`graphics_auto_exposure=0` is the default. **Auto exposure (experimental)** in
+the launcher's Picture section or the in-game Insert menu enables native YEBIS
+metering and adaptation independently of the Picture tuning master switch.
+This is separate from the upscaler's own auto-exposure normalization. The
+original tonemapper, tone factor, gamma, color grading and authored exposure
+baseline remain intact. Two fingerprint-checked function-entry hooks enable
+the original resource-gated meter and supply bounded native adapted exposure
+to the original tone setter; no diagnostic branch/parameter-upload NOP patches
+are used. Applied exposure is also written back to the native post configuration,
+as in the game's original adapted branch. Before the next enable call the
+baseline is restored only if that field still contains our last applied value;
+a newer game-authored value is preserved. The restored baseline is captured at
+the game's enable call and used at its tone call: queued render jobs can contain
+older adapted exposure in their post snapshot. Both hooks check verified
+game-application return addresses; internal YEBIS setter calls are untouched.
+
+While calibrating, output stays at the area's authored exposure. The policy
+discards 17 fresh ring results, then requires at least three fresh measurements
+across a stable one-second window within 0.15 stop. Its geometric-mean decoded
+luminance determines a neutral middle gray that reproduces the authored
+exposure. Hold a representative view during calibration, not the sky or a
+nearby dark wall. The learned reference stays fixed through ordinary camera
+movement. Native adaptation is limited to one stop below and half a stop above
+the authored baseline, rather than the dormant GPARAM's broad absolute limits.
+At baseline 3.0 this permits exposure 1.5 through approximately 4.2426. Lowering
+the minimum does not itself lower the neutral reference or force a darker
+target; native measured luminance still determines adaptation.
+
+**Recalibrate exposure** in the Insert menu returns to authored exposure and
+starts reference acquisition again. Resource, player-area or authored-exposure
+changes also reset acquisition. Loading/cinematic transitions have an epoch
+tracked outside the exposure hooks, so a transition between hook calls is
+not lost. Flagged loading/cinematics and unavailable gameplay hold manual
+exposure. Long frame gaps, stalled meter history and invalid measurements
+discard the reference; errors/status are visible in the menu and host log.
+There is no general unflagged hard-camera-cut detector.
+
+Disabling the setting restores the owned native record fields when the same
+object/record/resource still exists; replaced allocations are never restored
+through stale pointers. An already-enabled authored/modded native AE branch or
+unsupported tone curve is left alone. **Game's own picture** also disables
+this option.
+
+Native response sensitivity and speed limits are rescaled using elapsed
+wall-clock time without changing YEBIS's shared timestep. Policy tests check
+the equivalent interpolation coefficient and speed budget at 30/60/120/144
+FPS; this is not end-to-end evidence of frame-rate independence for the full
+native controller or its frame-cadenced meter. Synthetic native-hook tests
+cover argument/XMM preservation, bounds, fixed references, disable/restore,
+native-AE ownership, missing resources, loading/cinematics, epoch changes and
+recalibration.
+
+The first persistent live trial reached Active with all 17 decoded samples
+finite and the authored baseline still 3.0. However, the sun/normal comparison
+stayed pinned at the half-stop lower limit in both views; the user reported
+little visible difference. A subsequent stationary foggy-view capture after
+recalibration varied from exposure 2.7673 to 2.9755 (about 0.105 stop) with a
+fixed reference. This is compatible with animated scene brightness affecting
+the meter, but does not isolate fog as its sole cause. Inspection also found
+that the initial integration omitted the native adapted branch's post-exposure
+writeback. The code now keeps that field consistent with the tone setter,
+with regression coverage. After an approved rebuild/restart, live captures
+confirmed that post exposure follows the applied tone exposure while the
+game-side AE flag stays disabled and all 17 meter entries remain finite.
+Read-only policy traces subsequently identified reference resets when an
+adapted output was mistaken for a newly authored baseline, without changes in
+area/loading/resource identity. Excluding internal native setter calls was
+necessary but insufficient: render-job post snapshots were already copied
+before the enable hook restored our writeback. Capturing the restored baseline
+separately resolved that feedback. A regression simulates 1,000 stale job
+snapshots; a 35-second live stationary capture retained exactly one reference
+and baseline 3.0. Exposure varied from 2.8905 to 3.1813 (about 0.138 stop) in
+the foggy view. Its upstream tone-source value differed from the effective
+baseline, so diagnostics now read the policy's baseline when reporting EV.
+
+The following 75-second sun/normal comparison also retained the same reference
+and baseline throughout. Exposure ranged from 2.1213 to 3.1326, with a period
+at the original half-stop lower limit and subsequent recovery. The unclamped
+native target reached approximately 1.8373 (-0.707 stop relative to 3.0). The
+user still found the difference too subtle and approved a one-stop darkening
+limit, retaining the half-stop brightening cap and the same neutral-reference
+policy. In the approved wider-range live trial, the native limits were 1.5
+through 4.2426 and exposure reached approximately 1.9086 (-0.652 stop), above
+the new floor. The user still found the automatic comparison barely visible.
+Lowering the floor further would not address that measured response.
+
+An approved reversible fixed-exposure A/B then exercised the original native
+adapted branch at exactly 3.0 for seven seconds, 1.5 for nine seconds and 3.0
+for seven seconds. The user confirmed that the middle section was clearly
+darker. The helper restored every fingerprinted temporary instruction change,
+native record/post fields and the previous live feature setting; no GPARAM,
+INI or tone-curve change was used for this comparison. This establishes that
+the native tone path can produce the requested visible brightness difference;
+it does not establish that the persistent automatic meter produces that same
+strength or exclude differences between the two integration paths. The current
+one-stop option remains experimental. No additional fog filtering, metering
+weighting, target amplification or response-speed change has been made.
+
 ## Native TAA and missing FSR 4 assets (2026-10-01)
 
 `upscaler=taa` / `BB_UPSCALER=taa` is a separate native-resolution temporal AA

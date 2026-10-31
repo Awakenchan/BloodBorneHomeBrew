@@ -3636,6 +3636,7 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
     VideoCore::Image& src_image = desc0.is_written ? image1 : image0;
     VideoCore::Image& dst_image = desc0.is_written ? image0 : image1;
     runtime.CopyColorAndDepth(&src_image, &dst_image);
+    texture_cache.QueueImageDownload(desc0.is_written ? image0_id : image1_id);
     return true;
 }
 

@@ -1152,6 +1152,17 @@ bool Presenter::PresentGenerated(Frame* frame, Frame* generated) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+    static FILE* const present_log = []() -> FILE* {
+        const char* path = std::getenv("BB_PRESENT_LOG");
+        if (!path || !*path) return nullptr;
+        FILE* file = std::fopen(path, "w");
+        if (!file) {
+            std::perror("Cannot open BB_PRESENT_LOG");
+            return nullptr;
+        }
+        std::fprintf(file, "t_s,interval_ms,acquire_ms,record_ms,submit_ms,present_ms,total_ms,game_frame,ready_tick\n");
+        return file;
+    }();
     // bbport: frame generation: one more swapchain image while it is on; the generated frame
     // goes first, the real one half a game frame later.
     const bool real_game_frame = !is_reusing_frame && is_game_frame;
@@ -1201,6 +1212,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
 
+    const auto acquire_start = present_log ? FrameGenerator::Clock::now() : present_start;
     if (!swapchain.AcquireNextImage()) {
         dlss_fg->BeforeSwapchainChange();
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
@@ -1211,6 +1223,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             return;
         }
     }
+    const auto acquire_end = present_log ? FrameGenerator::Clock::now() : present_start;
 
     // Reset fence for queue submission. Do it here instead of GetRenderFrame() because we may
     // skip frame because of slow swapchain recreation. If a frame skip occurs, we skip signal
@@ -1370,6 +1383,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
 
     // bbport: the frame's submission goes out from a recording thread (BB_ASYNC_SUBMIT); this
     // one, waiting for it on the same queue, must not get there first.
+    const auto record_end = present_log ? FrameGenerator::Clock::now() : present_start;
     if (frame->ready_semaphore == draw_scheduler.GetWorkSemaphore()->Handle()) {
         draw_scheduler.WaitSubmitted(frame->ready_tick);
     }
@@ -1379,6 +1393,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
     scheduler.Flush(info);
+    const auto submit_end = present_log ? FrameGenerator::Clock::now() : present_start;
 
     // Present to swapchain. bbport: DLSS Frame Generation's constants, tags and markers for
     // this frame go out right before (none for a frame shown again).
@@ -1390,6 +1405,24 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         presented = swapchain.Present();
     }
     dlss_fg->AfterPresent(dlss_info);
+    if (present_log) {
+        const auto now = FrameGenerator::Clock::now();
+        static auto first = present_start, previous = present_start;
+        static unsigned unflushed = 0;
+        const auto ms = [](auto duration) {
+            return std::chrono::duration<double, std::milli>(duration).count();
+        };
+        std::fprintf(present_log, "%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%u,%llu\n",
+                     std::chrono::duration<double>(now - first).count(), ms(now - previous),
+                     ms(acquire_end - acquire_start), ms(record_end - acquire_end),
+                     ms(submit_end - record_end), ms(now - submit_end), ms(now - present_start),
+                     unsigned(real_game_frame), static_cast<unsigned long long>(frame->ready_tick));
+        previous = now;
+        if (++unflushed >= 120) {
+            std::fflush(present_log);
+            unflushed = 0;
+        }
+    }
     // bbport: recreated after the lock: its device wait takes it (Swapchain::WaitIdle).
     if (!presented) {
         dlss_fg->BeforeSwapchainChange();

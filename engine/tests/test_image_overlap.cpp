@@ -25,6 +25,32 @@ static VideoCore::ImageInfo Image(u32 mips, u32 layers) {
 
 int main() {
     using namespace VideoCore;
+    auto meter = Image(1, 1);
+    meter.size = {1, 1, 1};
+    meter.pitch = 8;
+    meter.guest_size = 256;
+    assert(meter.IsCpuReadbackPixel());
+    const auto rejects_meter = [&](auto change) {
+        auto other = meter;
+        change(other);
+        assert(!other.IsCpuReadbackPixel());
+    };
+    rejects_meter([](auto& image) { image.guest_address = 0; });
+    rejects_meter([](auto& image) { image.guest_size = 3; });
+    rejects_meter([](auto& image) { image.pitch = 0; });
+    rejects_meter([](auto& image) { image.size.width = 2; });
+    rejects_meter([](auto& image) { image.size.height = 2; });
+    rejects_meter([](auto& image) { image.size.depth = 2; });
+    rejects_meter([](auto& image) { image.resources.levels = 2; });
+    rejects_meter([](auto& image) { image.resources.layers = 2; });
+    rejects_meter([](auto& image) { image.num_samples = 2; });
+    rejects_meter([](auto& image) { image.num_bits = 64; });
+    rejects_meter([](auto& image) { image.pixel_format = vk::Format::eR8G8B8A8Srgb; });
+    rejects_meter([](auto& image) { image.tile_mode = AmdGpu::TileMode::Thin2DThin; });
+    rejects_meter([](auto& image) { image.props.is_tiled = 1; });
+    rejects_meter([](auto& image) { image.props.is_depth = 1; });
+    rejects_meter([](auto& image) { image.props.is_block = 1; });
+    rejects_meter([](auto& image) { image.props.is_volume = 1; });
     const SubresourceExtent mip_heavy{4, 1}, layer_heavy{1, 6};
     assert(!mip_heavy.Contains(layer_heavy));
     assert(!layer_heavy.Contains(mip_heavy));

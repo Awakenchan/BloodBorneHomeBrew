@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "engine_hooks.h"
+#include "auto_exposure.h"
 #include "camera.h"
 #include "change_appearance.h"
 #include "cheats.h"
@@ -104,6 +105,7 @@ void Install(std::uint8_t* image, std::size_t size) {
     const bool camera = Camera::Install(image, size);
     const bool wide = Widescreen::Install(image, size);
     const bool graphics = Graphics::Install(image, size);
+    const bool exposure = Exposure::Install(image, size);
     const bool local_shadows = Graphics::InstallLocalShadows(image, size);
     const bool spot_shadows = Graphics::InstallSpotShadows(image, size);
     Graphics::InstallLocalShadowSoftness(image, size, local_shadows, spot_shadows);
@@ -125,7 +127,7 @@ void Install(std::uint8_t* image, std::size_t size) {
     const bool online = OnlineFixes::Install(image, size);
     const bool guard = RenderGuard::Install(image, size);
     const bool timing = EffectTiming::Install(image, size);
-    if (!(editor || input || camera || wide || graphics || local_shadows || spot_shadows || directional_shadows ||
+    if (!(editor || input || camera || wide || graphics || exposure || local_shadows || spot_shadows || directional_shadows ||
           directional_resolution || menus || rebirth || cheats ||
           online || guard || timing)) {
         for (auto& h : hooks) Discard(h);

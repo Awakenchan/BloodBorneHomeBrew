@@ -164,6 +164,7 @@ struct Values {
     std::atomic<int> pad_icons{PadIconsAuto};
     std::atomic<bool> change_appearance{false}, rebirth{false};
     std::atomic<bool> graphics_controls{false}, graphics_vignette{true};
+    std::atomic<bool> graphics_auto_exposure{false};
     std::atomic<float> graphics_ao_strength{1},graphics_gi_strength{6},graphics_shadow_scale{1},graphics_bloom{1},graphics_saturation{1};
     std::atomic<float> graphics_volumetric_intensity{1};
     std::atomic<float> graphics_lightshaft_tilt{0};

@@ -17,6 +17,7 @@
 #include "bbport_usage.h"
 #include "engine/cheats.h"
 #include "engine/graphics.h"
+#include "engine/auto_exposure.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -529,6 +530,40 @@ void HdrSection() {
 void PictureSection() {
     auto& s = BbSettings::Get();
     Section("Picture", "Изображение");
+    if (const char* label = Item("Auto exposure (experimental)", "Автоэкспозиция (экспериментальная)")) {
+        Checkbox(label, s.graphics_auto_exposure);
+        Hint(BbSettings::MenuText(
+            "Live, off by default. Uses the native meter and tonemapper, bounded to -1/+0.5 stops "
+            "around the area's authored exposure. Learns a stable neutral view after loading or "
+            "an area/exposure change; hold a representative view while calibrating. Independent "
+            "of Picture tuning and upscaler auto exposure. Disable to restore manual exposure.",
+            "Работает сразу, по умолчанию выкл. Использует замер и тональную кривую игры в пределах "
+            "от -1 до +0.5 ступени от исходной экспозиции области. После загрузки или смены области/экспозиции "
+            "изучает стабильный нейтральный вид. При калибровке смотрите на обычную сцену. Не зависит "
+            "от настройки изображения и автоэкспозиции апскейлера. Выкл. возвращает ручную экспозицию."));
+        const auto status = BbEngine::Exposure::CurrentStatus();
+        const char* text = "";
+        using BbEngine::Exposure::Status;
+        switch (status) {
+        case Status::Off: text = BbSettings::MenuText("Off", "Выкл."); break;
+        case Status::Waiting: text = BbSettings::MenuText("Waiting for gameplay", "Ожидание игры"); break;
+        case Status::Calibrating: text = BbSettings::MenuText("Calibrating: hold a normal view", "Калибровка: смотрите на обычную сцену"); break;
+        case Status::Active: text = BbSettings::MenuText("Active", "Включено"); break;
+        case Status::Invalid: text = BbSettings::MenuText("Meter unavailable: manual exposure", "Замер недоступен: ручная экспозиция"); break;
+        case Status::Unsupported: text = BbSettings::MenuText("Unsupported executable or tone curve", "Неподдерживаемый код или тональная кривая"); break;
+        }
+        ImGui::TextDisabled("%s (%+.2f EV)", text, BbEngine::Exposure::CurrentStops());
+    }
+    if (const char* label = Item("Recalibrate exposure", "Калибровать экспозицию заново")) {
+        ImGui::BeginDisabled(!s.graphics_auto_exposure);
+        if (ImGui::Button(label)) BbEngine::Exposure::Recalibrate();
+        ImGui::EndDisabled();
+        Hint(BbSettings::MenuText(
+            "Returns to authored exposure, then learns a new neutral reference. Use if calibration "
+            "started while looking at the sky or a dark wall. The reference stays fixed during normal camera movement.",
+            "Возвращает исходную экспозицию, затем изучает новый нейтральный вид. Используйте, если калибровка "
+            "началась при взгляде на небо или тёмную стену. Обычное движение камеры не меняет опорное значение."));
+    }
     const bool live = BbEngine::Graphics::Enabled();
     if (!live && WholeSection() && Shown("Picture", "Изображение")) {
         ImGui::TextDisabled("%s", BbSettings::MenuText("Unavailable: the game's code differs from version 1.09.",
@@ -638,6 +673,7 @@ void PictureSection() {
     }
     if (const char* label = Item("Game's own picture", "Как в игре")) {
         if (ImGui::Button(label)) {
+            Store(s.graphics_auto_exposure, false, true);
             Store(s.graphics_brightness, 1.0f, true);
             Store(s.graphics_contrast, 1.0f, true);
             Store(s.graphics_saturation, 1.0f, true);

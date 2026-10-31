@@ -286,6 +286,19 @@ std::string TextureCache::DescribeImagesIn(VAddr addr, u64 size) {
     return out;
 }
 
+void TextureCache::QueueImageDownload(ImageId image_id) {
+    const ImageInfo& info = slot_images[image_id].info;
+    // YEBIS reads its linear 1x1 staging pixel on the CPU after the GPU fence.
+    // Keep that visible without opting into readback of full-sized linear targets.
+    if (info.guest_address != 0 &&
+        (info.IsCpuReadbackPixel() ||
+         (readback_linear_images && (!info.props.is_tiled || info.size.width <= 8)))) {
+        std::unique_lock lk{download_images_mutex};
+        download_images.emplace(image_id);
+        downloads_queued.store(true, std::memory_order_release);
+    }
+}
+
 void TextureCache::ProcessDownloadImages() {
     // bbport: called for every fence (~450 a frame): the lock only when something is queued.
     if (!downloads_queued.load(std::memory_order_acquire)) {
@@ -304,8 +317,10 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
     if (False(image.flags & ImageFlagBits::GpuModified)) {
         return;
     }
-    const u32 download_size = image.info.pitch * image.info.size.height * image.info.size.depth *
-                              image.info.resources.layers * (image.info.num_bits / 8);
+    const u32 download_size = image.info.IsCpuReadbackPixel()
+                                  ? 4
+                                  : image.info.pitch * image.info.size.height * image.info.size.depth *
+                                        image.info.resources.layers * (image.info.num_bits / 8);
     ASSERT(download_size <= image.info.guest_size);
     image.mip_hashes_current = false; // its data lands in guest memory
     vk::BufferImageCopy image_copy = {
@@ -1150,12 +1165,7 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
     Image& image = slot_images[image_id];
     if (desc.type == BindingType::Storage) {
         image.flags |= ImageFlagBits::GpuModified;
-        if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8) &&
-            image.info.guest_address != 0) {
-            std::unique_lock lk{download_images_mutex};
-            download_images.emplace(image_id);
-            downloads_queued.store(true, std::memory_order_release);
-        }
+        QueueImageDownload(image_id);
     }
     if (refresh) {
         UpdateImage(image_id);
@@ -1179,11 +1189,7 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
 ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc) {
     Image& image = slot_images[image_id];
     image.flags |= ImageFlagBits::GpuModified;
-    if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
-        std::unique_lock lk{download_images_mutex};
-        download_images.emplace(image_id);
-        downloads_queued.store(true, std::memory_order_release);
-    }
+    QueueImageDownload(image_id);
     image.usage.render_target = 1u;
     UpdateImage(image_id);
 

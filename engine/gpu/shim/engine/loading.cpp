@@ -23,6 +23,8 @@ constexpr float kLoadingTarget = 1.0f / 30.0f;
 using Clock = std::chrono::steady_clock;
 std::uint8_t* g_image = nullptr;
 std::atomic<bool> g_up{false};
+std::atomic<std::uint64_t> g_generation{0};
+bool g_cinematic = false;
 Clock::time_point g_started, g_load_began;
 std::uint64_t g_frames = 0;
 bool g_world_seen = false;
@@ -91,6 +93,8 @@ void Install(std::uint8_t* image) {
 }
 
 bool ScreenUp() { return g_up.load(std::memory_order_relaxed); }
+bool CinematicPlaying() { return g_image && CutscenePlaying(); }
+std::uint64_t Generation() { return g_generation.load(std::memory_order_relaxed); }
 
 void Tick(std::uint64_t pacer) {
     if (!g_image) return;
@@ -103,6 +107,10 @@ void Tick(std::uint64_t pacer) {
     const auto now = Clock::now();
     ++g_frames;
     const bool was = g_up.exchange(loading, std::memory_order_relaxed);
+    const bool cinematic = CutscenePlaying();
+    if ((loading && !was) || cinematic != g_cinematic)
+        g_generation.fetch_add(1, std::memory_order_relaxed);
+    g_cinematic = cinematic;
     if (g_fast_allowed) SetLoadingPace(loading && !CutscenePlaying());
 
     if (loading && !was) {

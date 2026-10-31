@@ -78,6 +78,40 @@ Close to the 100 Hz display cap (vblank-paced), so further gains need an uncappe
 
 ## Streaming stutter (BB_FRAME_STATS "Stall:" lines)
 
+For cadence investigations, `BB_FRAME_STATS=1 BB_FRAME_LOG=path` records CPU flip intervals
+and renderer counters. Flips are queued to a separate presentation thread, so these are not
+necessarily the intervals at which Vulkan presents are issued. `BB_PRESENT_LOG=path` separately
+records intervals between completed present calls, swapchain acquisition, command recording,
+submission (including waiting for draw submission), and the present call/Reflex markers. It
+does not require `BB_FRAME_STATS` or add GPU timestamp queries. Both CSV logs buffer 120 rows
+between flushes; discard loading and warm-up periods before comparing percentiles. Present-call
+intervals are application-side evidence, not measurements of display scanout.
+
+### Fixed 60 FPS on a 165 Hz display
+
+A foreground capture with Mailbox presentation and native auto exposure disabled produced
+steady CPU flips and present calls during stationary and camera-pan samples: present-call
+p99 was about 16.8 ms, with no intervals above 20 ms over either 2,400-frame sample. This
+alone did not establish smooth displayed delivery.
+
+A process-scoped PresentMon capture then measured displayed intervals at 165 Hz:
+594 frames at roughly 12.12 ms, 1,661 at 18.18 ms, and 24 at 24.24 ms, after discarding
+120 warm-up frames. Present-call p99 was 16.90 ms, but displayed-frame p99 was 24.21 ms.
+This was refresh-quantized output, not 60 Hz variable-refresh delivery.
+
+A temporary 120 Hz comparison kept the game at 60 FPS with the same graphics settings.
+Of 2,277 displayed intervals, 2,275 spanned two refreshes; one spanned one refresh and
+one spanned three. Displayed-frame p99 fell to 16.71 ms and standard deviation from
+2.77 to 0.25 ms. The user also reported noticeably smoother motion. The original 165 Hz
+mode was restored after the comparison.
+
+For fixed 60 FPS, an integer-multiple refresh such as 120 Hz, or verified working VRR,
+avoids the regular 165 Hz cadence mismatch. This identifies a confirmed contributor in
+the current configuration; it does not establish which historical graphics change, if
+any, introduced a regression, or rule out stalls in other scenes.
+
+### Streaming work
+
 Running through new areas gave 60–170 ms frames (also in shadPS4). The GPU thread was busy
 the whole frame, mostly in the kernel, uploading 50–400 MB of textures and buffers per frame.
 Findings, in the order they were fixed:

@@ -314,6 +314,13 @@ else()
 endif()
 
 # Explicit test targets; neither launches the game nor needs a Vulkan device.
+add_executable(exposure-policy-test EXCLUDE_FROM_ALL ../tests/test_exposure_policy.cpp)
+target_compile_options(exposure-policy-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(exposure-policy-test PRIVATE ..)
+add_executable(native-exposure-test EXCLUDE_FROM_ALL ../tests/test_native_exposure.cpp
+    shim/engine/auto_exposure.cpp)
+target_include_directories(native-exposure-test PRIVATE shim)
+target_compile_options(native-exposure-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_executable(pipeline-cache-blob-test EXCLUDE_FROM_ALL ../tests/test_pipeline_cache_blob.cpp)
 target_compile_options(pipeline-cache-blob-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(pipeline-cache-blob-test PRIVATE ..)

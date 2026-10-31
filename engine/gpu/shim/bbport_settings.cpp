@@ -268,6 +268,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.graphics_controls=i!=0;
     } else if (key == "graphics_vignette") {
         v.graphics_vignette=i!=0;
+    } else if (key == "graphics_auto_exposure") {
+        v.graphics_auto_exposure=i!=0;
     } else if (key == "graphics_ao_strength") {
         v.graphics_ao_strength=Clamp(std::isfinite(f)?f:1.0f,0.0f,1.0f);
     } else if (key == "graphics_gi_strength") {
@@ -636,6 +638,7 @@ void Save() {
     put("hdr_mode", HdrModeNames[std::clamp(v.hdr_mode.load(), 0, HdrModeCount - 1)]);
     put("graphics_controls",flag(v.graphics_controls));
     put("graphics_vignette",flag(v.graphics_vignette));
+    put("graphics_auto_exposure",flag(v.graphics_auto_exposure));
     put("graphics_ao_strength",fixed(v.graphics_ao_strength,2));
     put("graphics_gi_strength",fixed(v.graphics_gi_strength,2));
     put("graphics_volumetric_intensity",fixed(v.graphics_volumetric_intensity,2));

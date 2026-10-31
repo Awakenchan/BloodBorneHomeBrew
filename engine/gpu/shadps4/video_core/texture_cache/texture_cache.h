@@ -173,6 +173,9 @@ public:
     /// Schedules a copy of pending images for download back to CPU memory.
     void ProcessDownloadImages();
 
+    /// Queue GPU-written CPU-readable pixels, or optional bulk linear-image readbacks.
+    void QueueImageDownload(ImageId image_id);
+
     /// bbport debugging: writes mip 0 / layer 0 of every image registered at `address` to
     /// <dir>/img_<address>_<n>_<w>x<h>_<format>.raw and prints what was found.
     void DumpImagesAt(VAddr address, const char* dir);

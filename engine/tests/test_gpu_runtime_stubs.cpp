@@ -30,6 +30,10 @@ void runtime_memory_set_gpu_hooks(void (*)(uintptr_t, uint64_t),
 void runtime_thread_attach_host(const char*) {}
 int32_t runtime_thread_spawn(void**, void* (*)(void*), void*, uint64_t, const char*) { std::abort(); }
 int32_t runtime_thread_join_spawned(void*, void**) { std::abort(); }
+[[noreturn]] void runtime_thread_exit(void*) { std::abort(); }
+void runtime_blocked_report() {}
+int runtime_pad_type() { return 0; }
+int runtime_pad_button(uint32_t, int) { return 0; }
 void runtime_memory_gpu_protect(uintptr_t, uint64_t, int, int) { std::abort(); }
 void runtime_restart() { std::abort(); }
 uint64_t runtime_process_time_counter() { return runtime_process_time_us() * 1000; }
@@ -63,4 +67,3 @@ void runtime_thread_census(uint64_t* made, uint64_t* finished, uint64_t* found, 
 }
 uint64_t runtime_memory_regions() { return 0; }
 }
-

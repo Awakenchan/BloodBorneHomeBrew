@@ -92,6 +92,9 @@ namespace BloodborneLauncher.Views
 
             // The engine's picture and camera controls (bbport_settings.cpp clamps the same ranges).
             Group(L.T("Picture"));
+            IniToggle(SymbolRegular.BrightnessHigh24, L.T("Auto exposure (experimental)"),
+                L.T("Off by default. Native metering and tone mapping, limited to one stop darker or half a stop brighter than each area's authored exposure. Hold a normal view while the automatic reference settles. Recalibrate in the in-game Insert menu. Independent of Picture tuning and DLSS auto exposure."),
+                "graphics_auto_exposure");
             var picture = new StackPanel();
             IniToggle(SymbolRegular.Color24, L.T("Picture tuning"), L.T("Turns the settings below on, live. Also in the game's System menu (PC Graphics, PC Effects, PC Colour) and the Insert menu"), "graphics_controls");
             IniToggle(SymbolRegular.CircleHalfFill24, L.T("Vignette"), null, "graphics_vignette", picture);

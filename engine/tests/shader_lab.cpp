@@ -47,13 +47,6 @@
 namespace fs = std::filesystem;
 using namespace Shader;
 
-extern "C" {
-void runtime_blocked_report(void) {}
-[[noreturn]] void runtime_thread_exit(void*) { std::abort(); }
-int runtime_pad_type(void) { return 0; }
-int runtime_pad_button(uint32_t, int) { return 0; }
-}
-
 namespace {
 
 bool g_native = false;

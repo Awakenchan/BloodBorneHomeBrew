@@ -49,6 +49,15 @@ struct ImageInfo {
         return tile_mode != AmdGpu::TileMode::DisplayLinearAligned;
     }
 
+    bool IsCpuReadbackPixel() const {
+        return guest_address != 0 && guest_size >= 4 && pitch >= 1 &&
+               size == Extent3D{1, 1, 1} && resources == SubresourceExtent{1, 1} &&
+               num_samples == 1 && num_bits == 32 &&
+               pixel_format == vk::Format::eR8G8B8A8Unorm &&
+               tile_mode == AmdGpu::TileMode::DisplayLinearAligned &&
+               !props.is_tiled && !props.is_depth && !props.is_block && !props.is_volume;
+    }
+
     Extent2D BlockDim() const {
         const auto dim = props.is_block ? 2 : 0;
         return Extent2D{pitch >> dim, size.height >> dim};
