@@ -11,6 +11,10 @@ if [[ -z ${CC:-} ]]; then
     fi
 fi
 if [[ -z ${CC:-} ]]; then echo 'Install GCC/Clang or set CC.' >&2; exit 1; fi
+if ! command -v cargo >/dev/null 2>&1; then
+    echo 'Install the Rust toolchain (cargo) to build the MOVBE/BMI1/LZCNT scanner.' >&2
+    exit 1
+fi
 # Dependencies come from pkg-config (Vulkan loader/headers, SDL3). On NixOS the
 # environment is provided by shell.nix; re-enter it automatically if needed.
 if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && command -v cmake >/dev/null && command -v ninja >/dev/null; }; then
@@ -36,6 +40,12 @@ if [[ -n $windows ]]; then
     threads=()
     libraries=("${libraries[@]/-mwindows/-mconsole}")
     cstd=(-std=gnu11 -D_FILE_OFFSET_BITS=64 -D_WIN32_WINNT=0x0A00)
+fi
+cargo build --manifest-path tools/isa-scan/Cargo.toml --release
+if [[ -n $windows ]]; then
+    install -m755 tools/isa-scan/target/release/bb-isa-scan.exe out/bb-isa-scan.exe
+else
+    install -m755 tools/isa-scan/target/release/bb-isa-scan out/bb-isa-scan
 fi
 # BB_JOBS=N: at most N compile and link-time optimization jobs (less memory, e.g. while the
 # game runs).
@@ -155,12 +165,13 @@ if [[ -n $windows ]]; then
         [[ ! -f $dependency ]] || gpu_inputs+=("$dependency")
     done
 fi
-if [[ -n $windows && -f out/bb-probe.exe && -f out/bb-gpu-capabilities.exe &&
+if [[ -n $windows && -f out/bb-probe.exe && -f out/bb-gpu-capabilities.exe && -f out/isa_emulate.o &&
       -z $(find src gpu/bbgpu.h "${gpu_inputs[@]}" out/libatrac9.a build.sh \
                tools/gpu_capabilities.c -newer out/bb-probe.exe -print -quit) ]]; then
     echo "Up to date: $PWD/out/bb-probe.exe"
 else
-"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/vulkan_smoke.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/bb-probe
+"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" -mgeneral-regs-only "${includes[@]}" -I. -Isrc -c src/isa_emulate.c -o out/isa_emulate.o
+"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${threads[@]}" "${includes[@]}" -I. -Isrc src/probe.c src/isa_rewrite.c out/isa_emulate.o "${runtime[@]}" src/vulkan_smoke.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/bb-probe
 echo "Built $PWD/out/bb-probe"
 # GPU and controller inventory; keep the Windows C dialect and include SDL headers.
 "$CC" "${cstd[@]}" -O2 -Wall -Wextra -Werror "${includes[@]}" tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities
