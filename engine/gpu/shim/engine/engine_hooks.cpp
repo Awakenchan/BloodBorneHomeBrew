@@ -200,6 +200,12 @@ void FreeStub(std::uint8_t* stub) {
 void Commit(std::span<Hook> hooks) {
     for (Hook& hook : hooks) {
         if (!hook.site || !hook.stub) continue;
+#ifndef _WIN32
+        const auto at = reinterpret_cast<std::uintptr_t>(hook.site);
+        const std::uintptr_t first = at & ~std::uintptr_t(kPage - 1);
+        const std::size_t span = ((at + hook.bytes + kPage - 1) & ~std::uintptr_t(kPage - 1)) - first;
+        if (mprotect(reinterpret_cast<void*>(first), span, PROT_READ | PROT_WRITE | PROT_EXEC)) continue;
+#endif
         Emitter e(hook.site);
         e.JumpTo(reinterpret_cast<std::uint64_t>(hook.stub));
         std::memset(e.Here(), 0xcc, hook.bytes - kJumpBytes);
