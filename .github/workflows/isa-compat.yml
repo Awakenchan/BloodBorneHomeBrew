@@ -1,0 +1,97 @@
+name: ISA compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/sandy-bridge-isa
+    paths:
+      - "engine/src/isa_*.c"
+      - "engine/src/isa_*.h"
+      - "engine/src/probe.c"
+      - "engine/tools/isa-scan/**"
+      - "engine/tools/setup/**"
+      - "engine/build.sh"
+      - "engine/start/**"
+      - "engine/packaging/**"
+      - "engine/shell.nix"
+      - "engine/run.sh"
+      - "engine/.github/workflows/**"
+      - "engine/tests/test_isa_emulate.c"
+      - ".github/workflows/isa-compat.yml"
+  pull_request:
+    paths:
+      - "engine/src/isa_*.c"
+      - "engine/src/isa_*.h"
+      - "engine/src/probe.c"
+      - "engine/tools/isa-scan/**"
+      - "engine/tests/test_isa_emulate.c"
+      - ".github/workflows/isa-compat.yml"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test standalone scanner
+        run: cargo test --manifest-path engine/tools/isa-scan/Cargo.toml
+      - name: Compile ISA loader and general-register-only emulator
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -Iengine/src \
+            -c engine/src/isa_rewrite.c -o "$RUNNER_TEMP/isa_rewrite.o"
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only -Iengine/src \
+            -c engine/src/isa_emulate.c -o "$RUNNER_TEMP/isa_emulate.o"
+      - name: Syntax-check the integrated Linux loader
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -pthread -Iengine -Iengine/src \
+            -fsyntax-only engine/src/probe.c
+      - name: Differentially test instruction semantics
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only -Iengine/src \
+            engine/src/isa_emulate.c engine/tests/test_isa_emulate.c \
+            -o "$RUNNER_TEMP/test-isa-emulate"
+          "$RUNNER_TEMP/test-isa-emulate"
+
+  windows-scanner:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test scanner and build Windows executable
+        shell: pwsh
+        run: |
+          cargo test --manifest-path engine/tools/isa-scan/Cargo.toml
+          cargo build --manifest-path engine/tools/isa-scan/Cargo.toml --release
+          if (!(Test-Path engine/tools/isa-scan/target/release/bb-isa-scan.exe)) {
+            throw "The Windows ISA scanner executable was not produced."
+          }
+
+      - name: Setup MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-rust
+
+      - name: Build scanner with the MSYS2 CLANG64 Rust toolchain
+        shell: msys2 {0}
+        run: |
+          cargo --version
+          rustc -vV
+          cargo test --manifest-path engine/tools/isa-scan/Cargo.toml
+          cargo build --manifest-path engine/tools/isa-scan/Cargo.toml --release
+          test -f engine/tools/isa-scan/target/release/bb-isa-scan.exe
+          ldd engine/tools/isa-scan/target/release/bb-isa-scan.exe
+
+      - name: Syntax-check Windows loader and compile ISA helpers
+        shell: msys2 {0}
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0A00 \
+            -Iengine -Iengine/src -fsyntax-only engine/src/probe.c
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only \
+            -Iengine/src -c engine/src/isa_emulate.c -o "$RUNNER_TEMP/isa_emulate.obj"
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror \
+            -Iengine/src -c engine/src/isa_rewrite.c -o "$RUNNER_TEMP/isa_rewrite.obj"
