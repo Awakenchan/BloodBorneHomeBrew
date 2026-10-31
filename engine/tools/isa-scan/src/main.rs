@@ -432,6 +432,43 @@ mod tests {
             .collect()
     }
 
+    fn lantern_boot_linked(code: &[u8]) -> Vec<u8> {
+        let size = code.len() as u64;
+        let words = [
+            size, 0, 1, 0, 0, 1,             // BBPROBE5 header
+            0,                               // procparam
+            0, 0, 0, 0,                      // main TLS
+            1,                               // one linked module
+            0, size, 0, 0, 0, 0, 0,          // module metadata
+            0,                               // no native bindings
+            0, size, 5,                      // one executable segment
+        ];
+        let mut data = b"BBPROBE5".to_vec();
+        for word in words {
+            data.extend_from_slice(&word.to_le_bytes());
+        }
+        data.extend_from_slice(code);
+        data
+    }
+
+    #[test]
+    fn reads_lantern_bbprobe5_and_scans_only_the_requested_instruction_sets() {
+        let code = bytes("0f38f108c4e270f3c9f30fbdc1c3");
+        let boot = lantern_boot_linked(&code);
+        let (segments, image) = read_boot_linked(&boot).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].address, 0);
+        assert_eq!(segments[0].size, code.len() as u64);
+        assert_eq!(segments[0].flags & 1, 1);
+        assert_eq!(image, code);
+
+        let sites = scan_segment(&image, 0);
+        assert_eq!(sites.len(), 3);
+        assert_eq!(sites[0].kind, Kind::MovbeStore);
+        assert_eq!(sites[1].kind, Kind::Blsr);
+        assert_eq!(sites[2].kind, Kind::Lzcnt);
+    }
+
     #[test]
     fn scans_movbe_bmi1_and_lzcnt_without_f16c() {
         let code = bytes("0f38f108c4e270f3c9f30fbdc1c3");
