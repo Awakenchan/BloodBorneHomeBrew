@@ -360,6 +360,9 @@ fn scan(boot: &Path, out: &Path) -> Result<String, String> {
     let target = out.join("isa-rewrite.bin");
     let temporary = out.join("isa-rewrite.bin.tmp");
     fs::write(&temporary, table).map_err(|e| format!("{}: {e}", temporary.display()))?;
+    if target.exists() {
+        fs::remove_file(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+    }
     fs::rename(&temporary, &target).map_err(|e| format!("{}: {e}", target.display()))?;
 
     let count_set = |set: &str| sites.iter().filter(|s| s.kind.set() == set).count();
