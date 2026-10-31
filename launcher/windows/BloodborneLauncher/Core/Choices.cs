@@ -1,4 +1,4 @@
-﻿namespace BloodborneLauncher.Core
+namespace BloodborneLauncher.Core
 {
     /// <summary>A drop-down entry. Note is shown under the row while this entry is selected.</summary>
     public sealed record Choice(string Label, string Value, string? Note = null);
