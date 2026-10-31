@@ -36,6 +36,8 @@ int main() {
     assert(s.graphics_shadow_resolution == 1);
     assert(s.graphics_local_shadow_resolution == 0);
     assert(s.graphics_motion_blur_quality == 0);
+    assert(s.graphics_lightshaft_tilt == 0.0f);
+    s.graphics_lightshaft_tilt = 20.0f;
     s.graphics_motion_blur_quality = 1;
     s.graphics_local_shadow_resolution = 1;
     s.graphics_shadow_resolution = 1;
@@ -55,6 +57,7 @@ int main() {
     assert(saved.find("graphics_shadow_resolution=1\n") != std::string::npos);
     assert(saved.find("graphics_local_shadow_resolution=1\n") != std::string::npos);
     assert(saved.find("graphics_motion_blur_quality=1\n") != std::string::npos);
+    assert(saved.find("graphics_lightshaft_tilt=20.00\n") != std::string::npos);
     assert(saved.find("graphics_dof_intensity=1.75\n") != std::string::npos);
     assert(saved.find("graphics_ssr_intensity=2.25\n") != std::string::npos);
     assert(saved.find("# launcher\nupscaler=fsr411\nkey.cross=X, Space\npad.circle=a\nshow_fps=1\n"
@@ -69,12 +72,14 @@ int main() {
     s.graphics_shadow_resolution = 0;
     s.graphics_local_shadow_resolution = 0;
     s.graphics_motion_blur_quality = 0;
+    s.graphics_lightshaft_tilt = 0.0f;
     BbSettings::Load();
     assert(s.graphics_ssr_intensity == 2.25f);
     assert(s.graphics_shadow_resolution == 1);
     assert(s.graphics_local_shadow_resolution == 1);
     assert(s.graphics_motion_blur_quality == 1);
     assert(s.startup_motion_blur_quality == 1);
+    assert(s.graphics_lightshaft_tilt == 20.0f);
     assert(s.graphics_dof_intensity == 1.75f);
     assert(s.menu_x == 0.625f && s.menu_y == 0.125f && s.upscaler == BbSettings::UpscalerFsr411);
     s.upscaler = BbSettings::UpscalerDlss;
@@ -157,6 +162,17 @@ int main() {
         s.graphics_motion_blur_quality = -1;
         BbSettings::Load();
         assert(s.graphics_motion_blur_quality == expected);
+    }
+    for (const auto& [input, expected] :
+         {std::pair{"nan", 0.0f}, {"inf", 0.0f}, {"-5", 0.0f}, {"0", 0.0f},
+          {"15", 15.0f}, {"20", 20.0f}, {"25", 25.0f}, {"30", 30.0f}, {"99", 30.0f}}) {
+        { std::ofstream file(path); file << "graphics_lightshaft_tilt=" << input << "\n"; }
+        BbSettings::Load();
+        assert(s.graphics_lightshaft_tilt == expected);
+        BbSettings::Save();
+        s.graphics_lightshaft_tilt = -1.0f;
+        BbSettings::Load();
+        assert(s.graphics_lightshaft_tilt == expected);
     }
     assert(s.camera_fov_scale == 1.0f && s.camera_distance_scale == 0.5f && s.camera_height_scale == 1.0f);
     { std::ofstream file(path); file << "menu_language=pt_BR\n"; }

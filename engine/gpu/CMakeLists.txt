@@ -151,6 +151,9 @@ function(add_host_shader FILENAME SHADER_NAME)
     if (FILENAME MATCHES "^native_motion_blur")
         list(APPEND INCLUDES ${SHADER_SRC}/native_motion_blur.glsl)
     endif()
+    if (FILENAME MATCHES "^volumetric_(light|tilt)")
+        list(APPEND INCLUDES ${SHADER_SRC}/volumetric_tilt.glsl)
+    endif()
     add_custom_command(OUTPUT ${OUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_DIR}
         COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 -o ${OUT} --vn ${SYMBOL} ${DEFINES} ${SHADER_SRC}/${FILENAME}
@@ -363,6 +366,13 @@ add_executable(settings-test EXCLUDE_FROM_ALL ../tests/test_settings.cpp shim/bb
     shim/bbport_menu_i18n.cpp)
 target_compile_options(settings-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(settings-test PRIVATE .. shim)
+
+add_host_shader(volumetric_tilt_test.comp volumetric_tilt_test_comp)
+add_executable(volumetric-tilt-test EXCLUDE_FROM_ALL ../tests/test_volumetric_tilt.cpp
+    ${SHADER_DIR}/volumetric_tilt_test_comp.h)
+target_include_directories(volumetric-tilt-test PRIVATE ${SHADER_INCLUDE})
+target_compile_options(volumetric-tilt-test PRIVATE -UNDEBUG)
+target_link_libraries(volumetric-tilt-test PRIVATE Vulkan::Vulkan)
 
 add_executable(scene-resolution-test EXCLUDE_FROM_ALL ../tests/test_scene_resolution.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(scene-resolution-test PRIVATE shim shadps4 third_party/gcn/include)

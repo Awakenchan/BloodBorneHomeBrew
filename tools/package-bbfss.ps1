@@ -81,6 +81,9 @@ try {
         'engine/start/performance.inc', 'engine/tests/test_point_volumetric.cpp',
         'engine/tests/test_builtin_performance.py',
         'engine/tests/test_motion_blur.cpp',
+        'engine/tests/test_volumetric_tilt.cpp',
+        'engine/gpu/shadps4/video_core/host_shaders/volumetric_tilt.glsl',
+        'engine/gpu/shadps4/video_core/host_shaders/volumetric_tilt_test.comp',
         'engine/gpu/shadps4/video_core/host_shaders/native_motion_blur.glsl',
         'engine/gpu/shadps4/video_core/host_shaders/native_motion_blur.frag',
         'engine/gpu/shadps4/video_core/host_shaders/native_motion_blur_test.comp')

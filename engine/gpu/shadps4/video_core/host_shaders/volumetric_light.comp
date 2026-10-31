@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #version 450
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+#include "volumetric_tilt.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -46,10 +48,11 @@ layout(push_constant) uniform Params {
     float strength;
     float anisotropy;
     float bias;
-    float padding;
+    float tilt;
 };
 
 uint base;
+vec3 shaft_to_light;
 float c(int i) { return uintBitsToFloat(cb.d[base + uint(i)]); }
 vec4 row(int i) { return vec4(c(i), c(i + 1), c(i + 2), c(i + 3)); }
 
@@ -65,6 +68,15 @@ float visibility(vec3 p, mat4 projection) {
     vec2 texel = 1.0 / vec2(textureSize(shadow_tex, 0));
     if (any(lessThan(s.xy, texel)) || any(greaterThan(s.xy, 1.0 - texel)) ||
         s.z < 0.0 || s.z > 1.0) return 0.0;
+    if (tilt > 0.0) {
+        if (!shaft_inside_tile(s.xy, cascade, texel)) return 0.0;
+        vec4 delta = view_to_light * vec4(shaft_to_light, 0.0);
+        vec3 light_step = delta.xyz - s * delta.w;
+        if (abs(light_step.z) < 1e-8) return 0.0;
+        float blocker = textureLod(shadow_tex, s.xy, 0.0).r;
+        s.xy = shaft_shadow_uv(s, blocker, light_step);
+        if (!shaft_inside_tile(s.xy, cascade, texel)) return 0.0;
+    }
     vec3 zrow = vec3(view_to_light[0][2], view_to_light[1][2], view_to_light[2][2]);
     vec3 wrow = vec3(view_to_light[0][3], view_to_light[1][3], view_to_light[2][3]);
     float depth_bias = bias * length(zrow - s.z * wrow) / abs(q.w);
@@ -134,10 +146,20 @@ void main() {
         dot(direction, direction) < 1e-16) return;
     direction = normalize(direction);
     if (dot(z, direction) > 0.0) direction = -direction;
+    if (tilt > 0.0) {
+        uint ubase = ((offsets >> 8) & 255u) >> 2;
+        // Column Y of this draw's world-to-view rotation: horizon stays fixed as the camera turns.
+        vec3 up = vec3(uintBitsToFloat(ub.d[ubase + 9u]),
+                       uintBitsToFloat(ub.d[ubase + 13u]),
+                       uintBitsToFloat(ub.d[ubase + 17u]));
+        if (any(isnan(up)) || any(isinf(up)) || dot(up, up) < 1e-8) return;
+        direction = shaft_direction(direction, normalize(up), tilt);
+    }
+    shaft_to_light = direction;
 #ifndef REPAIR
     if (all(equal(px, ivec2(0)))) {
         direction_state.inverse_projection = inv_projection;
-        direction_state.shadow_direction = vec4(direction, 0.0);
+        direction_state.shadow_direction = vec4(direction, float(tilt > 0.0));
     }
 #endif
     if (!(depth > 0.0 && depth <= 1.0) || strength <= 0.0) return;
@@ -301,7 +323,8 @@ layout(binding = 5) uniform sampler2D point_tex;
 layout(push_constant) uniform CompositeParams { float anisotropy; uint allow_celestial; };
 
 float phase_ratio(ivec2 q, ivec2 size) {
-    if (allow_celestial == 0u || direction_state.matches != 1u ||
+    if (direction_state.shadow_direction.w != 0.0 ||
+        allow_celestial == 0u || direction_state.matches != 1u ||
         direction_state.sun_direction.w != 1.0 ||
         dot(direction_state.shadow_direction.xyz, direction_state.shadow_direction.xyz) < 0.5)
         return 1.0;

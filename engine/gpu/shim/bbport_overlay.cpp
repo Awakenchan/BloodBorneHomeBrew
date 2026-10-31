@@ -606,6 +606,20 @@ void PictureSection() {
             "интенсивность. Требует включённого объёмного освещения. Не меняет плотность, "
             "дальность, освещение поверхностей и исходный туман игры; не зависит от настройки изображения."));
     }
+    if (const char* label = Item("Lightshaft elevation offset (experimental)",
+                                 "Наклон световых лучей (эксперимент)")) {
+        Slider(label, s.graphics_lightshaft_tilt, 0.0f, 30.0f, "%.0f deg",
+               ImGuiSliderFlags_AlwaysClamp);
+        Hint(BbSettings::MenuText(
+            "Live tilt toward the world-space horizon, keeping the shadow light's azimuth. "
+            "0 restores the original shafts; try 15-25 degrees. Reuses the original shadow map "
+            "with approximate blocker-relative warping: occlusion can distort or separate from "
+            "surface shadows. Does not change point-light fog or surface lighting.",
+            "Сразу наклоняет лучи к мировому горизонту, сохраняя азимут света. "
+            "0 возвращает исходные лучи; попробуйте 15-25 градусов. Приближённое смещение "
+            "выборок исходной карты теней может искажать лучи и нарушать совпадение с тенями "
+            "поверхностей. Не меняет туман точечных источников или освещение поверхностей."));
+    }
     if (const char* label = Item("Point-light fog intensity", "Интенсивность тумана точечных источников")) {
         Slider(label, s.graphics_point_fog_intensity, 0.0f, 3.0f, "%.2fx",
                ImGuiSliderFlags_AlwaysClamp);
@@ -634,6 +648,7 @@ void PictureSection() {
             Store(s.graphics_ao_strength, 1.0f, true);
             Store(s.graphics_gi_strength, 6.0f, true);
             Store(s.graphics_volumetric_intensity, 1.0f, true);
+            Store(s.graphics_lightshaft_tilt, 0.0f, true);
             Store(s.graphics_point_fog_intensity, 1.0f, true);
             Store(s.graphics_dof_intensity, 1.0f, true);
             Store(s.graphics_ssr_intensity, 1.0f, true);

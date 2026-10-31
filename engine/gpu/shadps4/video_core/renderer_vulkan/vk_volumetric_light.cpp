@@ -30,7 +30,7 @@ constexpr auto Compute = vk::PipelineStageFlagBits2::eComputeShader;
 constexpr vk::ImageSubresourceRange ColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 struct Params {
     u32 offsets, steps;
-    float reach, density, strength, anisotropy, bias, padding;
+    float reach, density, strength, anisotropy, bias, tilt;
 };
 static_assert(sizeof(Params) == 32);
 
@@ -279,8 +279,10 @@ void VolumetricLight::Integrate(VideoCore::ImageId shadow_target,
         std::clamp(std::isfinite(intensity) ? intensity : 1.0f, 0.0f, 3.0f) *
         float(BbSettings::Get().effects[BbSettings::EffectVolumetricLight].load(
             std::memory_order_relaxed));
+    const float tilt = BbSettings::Get().graphics_lightshaft_tilt.load(std::memory_order_relaxed);
     const Params params{in.constants_offset_word, steps, reach, density, live_strength,
-                        anisotropy, 0.02f, 0.0f};
+                        anisotropy, 0.02f,
+                        std::clamp(std::isfinite(tilt) ? tilt : 0.0f, 0.0f, 30.0f)};
     const vk::DescriptorImageInfo di{*sampler, depth.imageView, depth.imageLayout};
     const vk::DescriptorImageInfo si{*sampler, in.shadow_map, in.shadow_layout};
     const vk::DescriptorImageInfo out{{}, *fog_view, vk::ImageLayout::eGeneral};

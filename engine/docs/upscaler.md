@@ -234,6 +234,35 @@ the directional shadow map lacks suitable occluders. Fixed spatial jitter and ha
 integration can show grain, and non-depth-writing transparent surfaces are not volume
 termination surfaces.
 
+### Experimental lightshaft elevation offset
+
+The overlay's Picture section exposes **Lightshaft elevation offset (experimental)**,
+saved as `graphics_lightshaft_tilt` (0-30 degrees, default 0). It applies live to both
+directional integration and thin-surface repair. Positive values lower the recovered
+shadow light's absolute elevation toward the world-space horizon, preserving azimuth
+and never crossing the horizon. Try 20 degrees, then compare 15 and 25. The current
+shadow-resolve draw's world-to-view Y column establishes world up, so camera pitch
+and roll do not define the tilt. Exactly vertical lights retain their direction
+because they have no defined azimuth.
+
+Changing the phase alone does not tilt occlusion. This experiment also takes one
+blocker-relative parallax step in shadow UV: project the tilted light direction into
+the current cascade and offset the sample according to its depth separation from
+the original blocker. The blocker-depth plane has zero offset. Warped samples are
+restricted to their original cascade tile, including the PCF footprint, rather than
+reading an adjacent cascade. The same tilted direction drives angular scattering;
+the daytime celestial phase override is bypassed while this experiment is active.
+
+This is an artistic approximation, not a shadow map rendered from the new direction.
+It cannot recover hidden occluders, and changes of blocker depth, cascade boundaries
+or large offsets can distort/break shafts or misalign them with surface shadows.
+There is one additional shadow fetch per integration step while enabled. Surface
+shadows, surface lighting, point-light fog, authored fog, density and intensity remain
+unchanged. Set 0 to use the original visibility and celestial-phase paths without the
+extra fetch. **Game's own picture** also restores 0. `volumetric-tilt-test` runs the shared
+direction/warp math on Vulkan, including 0/15/20/25/30-degree cases, camera covariance,
+horizon clamping, blocker-plane anchoring and cascade boundaries.
+
 ### Central Yharnam daytime celestial phase prototype
 
 The daytime prototype aligns angular scattering brightness with verified sun geometry.
