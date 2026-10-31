@@ -350,22 +350,20 @@ fn encode_table(image: &[u8], sites: &[Site]) -> Result<Vec<u8>, String> {
 fn missing_cpu_sets() -> Vec<&'static str> {
     use std::arch::x86_64::{__cpuid, __cpuid_count};
     // Use CPUID directly so this check is available in both GNU and MSVC Windows builds.
-    unsafe {
-        let basic_max = __cpuid(0).eax;
-        let leaf1_ecx = if basic_max >= 1 { __cpuid(1).ecx } else { 0 };
-        let leaf7_ebx = if basic_max >= 7 { __cpuid_count(7, 0).ebx } else { 0 };
-        let extended_max = __cpuid(0x8000_0000).eax;
-        let extended_ecx = if extended_max >= 0x8000_0001 {
-            __cpuid(0x8000_0001).ecx
-        } else {
-            0
-        };
-        let mut missing = Vec::new();
-        if leaf1_ecx & (1 << 22) == 0 { missing.push("MOVBE"); }
-        if leaf7_ebx & (1 << 3) == 0 { missing.push("BMI1"); }
-        if extended_ecx & (1 << 5) == 0 { missing.push("LZCNT"); }
-        missing
-    }
+    let basic_max = __cpuid(0).eax;
+    let leaf1_ecx = if basic_max >= 1 { __cpuid(1).ecx } else { 0 };
+    let leaf7_ebx = if basic_max >= 7 { __cpuid_count(7, 0).ebx } else { 0 };
+    let extended_max = __cpuid(0x8000_0000).eax;
+    let extended_ecx = if extended_max >= 0x8000_0001 {
+        __cpuid(0x8000_0001).ecx
+    } else {
+        0
+    };
+    let mut missing = Vec::new();
+    if leaf1_ecx & (1 << 22) == 0 { missing.push("MOVBE"); }
+    if leaf7_ebx & (1 << 3) == 0 { missing.push("BMI1"); }
+    if extended_ecx & (1 << 5) == 0 { missing.push("LZCNT"); }
+    missing
 }
 
 #[cfg(not(target_arch = "x86_64"))]
