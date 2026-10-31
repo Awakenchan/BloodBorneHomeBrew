@@ -109,6 +109,30 @@ void Predication() {
     assert(!DrawPredicated(true, false, false));
 }
 
+void ConservativeVisibility() {
+    assert(QueryFresh(100, 100, 6));
+    assert(QueryFresh(100, 106, 6));
+    assert(!QueryFresh(100, 107, 6));
+    assert(!QueryFresh(100, 0, 6));
+    assert(VisibilityCount(0, 1, true, true) == 0);
+    assert(VisibilityCount(0, 64, true, true) == 0);
+    for (const auto samples : {1ull, 2ull, 10ull, 1000ull, PlainlyVisible}) {
+        assert(VisibilityCount(samples, 1, true, true) == PlainlyVisible);
+    }
+    assert(VisibilityCount(0, 0, true, true) == PlainlyVisible);
+    assert(VisibilityCount(0, 1, false, true) == PlainlyVisible);
+    assert(VisibilityCount(0, 1, true, false) == PlainlyVisible);
+    SteadyCount history;
+    for (unsigned i = 0; i < SteadyCount::Window; ++i) {
+        history.Add(0);
+    }
+    assert(history.Add(VisibilityCount(1, 1, true, true)) == PlainlyVisible);
+    for (unsigned i = 0; i + 1 < SteadyCount::Window; ++i) {
+        assert(history.Add(0) == PlainlyVisible);
+    }
+    assert(history.Add(0) == 0);
+}
+
 void Steadying() {
     {
         SteadyCount fresh;
@@ -284,6 +308,7 @@ int main() {
     BlockWords();
     QueryCounts();
     Predication();
+    ConservativeVisibility();
     Steadying();
     Measuring();
     Answers();

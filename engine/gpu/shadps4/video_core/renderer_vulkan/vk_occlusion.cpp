@@ -29,7 +29,7 @@ u64 EnvNumber(const char* name, u64 fallback) {
 }
 
 u64 FramesSoFar() {
-    return BbStats::submit_done_calls.load(std::memory_order_relaxed);
+    return BbStats::frame_number.load(std::memory_order_relaxed);
 }
 
 using BlockWords = std::array<u64, 2 * Model::MaxDbs>;
@@ -89,7 +89,7 @@ struct Occlusion::Resolver {
     std::unordered_map<VAddr, Model::SteadyCount> steady;
 
     u64 dumps = 0, queries_read = 0, seen = 0, hidden = 0, plainly = 0, unavailable = 0;
-    u64 late = 0, foreign = 0, unmapped = 0, held = 0, late_written = 0, unpaired = 0;
+    u64 late = 0, foreign = 0, unmapped = 0, held = 0, unpaired = 0;
     std::atomic<u64> pool_full{0}, pred_sets{0}, pred_known{0}, pred_skipped{0}, pred_drawn{0};
     std::chrono::steady_clock::time_point report_time = std::chrono::steady_clock::now();
     u64 report_frames = 0, report_draws = 0;
@@ -157,10 +157,11 @@ bool Occlusion::Init() {
     resolver->rasterizer = &rasterizer;
     resolver->precise = precise;
     resolver->max_lag = EnvNumber("BB_OCCLUSION_MAX_LAG", 6);
-    std::printf("Occlusion: real sample counts (BB_OCCLUSION=0: the always-visible stand-in) - "
+    std::printf("Occlusion: conservative visibility (BB_OCCLUSION=0: always visible) - "
                 "each query block the game opens is measured over up to %llu draws and answered "
-                "once the GPU has run them (at most %llu frames late), %s; SET_PREDICATION skips "
-                "only on known answers\n",
+                "once the GPU has run them (at most %llu frames late), %s; any passing sample "
+                "keeps the object visible; empty, incomplete and stale queries stay visible; "
+                "SET_PREDICATION skips only on known answers\n",
                 static_cast<unsigned long long>(draw_budget),
                 static_cast<unsigned long long>(resolver->max_lag),
                 precise ? "precise counts" : "not precise (any nonzero count reads plainly visible)");
@@ -303,23 +304,20 @@ void Occlusion::Resolver::Process(const Record& record) {
             count = Sum(record.first_query, record.queries, missing);
             unavailable += missing;
         }
-        if (count == Model::PlainlyVisible) {
-            ++plainly;
-        }
-        const u64 age = FramesSoFar() - record.frame;
-        const bool answered_before = answered.contains(record.block);
-        if (age > max_lag && (age > 2 * max_lag || !answered_before)) {
+        const u64 now = FramesSoFar();
+        const bool fresh = Model::QueryFresh(record.frame, now, max_lag);
+        if (!fresh) {
             ++late;
-        } else {
-            late_written += age > max_lag ? 1 : 0;
-            if (steady.size() > 65536) {
-                steady.clear();
-            }
-            const u64 report = steady[record.block].Add(count);
-            held += count == 0 && report != 0 ? 1 : 0;
-            if (Store(record.block, record.dbs, report)) {
-                ++(report != 0 ? seen : hidden);
-            }
+        }
+        count = Model::VisibilityCount(count, record.queries, record.complete, fresh);
+        plainly += count == Model::PlainlyVisible ? 1 : 0;
+        if (steady.size() > 65536) {
+            steady.clear();
+        }
+        const u64 report = steady[record.block].Add(count);
+        held += count == 0 && report != 0 ? 1 : 0;
+        if (Store(record.block, record.dbs, report)) {
+            ++(report != 0 ? seen : hidden);
         }
     }
     Release(record.needed_from);
@@ -413,14 +411,14 @@ void Occlusion::Resolver::Report() {
         hidden,
         plainly,
         unavailable,
-        late + foreign + unmapped,
+        foreign + unmapped,
         pool_full.load(std::memory_order_relaxed),
         pred_sets.load(std::memory_order_relaxed),
         pred_known.load(std::memory_order_relaxed),
         pred_skipped.load(std::memory_order_relaxed),
         pred_drawn.load(std::memory_order_relaxed),
         held,
-        late_written,
+        late,
         unpaired,
     };
     const double frames = std::max<double>(1.0, double(frames_now - report_frames));
@@ -432,9 +430,9 @@ void Occlusion::Resolver::Report() {
     const double answers = f[2] + f[3];
     std::printf("Occlusion per frame: %.1f dumps, %.1f queries, objects %.1f visible / %.1f "
                 "culled (%.0f%%), %.1f blocks read plainly visible (%.1f queries unavailable), "
-                "%.1f answers not written (totals: late %llu, reused memory %llu, unmapped %llu), "
+                "%.1f answers not written (totals: stale %llu, reused memory %llu, unmapped %llu), "
                 "pool full %.1f; SET_PREDICATION %.1f (%.1f known), predicated draws %.1f skipped "
-                "/ %.1f drawn; %.0f draws/frame; held visible %.1f, late written %.1f, unpaired "
+                "/ %.1f drawn; %.0f draws/frame; held visible %.1f, stale kept visible %.1f, unpaired "
                 "ends %.1f\n",
                 f[0], f[1], f[2], f[3], answers > 0 ? 100.0 * f[3] / answers : 0.0, f[4], f[5],
                 f[6], static_cast<unsigned long long>(late),

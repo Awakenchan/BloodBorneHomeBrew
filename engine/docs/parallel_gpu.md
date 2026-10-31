@@ -78,6 +78,28 @@ Close to the 100 Hz display cap (vblank-paced), so further gains need an uncappe
 
 ## Streaming stutter (BB_FRAME_STATS "Stall:" lines)
 
+### Conservative occlusion-query visibility
+
+`BB_OCCLUSION=1` uses Bloodborne's query geometry and CPU visibility decisions, rather than
+adding a distance cutoff. A complete, nonempty query with zero passing samples may report
+hidden; any positive count reports `PlainlyVisible`. This prevents a small, partially
+visible distant object from receiving a low-count answer that the game can treat as too
+small to draw. The five-answer visibility history remains conservative toward newly
+occluded objects. Missing samples, incomplete intervals and empty intervals stay visible.
+
+Query age uses the monotonic rendered-game-frame counter, not `submit_done_calls`, which
+frame-statistics reporting resets every five seconds. Answers older than `BB_OCCLUSION_MAX_LAG`
+(default six frames) are completed as visible instead of publishing old hidden results or
+leaving the query pending. Ownership checks still prevent overwriting a block reused by
+the guest.
+
+An enabled-culling live reproduction showed an incorrectly missing building before this
+change. The user confirmed it returned afterward and stayed intact when panning, turning
+away and back, and moving around a corner. Diagnostic counters continued to report real
+zero-sample hidden queries, so the repair does not replace culling with always-visible
+answers. Query counts are not a measurement of saved draw calls or an FPS improvement.
+The launcher option remains opt-in and requires restarting the game.
+
 For cadence investigations, `BB_FRAME_STATS=1 BB_FRAME_LOG=path` records CPU flip intervals
 and renderer counters. Flips are queued to a separate presentation thread, so these are not
 necessarily the intervals at which Vulkan presents are issued. `BB_PRESENT_LOG=path` separately
