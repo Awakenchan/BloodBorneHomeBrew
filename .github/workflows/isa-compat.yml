@@ -23,6 +23,8 @@ on:
       - ".github/workflows/isa-compat.yml"
   pull_request:
     paths:
+      - "engine/build.sh"
+      - "engine/scripts/run_windows.py"
       - "engine/src/isa_*.c"
       - "engine/src/isa_*.h"
       - "engine/src/probe.c"
