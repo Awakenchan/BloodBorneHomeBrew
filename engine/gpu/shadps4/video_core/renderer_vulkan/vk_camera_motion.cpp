@@ -285,18 +285,20 @@ void CameraMotion::OnConstants(const float* data) {
         const char* env = std::getenv("BB_CAMERA_INVERSE");
         return env && std::strcmp(env, "own") == 0;
     }();
-    const auto computed_inverse = InverseAffine(pass_camera.view);
+    static const bool camera_log = std::getenv("BB_CAMERA_LOG") != nullptr;
+    const bool use_computed_inverse = own_inverse != BbToggle::Disabled(BbToggle::CameraOwnInverse);
+    std::array<float, 12> computed_inverse{};
     float inverse_gap = 0.0f;
-    for (int i = 0; i < 12; ++i) {
-        inverse_gap = std::max(inverse_gap, std::abs(computed_inverse[i] - pass_camera.inv_view[i]));
+    if (use_computed_inverse || camera_log) {
+        computed_inverse = InverseAffine(pass_camera.view);
+        for (int i = 0; i < 12; ++i) {
+            inverse_gap = std::max(inverse_gap, std::abs(computed_inverse[i] - pass_camera.inv_view[i]));
+        }
     }
     const auto game_inverse = pass_camera.inv_view;
-    if (own_inverse != BbToggle::Disabled(BbToggle::CameraOwnInverse)) {
+    if (use_computed_inverse) {
         pass_camera.inv_view = computed_inverse;
     }
-    // bbport: BB_CAMERA_LOG=1 prints the camera position every 100 ms (scripted tests of how far
-    // the player moves in a given time at different frame rates).
-    static const bool camera_log = std::getenv("BB_CAMERA_LOG") != nullptr;
     if (camera_log) {
         using Clock = std::chrono::steady_clock;
         static const auto start = Clock::now();

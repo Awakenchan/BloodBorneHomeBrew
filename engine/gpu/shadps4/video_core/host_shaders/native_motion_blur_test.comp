@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, binding = 0) readonly buffer Constants { float data[]; } constants;
+layout(binding = 1) uniform sampler2D color_image;
+layout(binding = 2) uniform sampler2D velocity_image;
+layout(binding = 3, rgba32f) uniform writeonly image2D output_image;
+layout(push_constant) uniform Push { uint high_quality; } pc;
+
+float blurConstant(int index) { return constants.data[index]; }
+vec4 blurColor(vec2 p) { return textureLod(color_image, p, 0.0); }
+vec2 blurVelocity(vec2 p) { return textureLod(velocity_image, p, 0.0).rg; }
+ivec2 blurSize() { return textureSize(color_image, 0); }
+#include "native_motion_blur.glsl"
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy), size = imageSize(output_image);
+    if (any(greaterThanEqual(p, size))) return;
+    imageStore(output_image, p, nativeMotionBlur((vec2(p) + 0.5) / vec2(size),
+                                               pc.high_quality != 0));
+}

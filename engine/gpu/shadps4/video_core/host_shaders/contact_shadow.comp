@@ -1,0 +1,318 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(scalar, set = 0, binding = 0) readonly buffer Cb { uint d[]; } cbuf;
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+layout(set = 0, binding = 2, rgba8) uniform image2D shadow_img;
+layout(set = 0, binding = 3) uniform sampler2D shadow_map;
+layout(scalar, set = 0, binding = 4) readonly buffer Ub { uint d[]; } ubuf;
+
+layout(push_constant) uniform Constants {
+    uint buf_off;
+    uint frame_index;
+    vec2 size;
+    float length_m;
+    float thickness_m;
+    float strength;
+    float flip;
+    uint debug;
+    uint contact_on;
+    uint pcss_on;
+    float light_tan;
+    float max_penumbra_m;
+    float min_penumbra_m;
+    float bias_m;
+    uint filter_on;
+    float cascade_blend;
+};
+
+layout(constant_id = 0) const uint optimizations = 1u;
+
+const int STEPS = 20;
+const int BLOCKER_TAPS = 64;
+
+uint base;
+float cb(int i) { return uintBitsToFloat(cbuf.d[base + uint(i)]); }
+vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
+
+float sceneDepth(vec2 uv) { return textureLod(depth_tex, uv, 0.0).x; }
+
+mat4 invMat;
+mat4 projMat;
+bool fullyFaded;
+
+vec3 viewPosAt(vec2 uv, float depth) {
+    vec4 c = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    vec4 v = invMat * c;
+    return v.xyz / v.w;
+}
+
+float hash(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+float d0;
+vec3 P0;
+int cascade;
+vec4 rA, rB, rW, rZ;
+float lu, lv, lz;
+vec2 tileMin, tileMax;
+
+bool setupCascade(int index) {
+    cascade = index;
+    tileMin = vec2(index & 1, index >> 1) * 0.5;
+    tileMax = tileMin + 0.5;
+    int m = 16 + 16 * cascade;
+
+    mat4 shadowMat = transpose(mat4(row(m), row(m + 4), row(m + 12), row(m + 8)));
+    mat4 T = shadowMat * projMat;
+    rA = vec4(T[0][0], T[1][0], T[2][0], T[3][0]);
+    rB = vec4(T[0][1], T[1][1], T[2][1], T[3][1]);
+    rW = vec4(T[0][2], T[1][2], T[2][2], T[3][2]);
+    rZ = vec4(T[0][3], T[1][3], T[2][3], T[3][3]);
+    vec4 p4 = vec4(P0, 1.0);
+    float wl = dot(rW, p4);
+    if (abs(wl) < 1e-9) {
+        return false;
+    }
+    lu = dot(rA, p4) / wl;
+    lv = dot(rB, p4) / wl;
+    lz = dot(rZ, p4) / wl;
+    return true;
+}
+
+bool setup(vec2 uv0) {
+    if (optimizations == 0u) d0 = sceneDepth(uv0);
+    if (!(d0 < 1.0) || !(d0 > 0.0)) return false;
+    P0 = viewPosAt(uv0, d0);
+    if (!(P0.z > 0.0)) return false;
+    int index = int(P0.z > cb(80)) + int(P0.z > cb(81)) + int(P0.z > cb(82));
+    return setupCascade(index);
+}
+
+float contact(vec2 uv0) {
+    vec3 dir = cross(rA.xyz - lu * rW.xyz, rB.xyz - lv * rW.xyz);
+    float dl = length(dir);
+    if (!(dl > 1e-12)) {
+        return 1.0;
+    }
+    dir /= dl;
+
+    if (dot(rZ.xyz - lz * rW.xyz, dir) > 0.0) {
+        dir = -dir;
+    }
+    dir *= flip;
+
+    float jitter = hash(uv0 * size);
+    for (int i = 0; i < STEPS; ++i) {
+        float t = (float(i) + 0.5 + jitter) / float(STEPS);
+        vec3 P = P0 + dir * (t * length_m);
+        if (!(P.z > 0.0)) {
+            break;
+        }
+        vec4 n4 = projMat * vec4(P, 1.0);
+        if (!(n4.w != 0.0)) {
+            break;
+        }
+        vec3 ndc = n4.xyz / n4.w;
+        vec2 uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+            break;
+        }
+        float sd = sceneDepth(uv);
+        if (!(sd < 1.0) || !(sd > 0.0)) {
+            continue;
+        }
+        float zs = viewPosAt(uv, sd).z;
+        float diff = P.z - zs;
+        float bias = 0.03 + 0.004 * P0.z + 0.04 * t * length_m;
+        if (diff > bias && diff < thickness_m) {
+            return 1.0 - strength * (1.0 - 0.5 * t);
+        }
+    }
+    return 1.0;
+}
+
+bool lightCoords(vec2 uv, out vec3 l, out float viewZ) {
+    float d = sceneDepth(uv);
+    if (!(d < 1.0) || !(d > 0.0)) {
+        return false;
+    }
+    vec3 P = viewPosAt(uv, d);
+    vec4 p4 = vec4(P, 1.0);
+    float wl = dot(rW, p4);
+    if (abs(wl) < 1e-9) {
+        return false;
+    }
+    l = vec3(dot(rA, p4), dot(rB, p4), dot(rZ, p4)) / wl;
+    viewZ = P.z;
+    return true;
+}
+
+vec2 vogel(int i, int n, float phi) {
+    float r = sqrt((float(i) + 0.5) / float(n));
+    float a = float(i) * 2.399963 + phi;
+    return r * vec2(cos(a), sin(a));
+}
+
+float mapDepth(vec2 uv) {
+    ivec2 extent = textureSize(shadow_map, 0);
+    ivec2 lo = ivec2(tileMin * vec2(extent));
+    ivec2 hi = ivec2(tileMax * vec2(extent)) - 1;
+    return texelFetch(shadow_map, clamp(ivec2(floor(uv * vec2(extent))), lo, hi), 0).x;
+}
+
+float compareBilinear(vec2 uv, vec2 center, vec2 slope, float bias) {
+    ivec2 extent = textureSize(shadow_map, 0);
+    vec2 p = uv * vec2(extent) - 0.5;
+    ivec2 origin = ivec2(floor(p));
+    vec2 f = fract(p);
+    ivec2 lo = ivec2(tileMin * vec2(extent));
+    ivec2 hi = ivec2(tileMax * vec2(extent)) - 1;
+    vec4 lit;
+    for (int j = 0; j < 4; ++j) {
+        ivec2 at = clamp(origin + ivec2(j & 1, j >> 1), lo, hi);
+        vec2 delta = (vec2(at) + 0.5) / vec2(extent) - center;
+        float receiver = lz + dot(slope, delta);
+        lit[j] = float(texelFetch(shadow_map, at, 0).x >= receiver - bias);
+    }
+    return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);
+}
+
+float pcss(vec2 uv0) {
+    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    vec2 center = vec2(lu, lv);
+    if (any(lessThan(center, tileMin)) || any(greaterThanEqual(center, tileMax)) ||
+        !(lz >= 0.0 && lz <= 1.0)) return -1.0;
+
+    float gu = length(rA.xyz - lu * rW.xyz);
+    float gv = length(rB.xyz - lv * rW.xyz);
+    float gz = length(rZ.xyz - lz * rW.xyz);
+    if (!(gu > 1e-9) || !(gv > 1e-9) || !(gz > 1e-9)) {
+        return -1.0;
+    }
+    if (fullyFaded) return 1.0;
+
+    vec2 slope = vec2(0.0);
+    vec3 l1, l2;
+    float z1, z2;
+    vec2 px = 1.0 / size;
+    if (lightCoords(uv0 + vec2(px.x, 0.0), l1, z1) && lightCoords(uv0 + vec2(0.0, px.y), l2, z2)) {
+        float tol = 0.1 + 0.02 * P0.z;
+        if (abs(z1 - P0.z) < tol && abs(z2 - P0.z) < tol) {
+            vec3 e1 = l1 - vec3(lu, lv, lz);
+            vec3 e2 = l2 - vec3(lu, lv, lz);
+            float det = e1.x * e2.y - e2.x * e1.y;
+            if (abs(det) > 1e-14) {
+                slope = vec2(e1.z * e2.y - e2.z * e1.y, e1.x * e2.z - e2.x * e1.z) / det;
+                float limit = 3.0 * gz / min(gu, gv);
+                slope = clamp(slope, vec2(-limit), vec2(limit));
+            }
+        }
+    }
+
+    vec2 uvPerMetre = vec2(gu, gv);
+    float worldTexel = max(texel.x / gu, texel.y / gv);
+    float bias = min(bias_m, 0.5 * worldTexel) * gz;
+    float phi = 6.2831853 * hash(uv0 * size + 17.0);
+
+    if (pcss_on == 0u) {
+        float lit = 0.0;
+        for (int i = 0; i < 8; ++i) {
+            vec2 off = vogel(i, 8, phi) * (1.5 * texel);
+            lit += compareBilinear(center + off, center, slope, bias);
+        }
+        return lit / 8.0;
+    }
+
+    vec2 searchRadius = max_penumbra_m * uvPerMetre;
+    float blockerSum = 0.0;
+    int blockers = 0;
+    for (int i = 0; i < BLOCKER_TAPS; ++i) {
+        float radius = sqrt(float(i) / float(BLOCKER_TAPS - 1));
+        float angle = float(i) * 2.399963 + phi;
+        vec2 off = radius * vec2(cos(angle), sin(angle)) * searchRadius;
+        vec2 sampleUv = clamp(center + off, tileMin + 0.5 * texel, tileMax - 0.5 * texel);
+        vec2 sampledUv = (floor(sampleUv / texel) + 0.5) * texel;
+        float plane = dot(slope, sampledUv - center);
+        float receiver = lz + plane;
+        float sz = mapDepth(sampleUv);
+        if (sz < receiver - bias) {
+            blockerSum += sz - plane;
+            ++blockers;
+        }
+    }
+    if (blockers == 0) {
+        return 1.0;
+    }
+
+    float blockerDist = max(lz - blockerSum / float(blockers), 0.0) / gz;
+    float penumbra = clamp(blockerDist * light_tan, min_penumbra_m, max_penumbra_m);
+
+    vec2 filterRadius = max(penumbra * uvPerMetre, 0.5 * texel);
+    float radiusTexels = max(filterRadius.x / texel.x, filterRadius.y / texel.y);
+    int filterTaps = radiusTexels <= 1.0 ? 16 : radiusTexels <= 4.0 ? 32 : 64;
+    float lit = 0.0;
+
+    for (int i = 0; i < filterTaps; ++i) {
+        vec2 off = vogel(i, filterTaps, phi + 1.7) * filterRadius;
+        lit += compareBilinear(center + off, center, slope, bias);
+    }
+    return lit / float(filterTaps);
+}
+
+void main() {
+    base = (buf_off & 0xffu) >> 2;
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(size)))) {
+        return;
+    }
+    const vec2 uv = (vec2(pixel) + 0.5) / size;
+    if (optimizations != 0u) {
+        d0 = sceneDepth(uv);
+        if (!(d0 < 1.0) || !(d0 > 0.0)) return;
+    }
+    invMat = transpose(mat4(row(0), row(4), row(8), row(12)));
+    projMat = inverse(invMat);
+    vec4 c = imageLoad(shadow_img, pixel);
+    if (!setup(uv)) {
+        return;
+    }
+    float alpha = c.a;
+
+    if (filter_on != 0u) {
+        const uint ub = ((buf_off >> 8) & 0xffu) >> 2;
+        float fade = clamp(uintBitsToFloat(ubuf.d[ub + 73u]) *
+                               (uintBitsToFloat(ubuf.d[ub + 72u]) - length(P0)),
+                           0.0, 1.0);
+
+        fullyFaded = optimizations != 0u && fade == 0.0;
+        float vis = pcss(uv);
+        int primary = cascade;
+        if (!fullyFaded && vis >= 0.0 && primary < 3 && cascade_blend > 0.0) {
+            float split = cb(80 + primary);
+            float previous = primary == 0 ? 0.0 : cb(79 + primary);
+            float band = cascade_blend * max(split - previous, 0.0);
+            if (band > 0.0 && P0.z > split - band && setupCascade(primary + 1)) {
+                float next = pcss(uv);
+                if (next >= 0.0)
+                    vis = mix(vis, next, smoothstep(split - band, split, P0.z));
+            }
+            if (optimizations == 0u || contact_on != 0u)
+                setupCascade(primary);
+        }
+        if (vis >= 0.0) {
+            alpha = 1.0 - fade * (1.0 - vis);
+        }
+    }
+    if (contact_on != 0u) {
+        float k = contact(uv);
+        alpha = debug != 0u ? k : min(alpha, k);
+    }
+    c.a = alpha;
+    imageStore(shadow_img, pixel, c);
+}

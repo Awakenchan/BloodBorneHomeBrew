@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <vector>
 
 #include "gpu/shadps4/video_core/renderer_vulkan/occlusion_model.h"
@@ -63,7 +64,7 @@ void BlockWords() {
             assert(sum == count);
         }
         for (const std::uint64_t base : {0ull, 5ull, 987654321ull}) {
-            for (const std::uint64_t samples : {0ull, 1ull, 7ull, 5000ull, PlainlyVisible}) {
+            for (const std::uint64_t samples : std::initializer_list<std::uint64_t>{0, 1, 7, 5000, PlainlyVisible}) {
                 std::uint64_t words[2 * MaxDbs] = {};
                 assert(ReadAnswer(words, dbs) == Answer::Pending);
                 FillBlock(words, dbs, base, samples);
@@ -107,6 +108,38 @@ void Predication() {
     assert(!DrawPredicated(false, false, true));
     assert(DrawPredicated(false, false, false));
     assert(!DrawPredicated(true, false, false));
+}
+
+void ConservativeVisibility() {
+    assert(QueryFresh(100, 100, 6));
+    assert(QueryFresh(100, 106, 6));
+    assert(!QueryFresh(100, 107, 6));
+    assert(!QueryFresh(100, 0, 6));
+    assert(VisibilityCount(0, 1, true, true) == 0);
+    assert(VisibilityCount(0, 64, true, true) == 0);
+    for (const std::uint64_t samples : std::initializer_list<std::uint64_t>{1, 2, 10, 1000, PlainlyVisible}) {
+        assert(VisibilityCount(samples, 1, true, true) == PlainlyVisible);
+    }
+    assert(VisibilityCount(0, 0, true, true) == PlainlyVisible);
+    assert(VisibilityCount(0, 1, false, true) == PlainlyVisible);
+    assert(VisibilityCount(0, 1, true, false) == PlainlyVisible);
+    SteadyCount history;
+    for (unsigned i = 0; i < SteadyCount::Window; ++i) {
+        history.Add(0);
+    }
+    assert(history.Add(VisibilityCount(1, 1, true, true)) == PlainlyVisible);
+    for (unsigned i = 0; i + 1 < SteadyCount::Window; ++i) {
+        assert(history.Add(0) == PlainlyVisible);
+    }
+    assert(history.Add(0) == 0);
+}
+
+void LateAnswers() {
+    assert(LateAnswerWritable(100, 106, 6, false));
+    assert(!LateAnswerWritable(100, 107, 6, false));
+    assert(LateAnswerWritable(100, 112, 6, true));
+    assert(!LateAnswerWritable(100, 113, 6, true));
+    assert(!LateAnswerWritable(100, 0, 6, true));
 }
 
 void Steadying() {
@@ -284,6 +317,8 @@ int main() {
     BlockWords();
     QueryCounts();
     Predication();
+    ConservativeVisibility();
+    LateAnswers();
     Steadying();
     Measuring();
     Answers();

@@ -155,6 +155,25 @@ one, a minute or two into a start (with beta 8's GX region every time). The warm
 so `warmup` still validates the pipelines; `play` does not get far. Linux GPU assertions now print their
 call stack (`shim/common/assert.cpp`), which found this.
 
+## Lighting effects
+
+GTAO, improved reflections, POM cavity, contact shadows, PCSS, indirect lighting, volumetrics, lamp fog,
+point shadows and higher shadow sizes are off by default, each with its own setting. With all off, a draw
+pays one branch and no pipeline or image exists. Rules they follow:
+
+- Passes are built on first use. A failed layout, shader module or pipeline, a storage format the GPU
+  lacks, or too little free video memory prints one line and turns that effect off for the session.
+- A replaced fragment shader needs the same layout as the one it replaces: constant buffers as uniform
+  dwords (`Profile::uniform_dword_layout`, so not without `uniformBufferStandardLayout`), bindings from 0,
+  and the expected resource counts. Otherwise the game's shader stays, on that hardware and profile.
+- SPIR-V patches (SSR composite, water, POM) match exact words. They match the NVIDIA profile of this
+  engine (checked against the dev cache), so on other profiles they stay off and the log says so.
+- `BB_UPSCALER=none` stops camera tracking, and the effects that need the camera stay off with it.
+- With a reduced scene (internal resolution below 1080p) the passes use the reduced targets.
+- `effect-pipelines-test` builds every pass with the validation layer listening.
+
+Not checked on any GPU yet: picture and cost on AMD, Intel and older NVIDIA cards.
+
 ## Known driver behaviour
 
 - **AMD (Windows driver 2.0.x)** ends the process (0xC0000409) in `vkCreateGraphicsPipelines` on
@@ -164,6 +183,13 @@ call stack (`shim/common/assert.cpp`), which found this.
 - **AMD**: no Mailbox present mode on some setups ("falling back to Fifo").
 - **AMD legacy driver (Polaris, Vega, old APUs)**: Vulkan 1.3.260, no dynamic vertex input: the
   vertex input is baked into every pipeline (GetVertexInputs).
+- **AMD, `VK_AMD_anti_lag`**: another community port reported the input stage sleeping about 190 ms
+  every second or two on an RX 5500M and switched it off. Not seen by us, since no AMD card was at
+  hand. Lantern runs the call on a thread of its own and the game waits at most `BB_ANTI_LAG_WAIT_MS`
+  (50). Three overruns in 30 s end it until the next start ("AMD Anti-Lag 2: off until the next start").
+- **AMD discrete, 8 GB of VRAM or less**: `BB_AMD_LOW_VRAM` turns on a vendor-checked set of rules
+  ("GPU: low-VRAM rules on"), because the request was to leave NVIDIA and Intel paths alone and only
+  reports from Radeon cards motivate them. `BB_AMD_LOW_VRAM=1` runs them on any GPU for tests.
 - **NVIDIA, the PC memory model**: the arena lists no memory type a host import may use, and the
   engine binds imports anyway, outside the Vulkan spec ("Guest memory: ... outside the Vulkan spec").
   Treat it as unproven on every driver: the arena is not made for external memory either

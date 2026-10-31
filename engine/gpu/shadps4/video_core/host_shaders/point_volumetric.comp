@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(scalar, binding = 0) readonly buffer Constants { uint d[]; } cb;
+layout(scalar, binding = 1) readonly buffer Lights { uint d[]; } lights;
+layout(binding = 2) uniform sampler2D depth_tex;
+layout(binding = 3, rgba16f) uniform image2D fog_out;
+layout(scalar, binding = 4) readonly buffer Vertices { uint d[]; } vertices;
+layout(scalar, binding = 5) readonly buffer Indices { uint d[]; } indices;
+layout(push_constant) uniform Params {
+    uint offsets;
+    uint count;
+    float intensity;
+    uint vertex_offset;
+    uint vertex_stride;
+    uint index_offset;
+    uint index_size;
+    int first_vertex;
+    vec4 viewport;
+    ivec4 scissor;
+};
+
+uint base;
+shared vec4 tile_bounds;
+float c(uint i) { return uintBitsToFloat(cb.d[base + i]); }
+vec4 row(uint i) { return vec4(c(i), c(i + 1u), c(i + 2u), c(i + 3u)); }
+bool finite3(vec3 v) { return !any(isnan(v)) && !any(isinf(v)); }
+
+vec4 bounds() {
+    vec2 lo = vec2(1e30), hi = vec2(-1e30);
+    for (uint i = 0u; i < 4u; ++i) {
+        uint index = i;
+        if (index_size != 0u) {
+            uint byte_offset = index_offset + i * index_size;
+            if (byte_offset / 4u >= indices.d.length()) return vec4(0.0);
+            uint packed = indices.d[byte_offset / 4u];
+            index = index_size == 2u ? (packed >> ((byte_offset & 2u) * 8u)) & 65535u : packed;
+        }
+        int vertex = int(index) + first_vertex;
+        if (vertex < 0) return vec4(0.0);
+        uint word = vertex_offset / 4u, stride = vertex_stride / 4u;
+        uint words = vertices.d.length();
+        if (stride == 0u || words < 4u || word > words - 4u ||
+            uint(vertex) > (words - 4u - word) / stride) return vec4(0.0);
+        uint at = word + uint(vertex) * stride;
+        vec3 p = uintBitsToFloat(uvec3(vertices.d[at], vertices.d[at + 1u], vertices.d[at + 3u]));
+        if (!finite3(p) || abs(p.z) < 1e-8) return vec4(0.0);
+        vec2 screen = p.xy / p.z * viewport.xy + viewport.zw;
+        lo = min(lo, screen);
+        hi = max(hi, screen);
+    }
+    return vec4(max(lo, vec2(scissor.xy)), min(hi, vec2(scissor.zw)));
+}
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) tile_bounds = bounds();
+    barrier();
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(fog_out);
+    if (any(greaterThanEqual(px, size))) return;
+    vec2 centre = vec2(px) + 0.5;
+    if (any(lessThan(centre, tile_bounds.xy)) ||
+        any(greaterThanEqual(centre, tile_bounds.zw))) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    float depth = texelFetch(depth_tex, px, 0).r;
+    if (!(depth > 0.0 && depth <= 1.0)) return;
+    base = (offsets & 255u) >> 2;
+    mat4 inverse_projection = transpose(mat4(row(0u), row(4u), row(8u), row(12u)));
+    vec4 h = inverse_projection *
+        vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth == 1.0 ? 0.5 : depth, 1.0);
+    if (abs(h.w) < 1e-8) return;
+    vec3 surface = h.xyz / h.w;
+    if (!finite3(surface) || !(surface.z > 0.0)) return;
+    float distance_to_surface = length(surface);
+    vec3 ray = surface / distance_to_surface;
+    float limit = depth == 1.0 ? 100.0 : min(distance_to_surface, 100.0);
+    uint light_base = ((offsets >> 8) & 255u) >> 2;
+    vec3 scattering = vec3(0.0);
+    for (uint k = 0u; k < count; ++k) {
+        uint at = light_base + k * 16u;
+        vec3 centre = uintBitsToFloat(uvec3(lights.d[at], lights.d[at + 1u], lights.d[at + 2u]));
+        float inverse_radius_squared = uintBitsToFloat(lights.d[at + 3u]);
+        vec3 rgb = uintBitsToFloat(uvec3(lights.d[at + 4u], lights.d[at + 5u], lights.d[at + 6u]));
+        if (!finite3(centre) || !finite3(rgb) || isnan(inverse_radius_squared) ||
+            isinf(inverse_radius_squared) || !(inverse_radius_squared > 0.0)) continue;
+        rgb = max(rgb, vec3(0.0));
+        rgb /= max(1.0, max(rgb.r, max(rgb.g, rgb.b)) / 4.0);
+        float luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+        rgb = mix(vec3(luminance), rgb, 0.75);
+        if (luminance <= 0.0) continue;
+
+        float radius = inversesqrt(inverse_radius_squared);
+        float along = dot(centre, ray);
+        vec3 perpendicular = centre - along * ray;
+        float discriminant = radius * radius - dot(perpendicular, perpendicular);
+        if (!(discriminant > 0.0)) continue;
+        float half_chord = sqrt(discriminant);
+        float begin = max(0.0, along - half_chord);
+        float end = min(limit, along + half_chord);
+        if (!(end > begin)) continue;
+
+        float ds = (end - begin) / 12.0;
+        float energy = 0.0;
+        for (uint i = 0u; i < 12u; ++i) {
+            float t = begin + (float(i) + 0.5) * ds;
+            float falloff = max(0.0, 1.0 - length(ray * t - centre) / radius);
+            energy += falloff * falloff * exp(-0.025 * t) * 0.025 * ds;
+        }
+        scattering += rgb * energy;
+    }
+    vec4 previous = imageLoad(fog_out, px);
+    imageStore(fog_out, px, vec4(previous.rgb + scattering * (0.35 * intensity), 0.0));
+}

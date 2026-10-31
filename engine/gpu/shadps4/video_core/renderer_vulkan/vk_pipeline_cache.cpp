@@ -28,6 +28,7 @@
 #include "video_core/cache_file.h"
 #include "video_core/renderer_vulkan/pipeline_cache_blob.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_effect_shaders.h"
 #include "video_core/renderer_vulkan/motion_history.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -1066,7 +1067,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     Shader::Native::StoreState(info, runtime_before, code, perm_idx);
     const auto binding_before = binding;
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
-    if (Lifter::GetMode() != Lifter::Mode::Off) {
+    if (Lifter::GetMode() != Lifter::Mode::Off && !EffectShaders::KeepRecompiled(info)) {
         auto lifted = Lifter::Lift(Lifter::MakeInput(info, runtime_before, profile, binding_before, code));
         if (lifted.ok() && lifted.uses_tone_curve == info.uses_tone_curve) {
             spv = std::move(lifted.spirv);
@@ -1080,9 +1081,15 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
 
     auto patch = GetShaderPatch(info.pgm_hash, info.hw_stage, perm_idx, "spv");
     const bool is_patched = patch && EmulatorSettings.IsPatchShaders();
+    const auto effect_shader = EffectShaders::Replacement(info, profile, binding_before);
+    const auto effect_patch = effect_shader.empty() ? EffectShaders::Patched(info, spv) : std::nullopt;
     if (is_patched) {
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
         module = CompileSPV(*patch, instance.GetDevice());
+    } else if (!effect_shader.empty()) {
+        module = CompileSPV(effect_shader, instance.GetDevice());
+    } else if (effect_patch) {
+        module = CompileSPV(*effect_patch, instance.GetDevice());
     } else {
         module = CompileSPV(spv, instance.GetDevice());
     }

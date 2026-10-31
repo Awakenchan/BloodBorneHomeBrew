@@ -82,6 +82,16 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     camera_motion->SetObjectMotion(object_motion.get());
     // bbport: native HDR output's passes run at points of the frame the upscaler finds.
     hdr_native = std::make_unique<HdrNative>(instance, scheduler, texture_cache, runtime);
+    ssgi = std::make_unique<ScreenSpaceGI>(instance, scheduler, texture_cache, runtime,
+                                           *scene_targets, *camera_motion);
+    ssr_temporal = std::make_unique<SsrTemporal>(instance, scheduler, texture_cache, runtime,
+                                                 *scene_targets, *camera_motion);
+    contact_shadow = std::make_unique<ContactShadow>(instance, scheduler, texture_cache, runtime,
+                                                     *scene_targets, *camera_motion);
+    point_shadow = std::make_unique<PointShadow>(instance, scheduler, texture_cache, runtime,
+                                                 *scene_targets, *camera_motion);
+    volumetric_light = std::make_unique<VolumetricLight>(instance, scheduler, texture_cache,
+                                                         runtime, *scene_targets);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets, *hdr_native);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -592,6 +602,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // Prefetch render targets to handle overlaps with bound textures (e.g. mipgen)
     const auto& key = pipeline->GetGraphicsKey();
     const auto& regs = Regs();
+    EffectsBeforeTargets(pipeline);
     if (regs.color_control.degamma_enable) {
         LOG_WARNING(Render_Vulkan, "Color buffers require gamma correction");
     }
@@ -641,6 +652,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         camera_motion->OnGBufferPass(db_desc.first, vp.xscale < 0.0f ? -1.0f : 1.0f,
                                      vp.yscale < 0.0f ? -1.0f : 1.0f);
     }
+    EffectsAfterTargets(pipeline);
     if (upscaler->Enabled() && cb_descs[0].first) {
         upscaler->OnColorTarget(cb_descs[0].first);
     }
@@ -659,6 +671,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             if (regs.blend_control[0].enable && !regs.color_buffers[0].info.blend_bypass &&
                 !regs.depth_control.depth_write_enable &&
                 (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
+                EffectsBlendedScene();
                 upscaler->OnBlendedSceneDraw();
             } else if (regs.num_indices <= 6 && regs.num_instances.NumInstances() <= 1) {
                 // A full-screen pass over the scene (the fog composite): the transparents are in.
@@ -1987,6 +2000,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         upscaler->OnDisplayPass(regs.color_buffers[0].Address(), cb_descs[0].first);
         previous_scene_depth = camera_motion->Depth(); // the last G-buffer pass's (bbport)
         camera_motion->OnDisplayPass(cb_descs[0].first);
+        EffectsOnFrameEnd();
         if (upscaler->OnFrameStart()) {
             object_motion->InvalidateHistory();
             camera_motion->InvalidateHistory();
@@ -2004,6 +2018,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
 
     PrepareRenderState(pipeline);
     NotifyUiDraw(pipeline);
+    EffectsBeforeResources(pipeline);
     const PreparedDraw* draw_prepared = bind_prepared;
     // bbport: vertex and index buffers are resolved while the helper binds textures (their
     // commands are recorded after BeginRendering, as before).
@@ -2130,6 +2145,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             });
         }
     }
+    if (effects_wanted) {
+        const auto [effect_first_vertex, effect_first_instance] =
+            GetDrawOffsets(regs, pipeline->GetStage(Shader::SwStage::Vertex), pipeline->GetFetchShader());
+        EffectsBeforeBind(regs, pipeline, is_indexed, index_offset, effect_first_vertex);
+    }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
     if (pipeline->GetGraphicsKey().motion_vectors) {
@@ -2195,6 +2215,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             cmdbuf.endQuery(query.pool, query.index);
         }
     });
+    EffectsAfterDraw(regs, pipeline, is_indexed, num_indices, num_instances, first_vertex);
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
@@ -2426,6 +2447,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         }
     };
     if (upscaler->Enabled()) {
+        EffectsBeforeUpscaler(cs.pgm_hash);
         upscaler->OnDispatch(cs.pgm_hash);
     }
     bool hle;
@@ -5064,7 +5086,8 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         const auto proxy = pass_size.value_or(size);
         state.width = proxy.width;
         state.height = proxy.height;
-        target_scale = {float(size.width) / 1920.0f, float(size.height) / 1080.0f};
+        const auto native = SceneResolution::Native();
+        target_scale = {float(size.width) / float(native.width), float(size.height) / float(native.height)};
         ui_pass.active = false; // the memo keeps this scale for the pass
     }
     if (FrameCapture::Active()) {
@@ -5407,7 +5430,7 @@ void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool
                              [&](auto&& command) { scheduler.Record(std::move(command)); });
 }
 
-void Rasterizer::UpdateViewportScissorState() const {
+vk::Rect2D Rasterizer::DrawScissor(u32 i) const {
     const auto& regs = Regs();
 
     const auto combined_scissor_value_tl = [](s16 scr, s16 win, s16 gen, s16 win_offset) {
@@ -5435,6 +5458,34 @@ void Rasterizer::UpdateViewportScissorState() const {
         regs.screen_scissor.bottom_right_y, regs.window_scissor.bottom_right_y,
         regs.generic_scissor.bottom_right_y,
         enable_offset ? regs.window_offset.window_y_offset : 0);
+
+    if (regs.mode_control.vport_scissor_enable) {
+        scsr.top_left_x = std::max(scsr.top_left_x, s16(regs.viewport_scissors[i].top_left_x));
+        scsr.top_left_y = std::max(scsr.top_left_y, s16(regs.viewport_scissors[i].top_left_y));
+        scsr.bottom_right_x = std::min(AmdGpu::Scissor::Clamp(scsr.bottom_right_x),
+                                       regs.viewport_scissors[i].bottom_right_x);
+        scsr.bottom_right_y = std::min(AmdGpu::Scissor::Clamp(scsr.bottom_right_y),
+                                       regs.viewport_scissors[i].bottom_right_y);
+    }
+    if (ui_full_scissor[0] && scsr.top_left_x <= 0 && scsr.top_left_y <= 0 &&
+        scsr.top_left_x + s32(scsr.GetWidth()) >= s32(ui_full_scissor[0]) &&
+        scsr.top_left_y + s32(scsr.GetHeight()) >= s32(ui_full_scissor[1])) {
+        return {.offset = {0, 0}, .extent = {16384, 16384}};
+    }
+    if (target_scale[0] != 1.0f || target_scale[1] != 1.0f || target_offset[0] || target_offset[1]) {
+        const auto scale = [](s32 v, float f) { return s32(std::lround(float(v) * f)); };
+        const s32 x0 = std::max(0, scale(scsr.top_left_x, target_scale[0]) + s32(target_offset[0]));
+        const s32 y0 = std::max(0, scale(scsr.top_left_y, target_scale[1]) + s32(target_offset[1]));
+        const s32 x1 = scale(scsr.top_left_x + s32(scsr.GetWidth()), target_scale[0]) + s32(target_offset[0]);
+        const s32 y1 = scale(scsr.top_left_y + s32(scsr.GetHeight()), target_scale[1]) + s32(target_offset[1]);
+        return {.offset = {x0, y0}, .extent = {u32(std::max(x1 - x0, 0)), u32(std::max(y1 - y0, 0))}};
+    }
+    return {.offset = {scsr.top_left_x, scsr.top_left_y},
+            .extent = {scsr.GetWidth(), scsr.GetHeight()}};
+}
+
+void Rasterizer::UpdateViewportScissorState() const {
+    const auto& regs = Regs();
 
     boost::container::static_vector<vk::Viewport, AmdGpu::NUM_VIEWPORTS> viewports;
     boost::container::static_vector<vk::Rect2D, AmdGpu::NUM_VIEWPORTS> scissors;
@@ -5500,37 +5551,7 @@ void Rasterizer::UpdateViewportScissorState() const {
 
         viewports.push_back(viewport);
 
-        auto vp_scsr = scsr;
-        if (regs.mode_control.vport_scissor_enable) {
-            vp_scsr.top_left_x =
-                std::max(vp_scsr.top_left_x, s16(regs.viewport_scissors[i].top_left_x));
-            vp_scsr.top_left_y =
-                std::max(vp_scsr.top_left_y, s16(regs.viewport_scissors[i].top_left_y));
-            vp_scsr.bottom_right_x = std::min(AmdGpu::Scissor::Clamp(vp_scsr.bottom_right_x),
-                                              regs.viewport_scissors[i].bottom_right_x);
-            vp_scsr.bottom_right_y = std::min(AmdGpu::Scissor::Clamp(vp_scsr.bottom_right_y),
-                                              regs.viewport_scissors[i].bottom_right_y);
-        }
-        if (ui_full_scissor[0] && vp_scsr.top_left_x <= 0 && vp_scsr.top_left_y <= 0 &&
-            vp_scsr.top_left_x + s32(vp_scsr.GetWidth()) >= s32(ui_full_scissor[0]) &&
-            vp_scsr.top_left_y + s32(vp_scsr.GetHeight()) >= s32(ui_full_scissor[1])) {
-            scissors.push_back({.offset = {0, 0}, .extent = {16384, 16384}}); // the render area clips it
-        } else if (target_scale[0] != 1.0f || target_scale[1] != 1.0f || target_offset[0] || target_offset[1]) {
-            const auto scale = [](s32 v, float f) { return s32(std::lround(float(v) * f)); };
-            const s32 x0 = std::max(0,scale(vp_scsr.top_left_x, target_scale[0])+s32(target_offset[0]));
-            const s32 y0 = std::max(0,scale(vp_scsr.top_left_y, target_scale[1])+s32(target_offset[1]));
-            const s32 x1 = scale(vp_scsr.top_left_x + s32(vp_scsr.GetWidth()), target_scale[0])+s32(target_offset[0]);
-            const s32 y1 = scale(vp_scsr.top_left_y + s32(vp_scsr.GetHeight()), target_scale[1])+s32(target_offset[1]);
-            scissors.push_back({
-                .offset = {x0, y0},
-                .extent = {u32(std::max(x1 - x0, 0)), u32(std::max(y1 - y0, 0))},
-            });
-        } else {
-            scissors.push_back({
-                .offset = {vp_scsr.top_left_x, vp_scsr.top_left_y},
-                .extent = {vp_scsr.GetWidth(), vp_scsr.GetHeight()},
-            });
-        }
+        scissors.push_back(DrawScissor(i));
     }
 
     if (viewports.empty()) {

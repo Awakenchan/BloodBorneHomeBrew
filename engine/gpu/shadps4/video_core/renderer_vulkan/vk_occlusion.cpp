@@ -29,7 +29,7 @@ u64 EnvNumber(const char* name, u64 fallback) {
 }
 
 u64 FramesSoFar() {
-    return BbStats::submit_done_calls.load(std::memory_order_relaxed);
+    return BbStats::frame_number.load(std::memory_order_relaxed);
 }
 
 using BlockWords = std::array<u64, 2 * Model::MaxDbs>;
@@ -157,10 +157,11 @@ bool Occlusion::Init() {
     resolver->rasterizer = &rasterizer;
     resolver->precise = precise;
     resolver->max_lag = EnvNumber("BB_OCCLUSION_MAX_LAG", 6);
-    std::printf("Occlusion: real sample counts (BB_OCCLUSION=0: the always-visible stand-in) - "
+    std::printf("Occlusion: conservative visibility (BB_OCCLUSION=0: always visible) - "
                 "each query block the game opens is measured over up to %llu draws and answered "
-                "once the GPU has run them (at most %llu frames late), %s; SET_PREDICATION skips "
-                "only on known answers\n",
+                "once the GPU has run them (at most %llu frames late), %s; only a complete, fresh "
+                "query with no samples hides an object; SET_PREDICATION skips only on known "
+                "answers\n",
                 static_cast<unsigned long long>(draw_budget),
                 static_cast<unsigned long long>(resolver->max_lag),
                 precise ? "precise counts" : "not precise (any nonzero count reads plainly visible)");
@@ -303,15 +304,15 @@ void Occlusion::Resolver::Process(const Record& record) {
             count = Sum(record.first_query, record.queries, missing);
             unavailable += missing;
         }
-        if (count == Model::PlainlyVisible) {
-            ++plainly;
-        }
-        const u64 age = FramesSoFar() - record.frame;
-        const bool answered_before = answered.contains(record.block);
-        if (age > max_lag && (age > 2 * max_lag || !answered_before)) {
+        const u64 now = FramesSoFar();
+        const bool fresh = Model::QueryFresh(record.frame, now, max_lag);
+        count = Model::VisibilityCount(count, record.queries, record.complete, fresh);
+        plainly += count == Model::PlainlyVisible ? 1 : 0;
+        if (!Model::LateAnswerWritable(record.frame, now, max_lag,
+                                       answered.contains(record.block))) {
             ++late;
         } else {
-            late_written += age > max_lag ? 1 : 0;
+            late_written += fresh ? 0 : 1;
             if (steady.size() > 65536) {
                 steady.clear();
             }

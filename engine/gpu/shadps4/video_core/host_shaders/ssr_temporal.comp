@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform Constants {
+    vec4 proj;
+    vec4 reproject[3];
+    vec2 size;
+    vec2 jitter;
+    vec2 prev_jitter;
+    vec2 prev_proj;
+    uint history;
+    float blend;
+};
+
+#if defined(RESOLVE)
+
+layout(binding = 0) uniform texture2D cur_tex;
+layout(binding = 1) uniform texture2D depth_tex;
+layout(binding = 2) uniform texture2D prev_tex;
+layout(binding = 3, rgba16f) uniform writeonly image2D out_img;
+
+const float CLIP_SIGMA = 1.6;
+
+void main() {
+    const ivec2 h = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 hsize = textureSize(cur_tex, 0);
+    if (any(greaterThanEqual(h, hsize))) {
+        return;
+    }
+    const vec4 cur = texelFetch(cur_tex, h, 0);
+    vec4 result = cur;
+    const ivec2 isize = ivec2(size);
+
+    const vec2 ratio = size / vec2(hsize);
+    const ivec2 f = min(ivec2((vec2(h) + 0.5) * ratio), isize - 1);
+    const float depth = texelFetch(depth_tex, f, 0).r;
+    if (history != 0u && depth < 1.0) {
+        vec4 lo = vec4(1e9), hi = vec4(-1e9), sum = vec4(0.0), sum2 = vec4(0.0);
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                const vec4 s = texelFetch(cur_tex, clamp(h + ivec2(x, y), ivec2(0), hsize - 1), 0);
+                lo = min(lo, s);
+                hi = max(hi, s);
+                sum += s;
+                sum2 += s * s;
+            }
+        }
+        const vec4 mean = sum / 9.0;
+        const vec4 sigma = sqrt(max(sum2 / 9.0 - mean * mean, vec4(0.0)));
+        lo = max(lo, mean - CLIP_SIGMA * sigma);
+        hi = min(hi, mean + CLIP_SIGMA * sigma);
+
+        const float z = proj.w / min(depth - proj.z, -1e-8);
+        const vec2 ndc = ((vec2(h) + 0.5) * ratio - jitter) / size * 2.0 - 1.0;
+        const vec4 pos = vec4(ndc.x * z / proj.x, ndc.y * z / proj.y, z, 1.0);
+        const vec3 p = vec3(dot(reproject[0], pos), dot(reproject[1], pos), dot(reproject[2], pos));
+        if (p.z > 1e-3) {
+            const vec2 uv = p.xy * prev_proj / p.z * 0.5 + 0.5;
+            const vec2 hf = (uv * size + prev_jitter) / ratio - 0.5;
+            const vec2 hmax = vec2(hsize - 1);
+            if (all(greaterThanEqual(hf, vec2(-0.5))) && all(lessThanEqual(hf, hmax + 0.5))) {
+                const ivec2 b = ivec2(floor(hf));
+                const vec2 fr = hf - vec2(b);
+                vec4 hist = vec4(0.0);
+                for (int i = 0; i < 4; ++i) {
+                    const ivec2 o = ivec2(i & 1, i >> 1);
+                    const float w = (o.x == 0 ? 1.0 - fr.x : fr.x) * (o.y == 0 ? 1.0 - fr.y : fr.y);
+                    hist += texelFetch(prev_tex, clamp(b + o, ivec2(0), hsize - 1), 0) * w;
+                }
+                hist = clamp(hist, lo, hi);
+                const float motion = length(hf - vec2(h)) * ratio.x * 0.5;
+                const float w = blend * (1.0 - 0.5 * clamp(motion / 24.0, 0.0, 1.0));
+                result = mix(cur, hist, w);
+            }
+        }
+    }
+    imageStore(out_img, h, result);
+}
+
+#elif defined(COPY)
+
+layout(binding = 0) uniform texture2D src_tex;
+layout(binding = 1, rgba16f) uniform writeonly image2D dst_img;
+
+void main() {
+    const ivec2 h = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(h, textureSize(src_tex, 0)))) {
+        return;
+    }
+    imageStore(dst_img, h, texelFetch(src_tex, h, 0));
+}
+
+#endif

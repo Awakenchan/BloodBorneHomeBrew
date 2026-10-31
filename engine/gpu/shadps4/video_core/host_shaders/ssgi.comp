@@ -1,0 +1,414 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform Constants {
+    vec4 proj;
+    vec4 reproject[3];
+    vec2 size;
+    vec2 jitter;
+    vec2 prev_jitter;
+    vec2 prev_proj;
+    uint frame;
+    uint history;
+    float strength;
+    float radius;
+    float feedback;
+    float ao_amount;
+    float albedo_on;
+    float step_size;
+};
+#define gi_size (floor((size + 1.0) * 0.5))
+
+const float PI = 3.14159265358979;
+const float HALF_PI = 1.57079632679490;
+
+float viewZ(float depth) {
+    return proj.w / min(depth - proj.z, -1e-8);
+}
+
+vec3 viewPos(vec2 pixel, float z) {
+    const vec2 ndc = (pixel - jitter) / size * 2.0 - 1.0;
+    return vec3(ndc.x * z / proj.x, ndc.y * z / proj.y, z);
+}
+
+#if defined(PREP)
+
+layout(binding = 0) uniform texture2D depth_tex;
+layout(binding = 1, rgba32f) uniform writeonly image2D geo_img;
+layout(binding = 2) uniform texture2D normal_tex;
+
+float depthAt(ivec2 p) {
+    return texelFetch(depth_tex, clamp(p, ivec2(0), ivec2(size) - 1), 0).r;
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
+        return;
+    }
+    const float depth = depthAt(pixel);
+    if (depth >= 1.0) {
+        imageStore(geo_img, pixel, vec4(0.0, 0.0, -1.0, 0.0));
+        return;
+    }
+    const float z = viewZ(depth);
+    const vec3 c = viewPos(vec2(pixel) + 0.5, z);
+
+    vec3 px[2], py[2];
+    for (int i = 0; i < 2; ++i) {
+        const int s = i == 0 ? -1 : 1;
+        float dx = depthAt(pixel + ivec2(s, 0));
+        float dy = depthAt(pixel + ivec2(0, s));
+        float zx = dx >= 1.0 ? 1e6 : viewZ(dx);
+        float zy = dy >= 1.0 ? 1e6 : viewZ(dy);
+        px[i] = viewPos(vec2(pixel + ivec2(s, 0)) + 0.5, zx);
+        py[i] = viewPos(vec2(pixel + ivec2(0, s)) + 0.5, zy);
+    }
+    const vec3 ex = abs(px[1].z - c.z) < abs(c.z - px[0].z) ? px[1] - c : c - px[0];
+    const vec3 ey = abs(py[1].z - c.z) < abs(c.z - py[0].z) ? py[1] - c : c - py[0];
+    vec3 n = cross(ey, ex);
+    n = dot(n, n) > 1e-12 ? normalize(n) : -normalize(c);
+    if (dot(n, c) > 0.0) {
+        n = -n;
+    }
+
+    if (step_size > 0.0) {
+        const ivec2 normal_size = textureSize(normal_tex, 0);
+        vec3 wn = texelFetch(normal_tex, min(pixel, normal_size - 1), 0).xyz * 2.0 - 1.0;
+        if (dot(wn, wn) > 0.25) {
+            wn = normalize(wn);
+            vec3 vn = normalize(vec3(dot(reproject[0].xyz, wn), dot(reproject[1].xyz, wn),
+                                     dot(reproject[2].xyz, wn)));
+            if (dot(vn, c) > 0.0) {
+                vn = -vn;
+            }
+            if (dot(vn, n) > 0.5) {
+                n = normalize(mix(n, vn, step_size));
+            }
+        }
+    }
+    imageStore(geo_img, pixel, vec4(n, z));
+}
+
+#elif defined(GATHER)
+
+layout(binding = 0) uniform texture2D geo_tex;
+layout(binding = 1) uniform texture2D color_tex;
+layout(binding = 2) uniform texture2D prev_tex;
+layout(binding = 3, rgba16f) uniform writeonly image2D gi_img;
+layout(binding = 4) uniform texture2D albedo_tex;
+
+const int SLICES = 2;
+const int STEPS = 8;
+const int SECTORS = 32;
+const float MIN_RADIUS_PX = 6.0;
+const float MAX_RADIUS_FRAC = 0.18;
+const float ALBEDO = 0.5;
+const float RADIANCE_CLAMP = 6.0;
+const float TEMPORAL = 0.2;
+const float HISTORY_TOLERANCE = 0.04;
+
+shared float sector_weight[SECTORS];
+
+bool historyCoord(vec3 pos, out vec2 hf, out float zp) {
+    const vec4 v = vec4(pos, 1.0);
+    const vec3 p = vec3(dot(reproject[0], v), dot(reproject[1], v), dot(reproject[2], v));
+    zp = p.z;
+    hf = vec2(0.0);
+    if (p.z < 1e-3) {
+        return false;
+    }
+    const vec2 uv = p.xy * prev_proj / p.z * 0.5 + 0.5;
+    hf = ((uv * size + prev_jitter) - 0.5) * 0.5;
+    return true;
+}
+
+vec3 sampleHistory(vec2 hf, float zp, out float conf) {
+    const ivec2 gmax = ivec2(gi_size) - 1;
+    const ivec2 b = ivec2(floor(hf));
+    const vec2 f = hf - vec2(b);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        const ivec2 o = ivec2(i & 1, i >> 1);
+        const ivec2 t = b + o;
+        if (any(lessThan(t, ivec2(0))) || any(greaterThan(t, gmax))) {
+            continue;
+        }
+        const vec4 pv = texelFetch(prev_tex, t, 0);
+        if (pv.a <= 0.0 || abs(pv.a - zp) > HISTORY_TOLERANCE * zp) {
+            continue;
+        }
+        const float w = (o.x == 0 ? 1.0 - f.x : f.x) * (o.y == 0 ? 1.0 - f.y : f.y);
+        sum += pv.rgb * w;
+        wsum += w;
+    }
+    conf = wsum;
+    return wsum > 1e-4 ? sum / wsum : vec3(0.0);
+}
+
+float fastAcos(float x) {
+    float a = abs(x);
+    float r = sqrt(1.0 - a) * (1.5707963267948966 + a * (-0.2146018 + a * (0.0889789 + a * -0.0501743)));
+    return x >= 0.0 ? r : PI - r;
+}
+
+uint sectorMask(vec3 d, float l, vec3 v, float side, float lo, float thick) {
+    const vec3 db = d - v * thick;
+    const float af = side * fastAcos(clamp(dot(d, v) / l, -1.0, 1.0));
+    const float ab = side * fastAcos(clamp(dot(db, v) / max(length(db), 1e-4), -1.0, 1.0));
+    const float s0 = clamp((min(af, ab) - lo) * (1.0 / PI), 0.0, 1.0) * float(SECTORS);
+    const float s1 = clamp((max(af, ab) - lo) * (1.0 / PI), 0.0, 1.0) * float(SECTORS);
+    const uint a = uint(s0 + 0.5);
+    const uint n = uint(s1 + 0.5) - a;
+    if (n == 0u || a >= uint(SECTORS)) {
+        return 0u;
+    }
+    const uint m = n >= 32u ? 0xFFFFFFFFu : ((1u << n) - 1u);
+    return m << a;
+}
+
+void main() {
+    if (gl_LocalInvocationIndex < uint(SECTORS)) {
+        const float k = float(gl_LocalInvocationIndex);
+        sector_weight[gl_LocalInvocationIndex] =
+            0.5 * (cos(PI * k / float(SECTORS)) - cos(PI * (k + 1.0) / float(SECTORS)));
+    }
+    barrier();
+
+    const ivec2 h = ivec2(gl_GlobalInvocationID.xy);
+    if (h.x >= int(gi_size.x) || h.y >= int(gi_size.y)) {
+        return;
+    }
+    const ivec2 isize = ivec2(size);
+    const ivec2 pixel = min(h * 2, isize - 1);
+    const vec4 geo = texelFetch(geo_tex, pixel, 0);
+    if (geo.w <= 0.0) {
+        imageStore(gi_img, h, vec4(0.0));
+        return;
+    }
+    const vec3 n = geo.xyz;
+    const float z = geo.w;
+    const vec2 centre = vec2(pixel) + 0.5;
+    const vec3 pos = viewPos(centre, z);
+    const vec3 v = -normalize(pos);
+
+    const float radius_px = clamp(radius * 0.5 * abs(proj.x) * size.x / z, MIN_RADIUS_PX,
+                                  MAX_RADIUS_FRAC * size.x);
+    const float thick = 0.15 + 0.01 * z;
+    const float bias = 0.02 * radius;
+
+    const vec2 noise = fract(vec2(pixel) * vec2(0.7548776662, 0.5698402910) +
+                             float(frame & 255u) * vec2(0.6180339887, 0.3819660113));
+    vec3 total = vec3(0.0);
+    for (int s = 0; s < SLICES; ++s) {
+        const float phi = (float(s) + noise.x) / float(SLICES) * PI;
+        const vec2 dir = vec2(cos(phi), sin(phi));
+        const vec3 full = viewPos(centre + dir * radius_px, z) - pos;
+        const vec3 dir_v = normalize(full);
+        const vec3 ortho = dir_v - dot(dir_v, v) * v;
+        const vec3 axis = normalize(cross(ortho, v));
+        const vec3 proj_n = n - axis * dot(n, axis);
+        const float proj_len = length(proj_n);
+        if (proj_len < 1e-4) {
+            continue;
+        }
+        const float n_ang = (dot(ortho, proj_n) < 0.0 ? -1.0 : 1.0) *
+                            fastAcos(clamp(dot(proj_n, v) / proj_len, -1.0, 1.0));
+        const float lo = n_ang - HALF_PI;
+
+        uint mask = 0u;
+        vec3 slice = vec3(0.0);
+        for (int i = 0; i < STEPS; ++i) {
+            float t = (float(i) + noise.y) / float(STEPS);
+            t *= t;
+            vec2 off = dir * radius_px * t;
+            off = sign(off) * max(abs(off), vec2(1.0));
+            for (int side = 0; side < 2; ++side) {
+                const float sgn = side == 0 ? 1.0 : -1.0;
+                const ivec2 q = ivec2(floor(centre + off * sgn));
+                if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, isize))) {
+                    continue;
+                }
+                const vec4 g = texelFetch(geo_tex, q, 0);
+                if (g.w <= 0.0) {
+                    continue;
+                }
+                const vec3 d = viewPos(vec2(q) + 0.5, g.w) - pos;
+                const float l = length(d);
+                if (l > radius || l < bias) {
+                    continue;
+                }
+                const uint m = sectorMask(d, l, v, sgn, lo, thick);
+                uint fresh = m & ~mask;
+                if (fresh == 0u) {
+                    continue;
+                }
+                mask |= m;
+                float w = 0.0;
+                while (fresh != 0u) {
+                    w += sector_weight[findLSB(fresh)];
+                    fresh &= fresh - 1u;
+                }
+                const vec3 ld = d / l;
+                const float emit = clamp(dot(g.xyz, -ld), 0.0, 1.0);
+                vec3 c = texelFetch(color_tex, q, 0).rgb;
+                if ((history & 1u) != 0u && feedback > 0.0) {
+                    vec2 hf;
+                    float zp;
+                    if (historyCoord(pos + d, hf, zp)) {
+                        const ivec2 hn = ivec2(floor(hf + 0.5));
+                        if (all(greaterThanEqual(hn, ivec2(0))) &&
+                            all(lessThan(hn, ivec2(gi_size)))) {
+                            const vec4 pv = texelFetch(prev_tex, hn, 0);
+                            if (pv.a > 0.0 && abs(pv.a - zp) < HISTORY_TOLERANCE * zp) {
+                                const vec3 reflect_albedo = albedo_on > 0.5
+                                    ? texelFetch(albedo_tex, q, 0).rgb : vec3(ALBEDO);
+                                c += pv.rgb * (feedback * reflect_albedo);
+                            }
+                        }
+                    }
+                }
+                c = min(c, vec3(RADIANCE_CLAMP));
+                const float r = l / radius;
+                slice += c * (w * emit * (1.0 - r * r));
+            }
+        }
+        total += slice * proj_len;
+    }
+    vec3 gi = max(total / float(SLICES), vec3(0.0));
+    if ((history & 1u) != 0u) {
+        vec2 hf;
+        float zp;
+        if (historyCoord(pos, hf, zp)) {
+            float conf;
+            const vec3 hist = sampleHistory(hf, zp, conf);
+            gi = mix(gi, hist, (1.0 - TEMPORAL) * clamp(conf, 0.0, 1.0));
+        }
+    }
+    imageStore(gi_img, h, vec4(gi, z));
+}
+
+#elif defined(DENOISE)
+
+layout(binding = 0) uniform texture2D geo_tex;
+layout(binding = 1) uniform texture2D src_tex;
+layout(binding = 2, rgba16f) uniform writeonly image2D dst_img;
+
+void main() {
+    const ivec2 h = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 gsize = ivec2(gi_size);
+    if (any(greaterThanEqual(h, gsize))) {
+        return;
+    }
+    const ivec2 isize = ivec2(size);
+    const vec4 centre = texelFetch(src_tex, h, 0);
+    const vec4 g = texelFetch(geo_tex, min(h * 2, isize - 1), 0);
+    if (g.w <= 0.0) {
+        imageStore(dst_img, h, vec4(0.0));
+        return;
+    }
+    const vec3 p = viewPos(vec2(min(h * 2, isize - 1)) + 0.5, g.w);
+    const int spacing = int(step_size);
+    const float kernel[3] = float[3](0.375, 0.25, 0.0625);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            const ivec2 t = h + ivec2(x, y) * spacing;
+            if (any(lessThan(t, ivec2(0))) || any(greaterThanEqual(t, gsize))) {
+                continue;
+            }
+            const vec4 gt = texelFetch(geo_tex, min(t * 2, isize - 1), 0);
+            if (gt.w <= 0.0) {
+                continue;
+            }
+            const vec3 pt = viewPos(vec2(min(t * 2, isize - 1)) + 0.5, gt.w);
+            const float plane = abs(dot(g.xyz, pt - p));
+            const float w = kernel[abs(x)] * kernel[abs(y)] * exp(-plane / (0.02 * g.w + 1e-3)) *
+                            pow(max(dot(g.xyz, gt.xyz), 0.0), 16.0);
+            sum += texelFetch(src_tex, t, 0).rgb * w;
+            wsum += w;
+        }
+    }
+    imageStore(dst_img, h, vec4(wsum > 1e-5 ? sum / wsum : centre.rgb, centre.a));
+}
+
+#elif defined(COMPOSITE)
+
+layout(binding = 0) uniform texture2D geo_tex;
+layout(binding = 1) uniform texture2D gi_tex;
+layout(binding = 2, rgba16f) uniform image2D color_img;
+layout(binding = 3) uniform texture2D albedo_tex;
+layout(binding = 4) uniform texture2D ao_tex;
+
+const float ALBEDO = 0.5;
+
+float sampleAo(ivec2 pixel) {
+    const ivec2 ao_size = textureSize(ao_tex, 0);
+    const vec2 p = (vec2(pixel) + 0.5) / size * vec2(ao_size) - 0.5;
+    const ivec2 p0 = ivec2(floor(p));
+    const vec2 f = p - vec2(p0);
+    const ivec2 hi = ao_size - 1;
+    const float a = texelFetch(ao_tex, clamp(p0, ivec2(0), hi), 0).r;
+    const float b = texelFetch(ao_tex, clamp(p0 + ivec2(1, 0), ivec2(0), hi), 0).r;
+    const float c = texelFetch(ao_tex, clamp(p0 + ivec2(0, 1), ivec2(0), hi), 0).r;
+    const float d = texelFetch(ao_tex, clamp(p0 + ivec2(1, 1), ivec2(0), hi), 0).r;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
+        return;
+    }
+    const vec4 geo = texelFetch(geo_tex, pixel, 0);
+    if (geo.w <= 0.0) {
+        return;
+    }
+
+    const ivec2 h0 = pixel >> 1;
+    const vec2 f = vec2(pixel - h0 * 2) * 0.5;
+    const ivec2 gmax = ivec2(gi_size) - 1;
+    vec3 sum = vec3(0.0);
+    float weight = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        const ivec2 o = ivec2(i & 1, i >> 1);
+        const ivec2 h = min(h0 + o, gmax);
+        const vec4 gi = texelFetch(gi_tex, h, 0);
+        if (gi.a <= 0.0) {
+            continue;
+        }
+        const vec4 g = texelFetch(geo_tex, min(h * 2, ivec2(size) - 1), 0);
+        const float bil = (o.x == 0 ? 1.0 - f.x : f.x) * (o.y == 0 ? 1.0 - f.y : f.y);
+        const float wz = exp(-abs(gi.a - geo.w) / (0.03 * geo.w));
+        const float wn = pow(max(dot(g.xyz, geo.xyz), 0.0), 8.0);
+        const float w = bil * wz * wn + 1e-5;
+        sum += gi.rgb * w;
+        weight += w;
+    }
+    if (weight <= 1e-4) {
+        return;
+    }
+    const vec3 light = sum / weight;
+    vec4 color = imageLoad(color_img, pixel);
+    vec3 tint;
+    if (albedo_on > 0.5) {
+        tint = texelFetch(albedo_tex, pixel, 0).rgb;
+    } else {
+        const float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+        tint = ALBEDO * mix(vec3(1.0), clamp(color.rgb / max(luma, 1e-3), 0.0, 2.5), 0.6);
+    }
+    vec3 add = light * tint * strength;
+    if (ao_amount > 0.0) {
+        add *= max(1.0 - ao_amount * (1.0 - clamp(sampleAo(pixel), 0.0, 1.0)), 0.0);
+    }
+    color.rgb = (history & 2u) != 0u ? add : color.rgb + add;
+    imageStore(color_img, pixel, color);
+}
+
+#endif

@@ -6,19 +6,25 @@ details are in `GX_NATIVE_PLAN.md`, the module-by-module rewrite in `OWN_CODE_PL
 
 ## Progress (updated with every step)
 
-Last update: 2026-10-30, phase J at its end state for this branch: every system library but GnmDriver and online is ours. Keep this section short: what is true now, one line
+Last update: 2026-10-31, after beta 24 (0.9.39-beta.24): the native switches ship on by default, and the old renderer still does everything phases F and H cover. Keep this section short: what is true now, one line
 per step. Details belong in the commit that did the step.
 
 | Phase | State |
 |---|---|
 | A. Tools (Ghidra, full dump, GX facts) | done 2026-10-29 |
-| B. GX trace | done 2026-10-30 on this branch: 0 differences over 5.36 million draws in three areas (a boss still to check) |
-| C. GX objects | done 2026-10-30 on this branch: every bound object known over 2.2 million draws |
-| D. Draws from GX | started: shader resources proven to be in GX's slots; the resource bind is Lantern's for 90% of binds behind `LANTERN_GX_DRAWS=1`, 0 differences; `LANTERN_GX_RECORDS=1` picks a draw's pipeline from a GX record, not yet run in the game (`GX_NATIVE_PLAN.md`) |
-| E. Buffers and textures by object | started: GX and YEBIS textures and the display buffers are in the object table; behind `LANTERN_GX_TEXTURES=1` a texture's description sets its image's mips and layers, depth targets included, and a texture holds its image, the old search taking the rest by reason, 99.99% of lookups map to an object; `LANTERN_GX_BUFFERS=1` keeps GX's upload arena in place, write faults 5,500 a second to 0 in the in-place memory model |
-| F, H-I. Renderer | not started |
-| G. Shaders | lifter built behind `LANTERN_LIFTER`, off by default: all 9,847 programs lift, 0 different from the recompiler on the dev cache for every family profile; not yet run in the game (`native_shader_compiler.md`) |
-| J. System libraries | done on this branch except GnmDriver (waits for the GX path) and online (the user's call); steps 6a-9 not played by a person yet: one unattended boot on copied saves, offline, reached the game (60 FPS, 847 draws a frame, two lamp warps) |
+| B. GX trace | done: 0 differences over 5.36 million draws in three areas; **a boss is still to check** |
+| C. GX objects | done: every bound object known over 2.2 million draws |
+| D. Draws from GX | **in progress, on in beta 24.** The resource bind is Lantern's for 90% of binds (`LANTERN_GX_DRAWS`), 0 differences. `LANTERN_GX_RECORDS` picks a draw's pipeline from a GX record; `=2`, the comparison with the old way, ran once on 2026-10-31: 411,449 pipelines from the record at its last report, 0 differ, no crash. Next: take the draw's bindings and render state from the record |
+| E. Buffers and textures by object | **in progress, on in beta 24.** Textures, depth targets and display buffers come from GX objects and a texture holds its image (`LANTERN_GX_TEXTURES`); 99.99% of lookups map to an object, and 3,631 of 4,377 first lookups in one boot skip the resolver. GX's upload arena stays in place (`LANTERN_GX_BUFFERS`): write faults 5,500 a second to 0 standing still. The old search and resolver still take the rest, so `texture_cache` and `buffer_cache` cannot go yet |
+| F. Compute, clears, copies, queries | not started |
+| G. Shaders | **in progress, on in beta 24** (`LANTERN_LIFTER`): all 9,847 programs lift, 0 different from the recompiler on the dev cache for every family profile. Install-time builds are not done |
+| H. YEBIS, Scaleform, flip pass | not started; Scaleform's renderer is still to find |
+| I. The translator goes | not started; needs D-H as the default everywhere |
+| J. System libraries | done except GnmDriver (waits for the GX path) and online (the user's call). 302 of 537 imports are ours; 6a-9 ship in beta 24, no dedicated play-through recorded |
+
+**Proof so far for beta 24's defaults:** the user booted it with native on and it worked. No AMD or older
+NVIDIA player has confirmed it yet, and no FPS gain has been measured for the whole set: benchmarks are
+paused until the native path is built. Safe mode and the launcher's Engine page turn each switch off.
 
 **System library imports** the game and its modules need from us (537, from
 `tools/re/import_census.py`; libc and Fios2 are the game's own Sony modules and not counted):
@@ -131,9 +137,9 @@ Rules for it:
 
 ## Phases
 
-Each phase is behind a `LANTERN_*` switch, off by default, the old path kept, checked under Vulkan
-validation for every GPU family, shipped in a beta, and made the default only after AMD and older
-NVIDIA players confirm it.
+Each phase is behind a `LANTERN_*` switch with the old path kept, and is checked under Vulkan validation
+for every GPU family. Betas ship every native switch on (the user's call, beta 24): `=0`, the launcher's
+Engine page or safe mode turns one off. A stable release needs AMD and older NVIDIA players to confirm it.
 
 ### A. Tools (done 2026-10-29)
 
@@ -207,13 +213,36 @@ What is left: GnmDriver shrinks as the GX path lands (after I only what GX calls
 
 Every step needs an in-game check by the user before the next one depends on it.
 
+## Lighting effects: what the native path must carry over
+
+The optional lighting effects (`gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer_effects.cpp`, every
+one off by default) work under `LANTERN_GX_DRAWS`, `LANTERN_GX_TEXTURES`, `LANTERN_GX_BUFFERS`,
+`LANTERN_GX_RECORDS`, `LANTERN_READ_FILTER` and `LANTERN_LIFTER`, because they read what `DrawRecord` has
+already resolved, whichever way it came. Phases F, H and I remove that function. Each hook names what the
+native path has to give it. Pixel shader hashes stay valid while shaders come from the game's files.
+
+| Hook, on pixel shader | Takes from the draw | Native path must keep |
+|---|---|---|
+| Shader choice at module creation: SSAO `cbbca5dc`, SSR `6c2323c2`, motion blur `29e06868`; SPIR-V patches on the SSR composite `3fe9e964`, water `e3021062`, POM | program hash, first binding, resource counts, and for patches the exact words | a place between lifting and module creation; the patches match words, so a changed recompiler or lifter profile leaves them off (phase G: move them to the lifter's IR) |
+| G-buffer pass (5+ color targets) | depth, albedo and normal targets, the camera constants | texture objects for those targets; `CameraMotion` from GX's constant buffer |
+| Shadow resolve `f55643de`, then blur `11ffdfb5` | target, constants, uniforms, shadow atlas view and layout; the blur's source address | the resolve as a GX draw with its bound objects; passes inserted after it and before the next draw |
+| Scene before transparents, first blended draw | scene color and depth | a "transparents start" point (phase H has the scene order) |
+| Light grid `370174f7` and the other tile shaders | point shadows: both light targets, constants, lights, the tile from the game's quad. Lamp fog: the lights and camera read from guest memory, once per light | the tile's lights and quad as GX objects |
+| Directional table `d92266b9`, sky dome `dda49e89`, HDR post `ccbf44a6`, scene target `32e47788` | lighting table, material, sky vertices, scene color | points in YEBIS's flip pass (phase H): volumetrics composite before its first post copy |
+| SSR draw and composite | constants, normals, scene color; swaps the composite's reflection image (slot 6) | binding override on a native draw's image slot |
+| Push constants `motion_param` (byte 120), `buf_offsets` (byte 80) | strength or frame number; each binding's offset remainder as one byte, read packed | same layout for replaced shaders, or a push block of their own |
+
+Passes stay compute passes on our own images, created on first use; they need `Runtime::Transit`, the
+scheduler's `EndRendering` and `SceneTargets` when the scene is reduced. Eboot writes for shadow sizes
+(`graphics.cpp`) use checked addresses and do not depend on the renderer.
+
 ## Order and what comes next
 
-1. **B**, starting with naming the creators and stages in the dump. This is the next session.
-2. **C**, then **D** on a branch, measured against the PM4 path frame by frame.
-3. **E** and **F** turn D into the speed gain. **G** can start beside them.
-4. **H**, then **I** in one release once the betas are clean.
-5. **J** runs alongside, one library at a time.
+1. **D:** bindings and render state from the record.
+2. **E:** what the log still sends to the resolver, by reason, until it can go. Then the boss check left from **B**.
+3. **F:** compute, clears, copies, queries and completions. After this the PM4 walk only orders tokens.
+4. **G:** every shader built at install, once all are confirmed to come from the game's files.
+5. **H**, then **I** in one release once the betas are clean. **J** finishes with GnmDriver at that point.
 
 Done means: no shadPS4 `video_core` or `shader_recompiler`, no PM4 parsing in a normal frame,
 every system library function the game calls implemented by us, and the credits list only the

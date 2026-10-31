@@ -1,0 +1,348 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#if defined(INTEGRATE) || defined(REPAIR)
+#define DIRECTION_BINDING 6
+#elif defined(CELESTIAL)
+#define DIRECTION_BINDING 5
+#elif defined(COMPOSITE)
+#define DIRECTION_BINDING 3
+#endif
+#ifdef DIRECTION_BINDING
+layout(scalar, binding = DIRECTION_BINDING) buffer DirectionState {
+    mat4 inverse_projection;
+    vec4 shadow_direction;
+    vec4 sun_direction;
+    uint matches;
+} direction_state;
+#endif
+
+float sample_weight(vec4 fog, float depth, vec2 f, int x, int y) {
+    if ((fog.a == 0.0) != (depth == 1.0)) return 0.0;
+    float spatial = (x == 0 ? 1.0 - f.x : f.x) * (y == 0 ? 1.0 - f.y : f.y);
+    float relative_depth = abs(fog.a - (1.0 - depth)) / max(1.0 - depth, 1e-6);
+    return spatial * exp(-relative_depth * 80.0);
+}
+
+#if defined(INTEGRATE) || defined(REPAIR)
+layout(scalar, binding = 0) readonly buffer ShadowConstants { uint d[]; } cb;
+layout(scalar, binding = 1) readonly buffer SceneConstants { uint d[]; } ub;
+layout(binding = 2) uniform sampler2D depth_tex;
+layout(binding = 3) uniform sampler2D shadow_tex;
+layout(binding = 4, rgba16f) uniform writeonly image2D fog_out;
+layout(binding = 5, r32f) uniform writeonly image2D depth_out;
+#ifdef REPAIR
+layout(binding = 7, rgba16f) uniform readonly image2D half_fog;
+#endif
+
+layout(push_constant) uniform Params {
+    uint offsets;
+    uint steps;
+    float reach;
+    float density;
+    float strength;
+    float anisotropy;
+    float bias;
+    float unused;
+};
+
+uint base;
+float c(int i) { return uintBitsToFloat(cb.d[base + uint(i)]); }
+vec4 row(int i) { return vec4(c(i), c(i + 1), c(i + 2), c(i + 3)); }
+
+float visibility(vec3 p, mat4 projection) {
+    int cascade = int(p.z > c(80)) + int(p.z > c(81)) + int(p.z > c(82));
+    int m = 16 + 16 * cascade;
+
+    mat4 light = transpose(mat4(row(m), row(m + 4), row(m + 8), row(m + 12)));
+    mat4 view_to_light = light * projection;
+    vec4 q = view_to_light * vec4(p, 1.0);
+    if (abs(q.w) < 1e-8) return 0.0;
+    vec3 s = q.xyz / q.w;
+    vec2 texel = 1.0 / vec2(textureSize(shadow_tex, 0));
+    if (any(lessThan(s.xy, texel)) || any(greaterThan(s.xy, 1.0 - texel)) ||
+        s.z < 0.0 || s.z > 1.0) return 0.0;
+    vec3 zrow = vec3(view_to_light[0][2], view_to_light[1][2], view_to_light[2][2]);
+    vec3 wrow = vec3(view_to_light[0][3], view_to_light[1][3], view_to_light[2][3]);
+    float depth_bias = bias * length(zrow - s.z * wrow) / abs(q.w);
+    float lit = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            float z = textureLod(shadow_tex, s.xy + (vec2(x, y) - 0.5) * texel, 0.0).r;
+            lit += float(z >= s.z - depth_bias);
+        }
+    }
+    uint ubase = ((offsets >> 8) & 255u) >> 2;
+    float end = uintBitsToFloat(ub.d[ubase + 72u]);
+    float scale = uintBitsToFloat(ub.d[ubase + 73u]);
+
+    float coverage = clamp(scale * (end - length(p)), 0.0, 1.0);
+    return lit * 0.25 * coverage;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(fog_out);
+    if (any(greaterThanEqual(px, size))) return;
+#ifndef REPAIR
+    if (all(equal(px, ivec2(0)))) {
+        direction_state.matches = 0u;
+        direction_state.shadow_direction = vec4(0.0);
+    }
+    ivec2 depth_size = imageSize(depth_out);
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            ivec2 q = px * 2 + ivec2(x, y);
+            if (any(greaterThanEqual(q, depth_size))) continue;
+            float z = textureLod(depth_tex, (vec2(q) + 0.5) / vec2(depth_size), 0.0).r;
+            imageStore(depth_out, q, vec4(z));
+        }
+    }
+#endif
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    float depth = textureLod(depth_tex, uv, 0.0).r;
+    imageStore(fog_out, px, vec4(0.0, 0.0, 0.0, 1.0 - depth));
+#ifdef REPAIR
+    if (!(depth > 0.0 && depth <= 1.0)) return;
+    ivec2 half_size = imageSize(half_fog);
+    vec2 p = uv * vec2(half_size) - 0.5;
+    ivec2 origin = ivec2(floor(p));
+    vec2 f = fract(p);
+    float weight_sum = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            ivec2 q = clamp(origin + ivec2(x, y), ivec2(0), half_size - 1);
+            weight_sum += sample_weight(imageLoad(half_fog, q), depth, f, x, y);
+        }
+    }
+
+    if (weight_sum >= 1e-5) return;
+#endif
+    bool sky = depth == 1.0;
+    base = (offsets & 255u) >> 2;
+    mat4 inv_projection = transpose(mat4(row(0), row(4), row(8), row(12)));
+    mat4 projection = inverse(inv_projection);
+    mat4 light = transpose(mat4(row(16), row(20), row(24), row(28))) * projection;
+    vec3 a = vec3(light[0][0], light[1][0], light[2][0]);
+    vec3 b = vec3(light[0][1], light[1][1], light[2][1]);
+    vec3 z = vec3(light[0][2], light[1][2], light[2][2]);
+    vec3 direction = cross(a, b);
+    if (any(isnan(direction)) || any(isinf(direction)) ||
+        dot(direction, direction) < 1e-16) return;
+    direction = normalize(direction);
+    if (dot(z, direction) > 0.0) direction = -direction;
+#ifndef REPAIR
+    if (all(equal(px, ivec2(0)))) {
+        direction_state.inverse_projection = inv_projection;
+        direction_state.shadow_direction = vec4(direction, 0.0);
+    }
+#endif
+    if (!(depth > 0.0 && depth <= 1.0) || strength <= 0.0) return;
+
+    vec4 h = inv_projection * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0,
+                                 sky ? 0.5 : depth, 1.0);
+    if (abs(h.w) < 1e-8) return;
+    vec3 surface = h.xyz / h.w;
+    if (!(surface.z > 0.0)) return;
+    float distance_to_surface = length(surface);
+    vec3 ray = surface / distance_to_surface;
+
+    float g = anisotropy;
+    float phase = (1.0 - g * g) /
+                  pow(max(1.0 + g * g - 2.0 * g * dot(ray, direction), 0.01), 1.5);
+    float limit = sky ? reach : min(distance_to_surface, reach);
+    float ds = limit / float(steps);
+
+    float jitter = fract(52.9829189 * fract(dot(vec2(px), vec2(0.06711056, 0.00583715))));
+    float energy = 0.0;
+    for (uint i = 0u; i < steps; ++i) {
+        float t = (float(i) + jitter) * ds;
+        energy += exp(-density * t) * density * ds * visibility(ray * t, projection);
+    }
+
+    imageStore(fog_out, px, vec4(vec3(strength * phase * energy), 1.0 - depth));
+}
+#elif defined(TINT)
+layout(scalar, binding = 0) readonly buffer Lighting { uint d[]; } lighting;
+layout(binding = 1) uniform sampler2D material_tex;
+layout(binding = 2, rgba16f) uniform image2D fog_img;
+layout(push_constant) uniform TintParams {
+    uint offset_bytes;
+    uint record_count;
+};
+
+vec3 primary(uint id) {
+    if (id >= record_count) return vec3(0.0);
+
+    uint at = (offset_bytes >> 2) + id * 72u + 16u;
+    vec3 rgb = vec3(uintBitsToFloat(lighting.d[at]), uintBitsToFloat(lighting.d[at + 1u]),
+                    uintBitsToFloat(lighting.d[at + 2u]));
+    if (any(isnan(rgb)) || any(isinf(rgb))) return vec3(0.0);
+    rgb = max(rgb, vec3(0.0));
+
+    return rgb / max(1.0, max(rgb.r, max(rgb.g, rgb.b)));
+}
+
+bool brighter(vec4 a, vec4 b) {
+    if (a.w != b.w) return a.w > b.w;
+    if (a.r != b.r) return a.r > b.r;
+    if (a.g != b.g) return a.g > b.g;
+    return a.b > b.b;
+}
+
+shared vec4 atmosphere_candidates[64];
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(fog_img);
+    bool inside = all(lessThan(px, size));
+    vec4 fog = vec4(0.0);
+    if (inside) fog = imageLoad(fog_img, px);
+
+    uint lane = gl_LocalInvocationIndex;
+    vec4 best = vec4(0.0);
+    for (uint id = lane; id < record_count; id += 64u) {
+        vec3 rgb = primary(id);
+        vec4 candidate = vec4(rgb, dot(rgb, vec3(0.2126, 0.7152, 0.0722)));
+        if (brighter(candidate, best)) best = candidate;
+    }
+    atmosphere_candidates[lane] = best;
+    barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (lane < stride && brighter(atmosphere_candidates[lane + stride],
+                                      atmosphere_candidates[lane])) {
+            atmosphere_candidates[lane] = atmosphere_candidates[lane + stride];
+        }
+        barrier();
+    }
+    if (!inside) return;
+    vec4 atmosphere = atmosphere_candidates[0];
+    vec3 atmosphere_rgb = mix(vec3(atmosphere.w), atmosphere.rgb, 0.75);
+
+    imageStore(fog_img, px, vec4(fog.rgb * atmosphere_rgb, fog.a));
+}
+#elif defined(CELESTIAL)
+layout(scalar, binding = 0) readonly buffer Vertices { uint d[]; } vertices;
+layout(scalar, binding = 1) readonly buffer Model { uint d[]; } model;
+layout(scalar, binding = 2) readonly buffer Transforms { uint d[]; } transforms;
+layout(scalar, binding = 3) readonly buffer Scene { uint d[]; } scene_constants;
+layout(scalar, binding = 4) readonly buffer Normals { uint d[]; } normals;
+layout(push_constant) uniform CelestialParams {
+    uint vertex_base;
+    uint vertex_stride;
+    uint normal_base;
+    uint normal_stride;
+    uint normal_word;
+    uint model_base;
+    uint transform_base;
+    uint scene_base;
+};
+
+float s(uint i) { return uintBitsToFloat(scene_constants.d[scene_base + i]); }
+vec4 transform_row(uint i) {
+    return uintBitsToFloat(uvec4(transforms.d[i], transforms.d[i + 1u],
+                                transforms.d[i + 2u], transforms.d[i + 3u]));
+}
+bool finite3(vec3 v) { return !any(isnan(v)) && !any(isinf(v)); }
+
+void main() {
+    if (any(notEqual(gl_GlobalInvocationID, uvec3(0)))) return;
+    uint hash = 2166136261u;
+    vec3 centre = vec3(0.0);
+
+    for (uint i = 0u; i < 393u; ++i) {
+        uint at = vertex_base + i * vertex_stride;
+        uvec3 bits = uvec3(vertices.d[at], vertices.d[at + 1u], vertices.d[at + 2u]);
+        hash = (hash ^ bits.x) * 16777619u;
+        hash = (hash ^ bits.y) * 16777619u;
+        hash = (hash ^ bits.z) * 16777619u;
+        centre += uintBitsToFloat(bits);
+        uint bone = normals.d[normal_base + i * normal_stride + normal_word];
+        if ((normal_word == 0u ? bone >> 24u : bone) != 0u) return;
+    }
+    if (hash != 0xf7004131u) return;
+    centre /= 393.0;
+    if (!finite3(centre) ||
+        distance(centre, vec3(-57.0645577, 128.5487654, -13.0646745)) > 0.01) return;
+
+    direction_state.matches += 1u;
+    direction_state.sun_direction = vec4(0.0);
+    uint index = model.d[model_base + 20u];
+    if (transform_base > uint(transforms.d.length()) ||
+        (uint(transforms.d.length()) - transform_base) / 12u <= index) return;
+    uint at = transform_base + index * 12u;
+
+    vec4 r0 = transform_row(at), r1 = transform_row(at + 4u), r2 = transform_row(at + 8u);
+    if (any(notEqual(r0, vec4(1, 0, 0, 0))) ||
+        any(notEqual(r1, vec4(0, 1, 0, 0))) ||
+        any(notEqual(r2, vec4(0, 0, 1, 0)))) return;
+    vec3 world = vec3(-67.5080062, 99.7654301, 577.6338876);
+    vec3 delta = world - vec3(s(183u), s(187u), s(191u));
+    vec3 view = vec3(dot(vec3(s(8u), s(9u), s(10u)), delta),
+                     dot(vec3(s(12u), s(13u), s(14u)), delta),
+                     dot(vec3(s(16u), s(17u), s(18u)), delta));
+    if (!finite3(view) || dot(view, view) < 1e-8) return;
+    direction_state.sun_direction = vec4(normalize(view), 1.0);
+}
+#elif defined(COMPOSITE)
+layout(binding = 0) uniform sampler2D fog_tex;
+layout(binding = 1) uniform sampler2D depth_tex;
+layout(binding = 2, rgba16f) uniform image2D scene;
+layout(binding = 4) uniform sampler2D repair_tex;
+layout(binding = 5) uniform sampler2D point_tex;
+layout(push_constant) uniform CompositeParams { float anisotropy; uint allow_celestial; };
+
+float phase_ratio(ivec2 q, ivec2 size) {
+    if (direction_state.shadow_direction.w != 0.0 ||
+        allow_celestial == 0u || direction_state.matches != 1u ||
+        direction_state.sun_direction.w != 1.0 ||
+        dot(direction_state.shadow_direction.xyz, direction_state.shadow_direction.xyz) < 0.5)
+        return 1.0;
+    vec2 uv = (vec2(q) + 0.5) / vec2(size);
+    vec4 h = direction_state.inverse_projection *
+             vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.5, 1.0);
+    if (abs(h.w) < 1e-8) return 1.0;
+    vec3 ray = normalize(h.xyz / h.w);
+    float old_denom = max(1.0 + anisotropy * anisotropy -
+        2.0 * anisotropy * dot(ray, direction_state.shadow_direction.xyz), 0.01);
+    float new_denom = max(1.0 + anisotropy * anisotropy -
+        2.0 * anisotropy * dot(ray, direction_state.sun_direction.xyz), 0.01);
+    return pow(old_denom / new_denom, 1.5);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(scene);
+    if (any(greaterThanEqual(px, size))) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    float depth = textureLod(depth_tex, uv, 0.0).r;
+    if (!(depth > 0.0 && depth <= 1.0)) return;
+    bool sky = depth == 1.0;
+    ivec2 half_size = textureSize(fog_tex, 0);
+    vec2 p = uv * vec2(half_size) - 0.5;
+    ivec2 origin = ivec2(floor(p));
+    vec2 f = fract(p);
+    vec3 sum = vec3(0.0);
+    float weight_sum = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            ivec2 q = clamp(origin + ivec2(x, y), ivec2(0), half_size - 1);
+            vec4 fog = texelFetch(fog_tex, q, 0);
+            float w = sample_weight(fog, depth, f, x, y);
+            sum += fog.rgb * phase_ratio(q, half_size) * w;
+            weight_sum += w;
+        }
+    }
+    vec3 scattering;
+    if (weight_sum < 1e-5) {
+        scattering = texelFetch(repair_tex, px, 0).rgb * phase_ratio(px, size);
+    } else {
+        scattering = sum / weight_sum;
+    }
+    vec4 color = imageLoad(scene, px);
+    imageStore(scene, px, vec4(color.rgb + scattering + texelFetch(point_tex, px, 0).rgb, color.a));
+}
+#endif

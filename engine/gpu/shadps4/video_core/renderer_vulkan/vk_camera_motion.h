@@ -66,6 +66,9 @@ public:
     [[nodiscard]] std::array<u32, 2> RenderSize() const noexcept {
         return render_size;
     }
+    [[nodiscard]] std::array<float, 4> PassProjection() const noexcept {
+        return pass_has_camera ? pass_camera.proj : std::array<float, 4>{};
+    }
     /// Vertical field of view and near/far planes of the current camera.
     [[nodiscard]] float VerticalFov() const noexcept;
     [[nodiscard]] float Near() const noexcept;
@@ -82,6 +85,10 @@ public:
     [[nodiscard]] Matrices CameraMatrices() const noexcept {
         return {current.view, current.inv_view, previous.view, current.proj, previous.proj,
                 current.valid && previous.valid};
+    }
+    [[nodiscard]] Matrices PassMatrices() const noexcept {
+        return {pass_camera.view, pass_camera.inv_view, {}, pass_camera.proj, {},
+                pass_has_camera && pass_camera.valid};
     }
     /// bbport: the matrices and jitter of the motion of this frame, printed with an upscaler dump
     /// (BB_DUMP_TRIGGER) for offline checks of the vectors.
