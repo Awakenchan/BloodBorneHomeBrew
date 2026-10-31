@@ -41,10 +41,24 @@ struct TextureExtent {
 };
 bool TexturesOwned();
 bool TextureAt(std::uint64_t address, TextureExtent* out);
-enum WidenResult { Widened, WidenTooLarge, WidenOtherLayout };
+enum WidenResult { Widened, WidenTooLarge, WidenOtherLayout, WidenOtherSize, kWidenResults };
 void NoteWiden(WidenResult result);
+bool TexturesChecked();
+struct HeldImage {
+    std::uint64_t object = 0, uid = 0;
+    std::uint32_t index = 0;
+};
+HeldImage HeldAt(std::uint64_t address);
+void HoldImage(std::uint64_t address, std::uint32_t index, std::uint64_t uid);
+enum ObjectPath { PathServed, PathNoObject, PathNothingHeld, PathHeldGone, PathHeldRefused, PathMadeDirectly, PathOverlapped, kObjectPaths };
+void NoteObjectPath(ObjectPath path, const char* refused = nullptr, std::size_t length = 0);
+enum HeldCheck { CheckSame, CheckResolver, CheckOther, kHeldChecks };
+void NoteHeldCheck(HeldCheck result, std::uint32_t others);
 void NoteOverlap(const char* action, std::size_t length);
 void NoteImage(std::uint64_t address, std::uint32_t bytes, std::uint64_t uid, std::uint32_t width, std::uint32_t height,
                std::uint32_t format);
+std::uint64_t Epoch();
+bool BuffersOwned();
+bool TakeUploadArena(std::uint64_t* base, std::uint64_t* bytes);
 void Report();
 }

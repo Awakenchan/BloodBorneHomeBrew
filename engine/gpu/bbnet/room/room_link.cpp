@@ -247,6 +247,12 @@ void Link::Handle(const std::string& text) {
         {
             std::lock_guard lock(mutex_);
             members_ = members;
+            devs_.clear();
+            if (message.contains("devs") && message["devs"].is_array()) {
+                for (const auto& d : message["devs"]) {
+                    if (d.is_number_integer()) devs_.push_back(d.get<int>());
+                }
+            }
         }
         slot_ = slot;
         host_ = message.value("host", 0);
@@ -261,10 +267,14 @@ void Link::Handle(const std::string& text) {
             if (std::find(members_.begin(), members_.end(), slot) == members_.end()) members_.push_back(slot);
         }
         Push({Event::Kind::Joined, slot, {}});
+    } else if (type == "dev") {
+        std::lock_guard lock(mutex_);
+        devs_.push_back(slot);
     } else if (type == "leave") {
         {
             std::lock_guard lock(mutex_);
             members_.erase(std::remove(members_.begin(), members_.end(), slot), members_.end());
+            devs_.erase(std::remove(devs_.begin(), devs_.end(), slot), devs_.end());
         }
         Push({Event::Kind::Left, slot, {}});
     } else if (type == "host") {
@@ -277,6 +287,11 @@ void Link::Handle(const std::string& text) {
         event.id = message["id"].get<std::uint64_t>();
         Push(std::move(event));
     }
+}
+
+bool Link::IsDev(int slot) const {
+    std::lock_guard lock(mutex_);
+    return std::find(devs_.begin(), devs_.end(), slot) != devs_.end();
 }
 
 } // namespace BbRoom

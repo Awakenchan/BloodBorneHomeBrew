@@ -36,6 +36,7 @@
 #include "bbport_write_log.h"
 #include "bbport_free_check.h"
 #include "bbport_native_calls.h"
+#include "engine/gx_records.h"
 #include "engine/gx_draws.h"
 #include "engine/gx_trace.h"
 #include "video_core/amdgpu/pm4_cmds.h"
@@ -1442,9 +1443,14 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                                  : 0;
                     const auto cmd_address = reinterpret_cast<const void*>(header);
                     const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
+                    const u64 gx_record =
+                        BbEngine::GxRecords::On() &&
+                                regs.primitive_type != AmdGpu::PrimitiveType::RectList
+                            ? BbEngine::GxRecords::Take(reinterpret_cast<u64>(header))
+                            : 0;
                     rasterizer->ScopeMarker(
                         "gfx:{}:NativeDraw", fmt::make_format_args(cmd_address),
-                        [&] { rasterizer->Draw(is_indexed, index_offset, prepared); });
+                        [&] { rasterizer->Draw(is_indexed, index_offset, prepared, gx_record); });
                     break;
                 }
                 const auto* nop = reinterpret_cast<const PM4CmdNop*>(header);

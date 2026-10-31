@@ -14,6 +14,7 @@ struct Talker {
 void Start();
 bool Available();
 bool Speaking();
+bool MicSilent();
 std::vector<Talker> Talkers();
 bool TalkingName(const std::string& name);
 void SetMuted(const std::string& name, bool muted);

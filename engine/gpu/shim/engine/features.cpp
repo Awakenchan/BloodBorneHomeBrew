@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gx_objects.h"
+#include "gx_records.h"
 #include "gx_draws.h"
 #include "gx_trace.h"
 #include "engine_hooks.h"
@@ -145,6 +146,7 @@ void Install(std::uint8_t* image, std::size_t size) {
     GxObjects::Install(image, size);
     GxTrace::Install(image, size);
     GxDraws::Install(image, size);
+    GxRecords::Install(image, size);
     if (!(editor || input || camera || wide || graphics || menus || rebirth || cheats || online || guard || timing ||
           frame_rate || slots || status)) {
         for (auto& h : hooks) Discard(h);

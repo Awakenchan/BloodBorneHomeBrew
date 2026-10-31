@@ -73,6 +73,45 @@ card (expects 3.1.6), a Ryzen APU (lightweight INT8), NVIDIA and Intel (3.1.6), 
 the Vulkan validation layer on (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`), plus a package with `fsr_sdk` removed (expects the
 FSR 3.1 fallback and the launcher hint).
 
+## FSR with OptiScaler, and the built-in FSR 4 on Radeon (2026-10-31)
+
+**"dispatch failed: runtime error (3)".** OptiScaler recognizes AMD's FFX DLLs by file name
+(`amd_fidelityfx_loader_vk.dll`, `amd_fidelityfx_upscaler_vk.dll`) and hooks their exports. With its
+FFX inputs on, our FSR SDK and fsr4vk calls become its own NGX feature. With `VulkanUpscaler=ffx_12`
+that feature needs `vkGetDeviceProcAddr`, gets none ("InGDPA does not exist"), and fails with
+"Failed to load Vulkan external memory functions"; the dispatch then returns 3. While OptiScaler is
+loaded, the engine now loads the upscaler DLL directly from a hard link with a private name in
+`engine/out/ffx-private`, which the hook does not match (`BB_OPTISCALER_FFX_PRIVATE=0`: the old way;
+`=1`: the private name without OptiScaler, for tests). If a dispatch still fails with OptiScaler
+loaded, the message names `EnableFfxInputs=false`.
+
+**8-10 FPS with "FSR 4" on an RX 6700 XT.** That entry is the built-in v07 INT8 model
+(`fsr4_shaders`, no longer in the Windows package, still in old installs): about 90 ms a frame there,
+against 87 FPS with FSR 3.1 in the same session. On AMD with the SDK present, `fsr4` now runs through
+the SDK and the menu entry is disabled (`BB_FSR4_BUILTIN_AMD=1` keeps the old model). Any FSR 4 path
+under 20 FPS for 5 s falls back once per session with a message (`BB_FSR4_SLOW_GUARD=0`).
+
+**Not verified on AMD.** Built and checked on NVIDIA only; these paths need a player on an RX 6000.
+
+## DLSS jitter while the camera moves (2026-10-31)
+
+Measured on an RTX 5060, 1280x720 -> 1920x1080, preset K, 40 presented frames, a scripted camera pan
+of about 5.7 px a frame. The image's frame-to-frame shift alternated every frame (-5.60, -5.77, -5.58,
+-5.73...) and was smooth with jitter off (about +/-0.02). The inputs are right: per block, the input's
+shift equals the motion vector plus the change in jitter, and flipping the jitter sign doubles the
+flicker of a still camera. DLSS trusts the new frame more in motion, so part of the jitter reaches
+its output. Other things tried, with the camera still: the extra -1 mip bias (flicker 0.58 with it,
+0.54 without), bloom off (no better), preset E (0.79, worse), FSR 3.1 (0.67).
+
+The camera's own movement already gives the sub-pixel coverage, so with DLSS the jitter now fades out
+as the camera moves: full up to 0.25 render px a frame, none from 1 px a frame
+(`BB_JITTER_MOTION_MIN`, the amount left at speed; 1: always full jitter). Mean second difference of
+the shift: 0.32 px before, 0.035 px after; sharpness 63.5-65.6 before, 63.4 after, within noise. A
+still camera keeps full jitter. FSR 3.1 got less regular with reduced jitter, so it keeps its full
+jitter.
+
+**Not measured yet:** slower pans, walking, and the 1440p path (`RunScaled`, tonemapped input).
+
 ## Native TAA and missing FSR 4 assets (2026-10-01)
 
 `upscaler=taa` / `BB_UPSCALER=taa` is a separate native-resolution temporal AA

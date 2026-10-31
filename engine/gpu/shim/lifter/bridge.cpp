@@ -92,10 +92,7 @@ s32 UdFromShOffset(u16 offset) {
 Mode GetMode() {
     static const Mode mode = [] {
         const char* env = std::getenv("LANTERN_LIFTER");
-        if (!env) {
-            return Mode::Off;
-        }
-        if (std::strcmp(env, "1") == 0) {
+        if (!env || std::strcmp(env, "1") == 0) {
             return Mode::On;
         }
         if (std::strcmp(env, "compare") == 0) {

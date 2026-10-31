@@ -13,7 +13,7 @@ struct Art {
     Piece frame, health, trail, stamina, portrait, filigree, rust, teal, header;
 };
 
-void Start();
+void Start(bool sharp = false);
 const Art* Ready();
 
 bool InflateDcx(const std::vector<std::uint8_t>& file, std::vector<std::uint8_t>& out);

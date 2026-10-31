@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "engine/gx_records.h"
 #include "common/hash.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
@@ -600,8 +601,44 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return it != graphics_pipelines.end() ? it->second.get() : nullptr;
 }
 
+bool PipelineCache::RestoreGxPipeline(const GxPipeline& memo) {
+    const auto& regs = liverpool->regs;
+    if (regs.stage_enable.raw != AmdGpu::ShaderStageEnable::VgtStages::Vs) {
+        return false;
+    }
+    const auto restore = [&](Shader::Info* info, HwStage stage) {
+        if (!info) {
+            return true;
+        }
+        const auto* pgm = regs.ProgramForStage(static_cast<u32>(stage));
+        if (!pgm || !pgm->Address<u32*>()) {
+            return false;
+        }
+        const auto params = AmdGpu::GetParams(*pgm);
+        info->pgm_base = params.Base();
+        info->user_data = params.user_data;
+        info->RefreshFlatBuf();
+        return true;
+    };
+    return restore(memo.vertex, HwStage::Vertex) && restore(memo.fragment, HwStage::Fragment);
+}
+
+void PipelineCache::NoteGxRecords() {
+    if (((gx_hits + gx_misses + gx_none) & 0xfffff) != 0xfffff) {
+        return;
+    }
+    std::printf("GX records: pipelines %llu from the record, %llu from the registers and remembered, %llu with no record, "
+                "%zu remembered%s%llu differ\n",
+                static_cast<unsigned long long>(gx_hits), static_cast<unsigned long long>(gx_misses),
+                static_cast<unsigned long long>(gx_none), gx_pipelines.size(),
+                BbEngine::GxRecords::Checked() ? ", checked: " : ", unchecked: ",
+                static_cast<unsigned long long>(gx_differ));
+    std::fflush(stdout);
+}
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
-                                                           const PreparedDraw* prepared) {
+                                                           const PreparedDraw* prepared,
+                                                           u64 gx_record) {
     used_prepared = nullptr;
     if (prepared) {
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
@@ -609,10 +646,44 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             return pipeline;
         }
     }
+    const GraphicsPipeline* gx_expected = nullptr;
+    if (BbEngine::GxRecords::On()) {
+        if (!gx_record) {
+            ++gx_none;
+        } else if (const auto memo = gx_pipelines.find(gx_record); memo != gx_pipelines.end()) {
+            ++gx_hits;
+            NoteGxRecords();
+            if (BbEngine::GxRecords::Checked()) {
+                gx_expected = memo->second.pipeline;
+            } else if (RestoreGxPipeline(memo->second)) {
+                return memo->second.pipeline;
+            }
+        } else {
+            ++gx_misses;
+            NoteGxRecords();
+        }
+    }
     sel.draw_indirect_params = params;
     if (!RefreshGraphicsKey(sel)) {
         return nullptr;
     }
+    const auto remember = [&](const GraphicsPipeline* pipeline) {
+        if (gx_expected && gx_expected != pipeline) {
+            ++gx_differ;
+            std::printf("GX records: a record chose another pipeline than the registers (%llu so far)\n",
+                        static_cast<unsigned long long>(gx_differ));
+        }
+        if (gx_record && !gx_expected && !sel.motion &&
+            liverpool->regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs) {
+            if (gx_pipelines.size() >= (1u << 16)) {
+                gx_pipelines.clear();
+            }
+            gx_pipelines[gx_record] = {pipeline,
+                                       const_cast<Shader::Info*>(sel.infos[static_cast<u32>(SwStage::Vertex)]),
+                                       const_cast<Shader::Info*>(sel.infos[static_cast<u32>(SwStage::Fragment)])};
+        }
+        return pipeline;
+    };
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
@@ -638,7 +709,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         sel.fetch_shader.reset();
     }
-    return it->second.get();
+    return remember(it->second.get());
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {

@@ -156,6 +156,14 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "debug_view") {
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "coop_status") {
+        v.coop_status = i != 0;
+    } else if (key == "coop_hud_ping") {
+        v.coop_hud_ping = i != 0;
+    } else if (key == "coop_notices") {
+        v.coop_notices = i != 0;
+    } else if (key == "coop_warp_requests") {
+        v.coop_warp_requests = i != 0;
     } else if (key == "voice_enabled") {
         v.voice_enabled = i != 0;
     } else if (key == "voice_push_to_talk") {
@@ -508,14 +516,18 @@ void Load() {
                             v.optiscaler_sync_submit};
 }
 
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk) {
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk, bool fsr4_to_sdk) {
     auto& v = Get();
-    v.fsr4_supported = fsr4;
+    v.fsr4_supported = fsr4 && !(fsr4_to_sdk && fsr_sdk);
     v.fsr411_supported = fsr4 && fsr411;
     v.dlss_supported = dlss;
     v.fsr_sdk_supported = fsr_sdk;
     const int requested = v.upscaler;
-    if (requested == UpscalerFsr && !fsr_sdk) {
+    if (requested == UpscalerFsr4 && fsr4_to_sdk && fsr_sdk) {
+        std::printf("Upscaler: fsr4 runs through AMD's FSR SDK on this GPU: the built-in FSR 4 model is "
+                    "far slower on Radeon (BB_FSR4_BUILTIN_AMD=1 keeps it)\n");
+        v.upscaler = UpscalerFsr;
+    } else if (requested == UpscalerFsr && !fsr_sdk) {
         v.fsr4_problem = "FSR needs the AMD FSR SDK files (engine/fsr_sdk); using FSR 3.1";
         std::printf("Upscaler: fsr unavailable (AMD FSR SDK files missing or GPU unsupported); falling back to FSR 3.1 before the first frame\n");
         v.upscaler = UpscalerFsr3;
@@ -591,6 +603,10 @@ void Save() {
     put("fsr3_accumulation", fixed(v.fsr3_accumulation, 3));
     put("fsr3_min_disocclusion", fixed(v.fsr3_min_disocclusion, 3));
     put("show_fps", flag(v.show_fps));
+    put("coop_status", flag(v.coop_status));
+    put("coop_hud_ping", flag(v.coop_hud_ping));
+    put("coop_notices", flag(v.coop_notices));
+    put("coop_warp_requests", flag(v.coop_warp_requests));
     put("voice_enabled", flag(v.voice_enabled));
     put("voice_push_to_talk", flag(v.voice_push_to_talk));
     put("voice_mic_muted", flag(v.voice_mic_muted));

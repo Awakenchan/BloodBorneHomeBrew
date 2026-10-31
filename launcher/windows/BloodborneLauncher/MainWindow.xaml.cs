@@ -106,6 +106,8 @@ namespace BloodborneLauncher
                         ? L.F($"Lantern Engine ready. Engine: {Paths.PortDir}")
                         : L.T("Lantern Engine ready. Choose the engine folder in Settings."),
                     Paths.IsPortDir(Paths.PortDir) ? LogLevel.Good : LogLevel.Warn);
+                if (Updater.CleanOldFiles(ws.Settings, Paths.PortDir) is > 0 and var cleaned)
+                    ws.Log(L.F($"Removed {cleaned} leftover files from older versions."), LogLevel.Step);
                 // Once: the settings that suit this PC, shown before anything changes.
                 if (_directPlay)
                     _ = Dispatcher.BeginInvoke(async () => await PlayDirectAsync(), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
@@ -122,6 +124,9 @@ namespace BloodborneLauncher
                 else if (ws.Settings.Bool("hardware_offered") && !ws.Settings.Bool("engine_preset_asked") &&
                          Prompt.SnapshotPath == null && Paths.IsPortDir(Paths.PortDir))
                     _ = Dispatcher.BeginInvoke(AskEnginePreset, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                else if (ws.Settings.Bool("hardware_offered") && TestedSettings.ShouldAsk(ws.Ini, ws.Settings) &&
+                         Prompt.SnapshotPath == null && Paths.IsPortDir(Paths.PortDir))
+                    _ = Dispatcher.BeginInvoke(AskTestedSettings, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             };
             Closing += OnClosing;
         }
@@ -222,6 +227,30 @@ namespace BloodborneLauncher
         /// <summary>Shows what would change to suit this PC, and applies it on Apply.</summary>
         /// <summary>Graphics › Engine preset, asked once: New or Legacy (0.9.33). Closed without a
         /// choice, it asks again at the next start.</summary>
+        private void AskTestedSettings()
+        {
+            var ws = Workspace.Current;
+            var lines = string.Join("\n", TestedSettings.Differences(ws.Ini, ws.Settings).Select(d => TestedSettings.Describe(d, ws.Ini, ws.Settings)));
+            var choice = Prompt.Choose(L.T("This beta was tested with these settings"),
+                L.T("Some of yours are different, so your game may not run the way it did in testing. If you use the tested settings, yours are saved first, and Settings › Beta tested settings brings them back.\n\n") + lines,
+                L.T("Keep mine"), L.T("Use tested settings"));
+            if (choice < 0) return;
+            TestedSettings.MarkAsked(ws.Settings);
+            if (choice == 1)
+            {
+                try
+                {
+                    var file = TestedSettings.Use(ws.Ini, ws.Settings);
+                    ws.Log(L.F($"Using the settings this beta was tested with. Yours are saved in {file}"), LogLevel.Good);
+                }
+                catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+                {
+                    Prompt.Tell(L.T("Your settings were not changed"), L.T("They could not be saved first: ") + e.Message);
+                }
+            }
+            ws.SaveSoon();
+        }
+
         private void AskEnginePreset()
         {
             var ws = Workspace.Current;
@@ -636,6 +665,7 @@ namespace BloodborneLauncher
             var item = _sidebarNav
                 ? page switch
                 {
+                    "saves" => ClassicSaves,
                     "output" => ClassicOutput,
                     "online" => ClassicOnline,
                     "advanced" => ClassicSettings,
@@ -647,6 +677,7 @@ namespace BloodborneLauncher
                 }
                 : page switch
                 {
+                    "saves" => SavesItem,
                     "online" => OnlineItem,
                     "advanced" => SettingsItem,
                     "output" or "mods" or "engine" => MoreItem,

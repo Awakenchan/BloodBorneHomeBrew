@@ -21,12 +21,25 @@ namespace BloodborneLauncher.Core
         private const string BeforeRestore = "_before-restore";
         private const string FingerprintFile = "fingerprint.txt";
 
-        public sealed record Backup(string Dir, DateTime When, long Bytes, bool MadeBeforeRestore, bool MadeDuringPlay = false);
+        public sealed record Backup(string Dir, DateTime When, long Bytes, bool MadeBeforeRestore, bool MadeDuringPlay = false,
+            string? Label = null, bool SafetyCopy = false);
 
         public static string SaveData(LauncherSettings s) => Path.Combine(GameEnvironment.UserDir(s), "savedata");
 
-        public static string Folder(LauncherSettings s) =>
-            Path.Combine(GameEnvironment.SavesRoot(s), "launcher-backups", PlayerProfiles.Current(s));
+        public static string Folder(LauncherSettings s) => FolderOf(s, PlayerProfiles.Current(s));
+
+        public static string FolderOf(LauncherSettings s, string profile) =>
+            Path.Combine(GameEnvironment.SavesRoot(s), "launcher-backups", profile);
+
+        public static List<Backup> ListWithSafetyCopies(string folder, string vaultFolder)
+        {
+            var backups = ListIn(folder);
+            var prints = backups.Select(b => ReadFingerprint(b.Dir)).Where(p => p != null).ToHashSet();
+            var copies = ListIn(vaultFolder)
+                .Where(c => ReadFingerprint(c.Dir) is not { } print || !prints.Contains(print))
+                .Select(c => c with { SafetyCopy = true });
+            return backups.Concat(copies).OrderByDescending(b => b.When).ToList();
+        }
 
         /// <summary>This profile's backups, newest first.</summary>
         public static List<Backup> List(LauncherSettings s) => ListIn(Folder(s));
@@ -44,8 +57,17 @@ namespace BloodborneLauncher.Core
                 if (before) name = name[..^BeforeRestore.Length];
                 var play = name.EndsWith(DuringPlay, StringComparison.Ordinal);
                 if (play) name = name[..^DuringPlay.Length];
-                if (DateTime.TryParseExact(name, Stamp, CultureInfo.InvariantCulture, DateTimeStyles.None, out var when))
-                    list.Add(new Backup(dir, when, Size(dir), before, play));
+                string? label = null;
+                if (name.Length > Stamp.Length + 1 && name[^(Stamp.Length + 1)] == '_')
+                {
+                    label = name[..^(Stamp.Length + 1)];
+                    name = name[^Stamp.Length..];
+                }
+                if (!DateTime.TryParseExact(name, Stamp, CultureInfo.InvariantCulture, DateTimeStyles.None, out var when))
+                    continue;
+                var saved = Size(Path.Combine(dir, "savedata"));
+                if (saved > 0)
+                    list.Add(new Backup(dir, when, saved, before, play, label));
             }
             return list.OrderByDescending(b => b.When).ToList();
         }
@@ -98,7 +120,7 @@ namespace BloodborneLauncher.Core
 
         private static void Prune(LauncherSettings s)
         {
-            var all = List(s);
+            var all = List(s).Where(b => b.Label == null).ToList();
             foreach (var old in all.Where(b => !b.MadeDuringPlay).Skip(Keep).Concat(all.Where(b => b.MadeDuringPlay).Skip(PlayKeep)))
             {
                 try { Directory.Delete(old.Dir, recursive: true); } catch { }
@@ -117,6 +139,8 @@ namespace BloodborneLauncher.Core
         {
             var from = Path.Combine(backup.Dir, "savedata");
             if (!Directory.Exists(from)) throw new DirectoryNotFoundException(L.T("This backup has no savedata folder."));
+            if (!Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories).Any())
+                throw new IOException(L.T("This backup is empty, so your saves were left as they are."));
             Create(s, beforeRestore: true);
 
             var target = SaveData(s);

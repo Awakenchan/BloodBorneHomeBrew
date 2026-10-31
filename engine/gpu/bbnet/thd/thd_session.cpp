@@ -115,7 +115,7 @@ void LoadAccountLocked() {
     g_name = Env("BB_THD_ONLINE_ID").substr(0, 16);
     g_token = Env("BB_THD_TOKEN");
     if (BbRoom::Active()) {
-        g_name = BbRoom::PlayerName();
+        g_name = BbRoom::NetworkId();
         g_token = g_name.empty() ? "" : "room";
     }
 }

@@ -122,6 +122,7 @@ struct Values {
     std::atomic<bool> voice_enabled{true}, voice_push_to_talk{true}, voice_mic_muted{false};
     std::atomic<int> voice_talk_key{25};
     std::atomic<float> voice_volume{1.0f};
+    std::atomic<bool> coop_status{true}, coop_notices{true}, coop_warp_requests{true}, coop_hud_ping{true};
     std::atomic<bool> show_fps_rate{true};
     std::atomic<bool> show_fps_frame_time{true};
     std::atomic<bool> show_fps_upscaler{true};
@@ -212,7 +213,8 @@ const char* MenuText(const char* english, const char* russian);
 inline const char* MenuText(const char* english) { return MenuText(english, english); }
 
 void Load();
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss = false, bool fsr_sdk = false);
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss = false, bool fsr_sdk = false,
+                              bool fsr4_to_sdk = false);
 bool FixedRenderSession();
 int RenderPreset();
 bool ResolutionNeedsRestart();

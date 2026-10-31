@@ -31,6 +31,9 @@ FLIP_CHAIN = (0x26afb30, 0x26b0ce0, 0x26b0e30)
 PRESENT = (0x26d5dd0, 0x26d6e50, 0x33d0)
 CREATE_BUFFER = (0x2165c10, 0x58)
 UPLOAD_POOL = (0x26a9b50, 0x216b0f0, 0x30, 0xff0)
+UPLOAD_POOL_ENTRY = '554889e5415741564155415453 50'.replace(' ', '')
+UPLOAD_POOL_ARENA = (0xb8, 0xc0)
+RING_ALLOCATOR = (0x26addc0, 0x26a9d50, 0x10000)
 OCCLUSION_QUERY = 0x1077660
 PIPELINE_DRAIN = 0x26b09e0
 TABLE_RECLAIM = 0x26aa860
@@ -86,6 +89,16 @@ COUNT_SETTERS = {
     'RSSetViewports': (0x21692a0, 0x26d3350),
     'RSSetScissorRects': (0x21692b0, 0x26d3360),
 }
+SWAP_CHAIN = {'wrapper': 0x26d5a80, 'creator': 0x26d5e90, 'destroyer': 0x26d6a50, 'present': 0x26d6e50}
+SWAP_CHAIN_ENTRY = '554889e54157415641554154534881ec98010000'
+SWAP_CHAIN_LAYOUT = {'target stride': 0x2c, 'description': 0x300, 'buffer count': 0x328}
+SWAP_CHAIN_HOLDER = 0x348
+UPLOAD_RESOURCE = 0x26b35e0
+UPDATE_SUBRESOURCE = 0x2168a20
+GAMMA_RAMP = (0x26d6b20, 0x380, 0x401)
+TEXTURE_HOLDERS = {'CreateTexture2D': (0x2171d60, 3), 'CreateTexture3D': (0x21723a0, 4)}
+RECORD_DRAW_ENTRIES = {0x21696c0: '554889e5415741564155415453 50', 0x2169780: '554889e5415741564155415453 50',
+                       0x2169840: '554889e5415741564155415453 50', 0x2169900: '554889e54157415641554154534883ec18'}
 PENDING_ON_CONTEXT = 0xb730
 DRAW_WRAPPER = 0x21a23d0
 VIEWS = {
@@ -177,6 +190,11 @@ def main(path):
     imm = immediates(e, pool)
     check(node in imm and block in imm, 'upload pool: 0x30-byte nodes in 0xff0-byte blocks')
     check(any(e.function(c)[0] == device for c in e.callers(pool)), f'upload pool made by the device at 0x{device:x}')
+    check(e.read(pool, len(UPLOAD_POOL_ENTRY) // 2).hex() == UPLOAD_POOL_ENTRY, 'upload pool has the entry the hook expects')
+    check(all(a in imm for a in UPLOAD_POOL_ARENA), '  keeps its arena, the base and size it is given, at +0xb8 and +0xc0')
+    check(len(e.callers(pool)) == 1, '  made once')
+    check(RING_ALLOCATOR[1] in calls(RING_ALLOCATOR[0]) and RING_ALLOCATOR[2] in immediates(e, RING_ALLOCATOR[0]),
+          f'ring allocator 0x{RING_ALLOCATOR[0]:x} takes 64 KiB blocks from the pool 0x{RING_ALLOCATOR[1]:x}')
     for name, f in (('occlusion query writer', OCCLUSION_QUERY), ('pipeline drain', PIPELINE_DRAIN),
                     ('table reclaim', TABLE_RECLAIM), ('flush wait', FLUSH_WAIT), ('flip pass', FLIP_PASS),
                     ('frame timer', FRAME_TIMER), ('CUE pre-draw', CUE[0]), ('CUE post-draw', CUE[1]),
@@ -242,6 +260,29 @@ def main(path):
         check(f in bind, f'bind 0x{BIND:x} calls {name} 0x{f:x}')
     check(all(e.u8(USER_DATA_BASES + 2 * i) == (v & 0xff) for i, v in enumerate(USER_DATA_VALUES)),
           f'user-data registers by stage at 0x{USER_DATA_BASES:x}')
+
+    for f, entry in RECORD_DRAW_ENTRIES.items():
+        entry = entry.replace(' ', '')
+        check(e.read(f, len(entry) // 2).hex() == entry, f'draw 0x{f:x} has the entry the record hook expects')
+    creator = SWAP_CHAIN['creator']
+    check(e.read(creator, len(SWAP_CHAIN_ENTRY) // 2).hex() == SWAP_CHAIN_ENTRY, f'swap chain creator 0x{creator:x} has the entry the hook expects')
+    check([e.function(c)[0] for c in e.callers(creator)] == [SWAP_CHAIN['wrapper']], f'  called only by 0x{SWAP_CHAIN["wrapper"]:x}')
+    created = immediates(e, creator)
+    check(SWAP_CHAIN_LAYOUT['target stride'] in created, '  one render target every 0x2c bytes at the start of the chain')
+    check(SWAP_CHAIN_LAYOUT['description'] in created, '  keeps its description at +0x300')
+    check(0x57 in created, '  takes only format 0x57')
+    check(CREATORS['CreateTexture2D'][0] in calls(creator), '  also makes the texture the game draws into')
+    presented = immediates(e, SWAP_CHAIN['present'])
+    check(SWAP_CHAIN_LAYOUT['buffer count'] in presented, f'present 0x{SWAP_CHAIN["present"]:x} reads the buffer count at +0x328')
+    check(SWAP_CHAIN_HOLDER in presented and SWAP_CHAIN_LAYOUT['target stride'] in presented,
+          '  and points the holder at +0x348 at each buffer through its target')
+    uploads = {e.function(c)[0] for c in e.callers(UPLOAD_RESOURCE)}
+    check(uploads == {UPDATE_SUBRESOURCE, GAMMA_RAMP[0]}, f'0x{UPLOAD_RESOURCE:x} is an upload: called by UpdateSubresource 0x{UPDATE_SUBRESOURCE:x} and the gamma ramp 0x{GAMMA_RAMP[0]:x} only')
+    check(calls(GAMMA_RAMP[0]).count(UPLOAD_RESOURCE) == 3 and GAMMA_RAMP[1] in immediates(e, GAMMA_RAMP[0]) and GAMMA_RAMP[2] in immediates(e, GAMMA_RAMP[0]),
+          '  the gamma ramp uploads three channels of 0x401 values into the texture at +0x380, not a display buffer')
+    for name, (holder, dimension) in TEXTURE_HOLDERS.items():
+        check(holder in calls(CREATORS[name][0]), f'{name} fills its holder with 0x{holder:x}')
+        check(dimension in immediates(e, holder), f'  dimension {dimension}')
 
     print(f"\n{len(fails)} failed")
     return 1 if fails else 0

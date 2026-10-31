@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <cstdlib>
 #include "room_ws.h"
 
 #include <chrono>
@@ -24,6 +25,11 @@
 #endif
 
 namespace BbRoom {
+
+static std::string DevHeader() {
+    const char* key = std::getenv("BB_ROOM_DEV_KEY");
+    return key && *key ? std::string("\r\nX-Lantern-Dev: ") + key : std::string();
+}
 namespace {
 
 #ifdef _WIN32
@@ -256,7 +262,7 @@ bool WebSocket::Connect(const std::string& text, int timeout_s, std::string& err
     const std::string request = "GET " + url.path + " HTTP/1.1\r\nHost: " + url.host +
                                 "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + Base64(key, sizeof key) +
                                 "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: LanternEngine\r\nX-Lantern-Room: " +
-                                std::to_string(kRoomProtocol) + "\r\n\r\n";
+                                std::to_string(kRoomProtocol) + DevHeader() + "\r\n\r\n";
     std::size_t sent = 0;
     bool closed = false;
     while (sent < request.size()) {

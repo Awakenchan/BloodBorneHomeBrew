@@ -66,7 +66,8 @@ public:
         return texture_cache;
     }
 
-    void Draw(bool is_indexed, u32 index_offset = 0, const PreparedDraw* prepared = nullptr);
+    void Draw(bool is_indexed, u32 index_offset = 0, const PreparedDraw* prepared = nullptr,
+              u64 gx_record = 0);
 
     /// bbport: draw preparation workers (vk_draw_prep.h), fed and consumed by Liverpool.
     DrawPreparation& GetDrawPreparation() {

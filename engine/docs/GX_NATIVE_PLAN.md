@@ -207,7 +207,7 @@ YEBIS's device is a Direct3D 11-shaped table at `0x5308810` (the object's vtable
 `0x2a3f5e0`): CreateBuffer `0x2a39310` → `0x11ecb70`, CreateTexture2D `0x2a39340` → `0x11df570`,
 CreateTexture3D `0x2a39360` → `0x11e1750`; a texture's memory is at `+0x98`. With those two texture
 creators in the table, lookups in no resource fall to 7,475 of 270,100 (2.8%): 7,416 are the three
-display buffers, made by `0x26b35e0` from `0x26d6b20`, and the other 59 are small images, 256x1 down to 1x1
+display buffers, made by the swap chain creator `0x26d5e90`, and the other 59 are small images, 256x1 down to 1x1
 and 1024x1024, at addresses not aligned to a page. Textures with several images are then 422 of 3,452:
 the same size again, or a separate image for each mip range of one texture (256x256, 128x128, 64x64 at
 a growing byte count), which one image holding every mip ends.
@@ -227,6 +227,32 @@ runs, so it is not removed yet: what remains is the display buffers, depth targe
 
 This removes re-created images and their copies. It does not raise FPS in a steady scene, where the memo
 already hits; that comes from stage A and B working from the objects, after this.
+
+### The display buffers, depth targets and a texture's image
+
+`0x26d5e90` makes the swap chain: it takes a description (format 0x57 only), allocates one block for all
+the buffers, keeps a Gnm render target every 0x2c bytes at its start and registers them with VideoOut; a
+buffer's address is the target's first word shifted left by 8, the description is at `+0x300` and the buffer
+count at `+0x328`. It also makes through CreateTexture2D the texture the game draws into, and present
+`0x26d6e50` copies that into the buffer through the holder at `+0x348`. `0x26b35e0` is not a creator: it is
+the upload behind UpdateSubresource `0x2168a20`, and `0x26d6b20` is the gamma ramp, which uploads three
+channels of 0x401 values into the texture at `+0x380`. A texture's byte count is at `+0x30` of its object.
+
+`LANTERN_GX_TEXTURES=1` now also takes the display buffers from `0x26d5e90`, widens depth targets like the
+others, and has a texture hold its image: a search past the memo first asks the object at the address, and
+the image it holds answers if the checks every candidate has to pass let it. Everything else goes through
+the old search and resolver, and what they return becomes the held image. `LANTERN_GX_TEXTURES=2` does the
+same and also runs the old search's exact match beside it, to count any lookup where the two differ.
+
+### Whole draws: the pipeline from a record
+
+`LANTERN_GX_RECORDS=1` (needs `BB_NATIVE_CALLS`): at each GX draw with no hull, domain or geometry shader a
+hash of what picks its pipeline is taken from the pending state: shaders, input layout, topology, state
+objects, targets, and the views, samplers and constant buffers the shaders' input tables name, with an epoch
+that moves when an object's address is reused. It reaches stage A beside the draw's record NOP. A record seen
+before gives its pipeline at once, without the key and the shader specialization; a new one goes the old way
+and is remembered. `=2` always goes the old way and counts a record that would have chosen another pipeline.
+Written, not yet run in the game.
 
 ## Still to find, with our own tools
 

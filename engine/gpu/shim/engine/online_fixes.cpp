@@ -380,6 +380,8 @@ struct Follow {
     std::chrono::steady_clock::time_point at, settled, rang;
 };
 Follow g_follow;
+std::atomic<bool> g_bells_off{false};
+std::atomic<bool> g_auto_bell{false};
 struct Lead {
     bool on = false;
     bool dream = false;
@@ -858,6 +860,7 @@ void ExpectBack(std::chrono::steady_clock::time_point now) {
     }
     g_lead = {};
     g_lead.on = here > 0;
+    if (g_lead.on) g_bells_off = false;
     g_lead.expected = here;
     g_lead.at = now;
     g_lead.hold = kRejoinHold;
@@ -1229,6 +1232,7 @@ std::int64_t __attribute__((sysv_abi)) OnLampWarp(std::uint64_t, const std::uint
     BbRoom::SendTravel(lamp, flags);
     g_lead = {};
     g_lead.on = expected > 0;
+    if (g_lead.on) g_bells_off = false;
     g_lead.dream = DreamLamp(lamp);
     g_lead.kept = kept;
     g_lead.at = std::chrono::steady_clock::now();
@@ -1299,6 +1303,7 @@ void SoloTravelTick(int role, std::chrono::steady_clock::time_point now) {
         lamp = chosen;
         asked = now;
         Say("seamless: a guest's lamp to %u: leaving the host's world first, then travelling there alone", lamp);
+        g_bells_off = true;
         if (!BbRoom::LeaveParty()) Say("seamless: the host did not answer the leave (an older beta?); use Return to your own world");
     }
     if (!lamp) return;
@@ -1433,7 +1438,7 @@ void TravelTick() {
         } else if (now - g_follow.at > (dream ? kDreamWait : kRejoinFor)) {
             Say("seamless: the host was not found again after its travel; ring your bell to rejoin");
             g_follow = {};
-        } else if (!dream && role == 0 && Settled(g_follow.settled, now) && now - g_follow.rang >= kRingEvery) {
+        } else if (!g_bells_off.load() && !dream && role == 0 && Settled(g_follow.settled, now) && now - g_follow.rang >= kRingEvery) {
             g_follow.rang = now;
             Say("seamless: arrived at the host's lamp: ringing the Small Resonant Bell (%s)",
                 RingBell(kGuestBell) ? "rung" : "not rung");
@@ -1448,7 +1453,7 @@ void TravelTick() {
         } else if (role == kRoleHost && back >= g_lead.expected && now - g_lead.at > g_lead.hold) {
             Say("seamless: the whole party is back after the travel");
             g_lead = {};
-        } else if (!g_lead.dream && (role == 0 || role == kRoleHost) && Settled(g_lead.settled, now) &&
+        } else if (!g_bells_off.load() && !g_lead.dream && (role == 0 || role == kRoleHost) && Settled(g_lead.settled, now) &&
                    now - g_lead.rang >= kRingEvery) {
             g_lead.rang = now;
             Say("seamless: arrived: ringing the Beckoning Bell for the party (%s)", RingBell(kHostBell) ? "rung" : "not rung");
@@ -2157,9 +2162,13 @@ void ChaliceHostTick(int role, std::chrono::steady_clock::time_point now) {
     const std::uint32_t map = OwnMap();
     if (!InDungeonMap(map) || Loading()) {
         entered = {};
+        g_auto_bell = false;
         return;
     }
-    if (entered == std::chrono::steady_clock::time_point{}) entered = now;
+    if (entered == std::chrono::steady_clock::time_point{}) {
+        entered = now;
+        g_bells_off = false;
+    }
     if (now - last < kDungeonEvery) return;
     last = now;
     const int slot = CurrentSlot();
@@ -2174,8 +2183,9 @@ void ChaliceHostTick(int role, std::chrono::steady_clock::time_point now) {
     }
     if (role != kRoleHost && role != 0) return;
     const auto party = BbRoom::Party(kVitalsFresh);
-    if (!party.empty() && InWorld().size() < party.size() && now - entered < kDungeonRing && now - rang >= kRingEvery &&
-        Settled(settled, now)) {
+    const bool calling = !g_bells_off.load() && !party.empty() && InWorld().size() < party.size() && now - entered < kDungeonRing;
+    g_auto_bell = calling;
+    if (calling && now - rang >= kRingEvery && Settled(settled, now)) {
         rang = now;
         Say("seamless: in the dungeon: ringing the Beckoning Bell for the party (%s)", RingBell(kHostBell) ? "rung" : "not rung");
     }
@@ -2229,8 +2239,14 @@ void ChaliceGuestTick(int role, std::chrono::steady_clock::time_point now) {
     const std::uint32_t host_map = HostMap();
     const bool host_in = InDungeonMap(host_map);
     const std::uint64_t local = LocalPlayer();
-    if (host_in && role != kRoleClient && local && !InDungeonMap(OwnMap()) && Settled(settled, now) &&
-        now - rang >= kRingEvery) {
+    const bool off = g_bells_off.load();
+    static bool was_off = false;
+    if (off && !was_off && local) RemoveEffect(local, kChaliceWait);
+    was_off = off;
+    if (off) waiting_until = {};
+    const bool joining = !off && host_in && role != kRoleClient && local && !InDungeonMap(OwnMap());
+    g_auto_bell = joining;
+    if (joining && Settled(settled, now) && now - rang >= kRingEvery) {
         rang = now;
         waiting_until = now + kDungeonRing;
         ApplyEffect(local, kChaliceWait);
@@ -2400,6 +2416,7 @@ void PublishRows(std::uint64_t local, const std::vector<BbRoom::Vitals>& party, 
         if (!here && (was == seen.end() || now - was->second > linger)) continue;
         PartyRow row;
         row.name = v.name;
+        row.dev = BbRoom::IsDevSlot(v.slot);
         row.health = v.hp_max > 0 ? std::clamp(float(v.hp) / float(v.hp_max), 0.0f, 1.0f) : 0.0f;
         row.stamina = v.stamina_max > 0 ? std::clamp(float(v.stamina) / float(v.stamina_max), 0.0f, 1.0f) : 0.0f;
         row.down = v.hp <= 0;
@@ -2462,8 +2479,6 @@ void LogOwnState(int role) {
         Field<std::int32_t>(data, 0xfc), Field<std::int32_t>(data, 0x138), ids.c_str());
 }
 
-std::atomic<bool> g_go_to_host{false};
-
 void GuestStatsTick(int role) {
     static const bool keep = [] {
         const char* v = std::getenv("BB_GUEST_PHANTOM_HP");
@@ -2478,8 +2493,7 @@ void GuestStatsTick(int role) {
 }
 
 void BringTick(int role) {
-    const bool asked = g_go_to_host.exchange(false);
-    if (!BbRoom::TakeBring() && !asked) return;
+    if (!BbRoom::TakeBring()) return;
     const std::uint64_t local = LocalPlayer();
     if (role != kRoleClient || Loading() || !local || Hp(local) <= 0) {
         Say("seamless: the host called this hunter, but it is not standing in the host's world right now");
@@ -2490,6 +2504,7 @@ void BringTick(int role) {
         if (v.slot != host) continue;
         if ((v.map & 0xffff0000u) != (Field<std::uint32_t>(local, 0x3f8) & 0xffff0000u)) {
             Say("seamless: the host called this hunter from another area; use the host's lamp instead");
+        BbRoom::NoteBringFar();
             return;
         }
         const float yaw = Facing(local);
@@ -2549,6 +2564,13 @@ void Tick() {
     if (g_death_rules.load(std::memory_order_relaxed)) g_fight.Update(BossUp(), std::chrono::steady_clock::now());
     if (g_guest_rewards.load(std::memory_order_relaxed)) BossDropsTick(role);
     if (g_death_rules.load(std::memory_order_relaxed)) PromptLockTick(role);
+    if (BbRoom::TakeSentHome() && !g_follow.lamp) {
+        g_bells_off = true;
+        g_summon = false;
+        g_silence = true;
+        BbRoom::TakeDownSign();
+        Say("seamless: sent home: no more signs until Send sign is pressed");
+    }
     SummonTick(role);
     LogOwnState(role);
     BringTick(role);
@@ -2593,20 +2615,25 @@ void SetCameraYaw(float yaw) {
 }
 
 void StartSummon() {
+    g_bells_off = false;
     g_summon = true;
     Say("seamless: %s from the co-op panel", BbRoom::IsHost() ? "summoning the party" : "joining the host");
 }
 
 void StopSummon() {
-    if (g_summon.exchange(false)) g_silence = true;
+    g_bells_off = true;
+    g_summon = false;
+    g_silence = true;
+    BbRoom::TakeDownSign();
 }
 
-void GoToHost() {
-    g_go_to_host = true;
+void LeaveHost() {
+    StopSummon();
+    if (!BbRoom::LeaveParty()) Say("seamless: the host did not answer the leave");
 }
 
 bool Summoning() {
-    return g_summon.load();
+    return g_summon.load() || g_auto_bell.load();
 }
 
 bool Spectating() {

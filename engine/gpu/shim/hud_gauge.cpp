@@ -11,6 +11,7 @@
 #include <iterator>
 #include <string>
 #include <thread>
+#include <xxhash.h>
 #include <zlib.h>
 
 namespace BbHudGauge {
@@ -24,7 +25,9 @@ constexpr Piece kHeader{757, 10, 153, 12};
 constexpr int kKeyFloor = 12, kKeyFull = 90;
 constexpr std::size_t kMostBytes = 64u << 20;
 
+constexpr int kSharpScale = 2;
 std::atomic<int> g_state{0};
+std::atomic<bool> g_sharp{false};
 Art g_art;
 
 using Bytes = std::vector<std::uint8_t>;
@@ -57,7 +60,7 @@ bool Inflate(const Bytes& file, Bytes& out) {
 }
 
 template <std::size_t N>
-bool FindTexture(const Bytes& tpf, const char16_t (&atlas)[N], int want_w, int want_h, std::size_t& data) {
+bool FindTexture(const Bytes& tpf, const char16_t (&atlas)[N], int want_w, int want_h, std::size_t& data, std::size_t& size) {
     if (tpf.size() < 0x10 || std::memcmp(tpf.data(), "TPF\0", 4) != 0) return false;
     const std::uint32_t count = Le<std::uint32_t>(tpf, 8);
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -69,6 +72,7 @@ bool FindTexture(const Bytes& tpf, const char16_t (&atlas)[N], int want_w, int w
         if (std::memcmp(tpf.data() + name, atlas, sizeof atlas) != 0 || format != kBc7) continue;
         const int width = Le<std::uint16_t>(tpf, at + 12), height = Le<std::uint16_t>(tpf, at + 14);
         data = offset;
+        size = Le<std::uint32_t>(tpf, at + 4);
         return width == want_w && height == want_h && data + std::size_t(width) * height <= tpf.size();
     }
     return false;
@@ -228,6 +232,46 @@ bool ReadPack(const char* game, const char* pack, Bytes& tpf) {
     return !file.empty() && Inflate(file, tpf);
 }
 
+Piece Scaled(const Piece& p, int scale) {
+    return Piece{p.x * scale, p.y * scale, p.w * scale, p.h * scale};
+}
+
+bool LoadSharp(const Bytes& tpf, std::size_t data, std::size_t size, int width, int height, std::vector<std::uint32_t>& pixels) {
+    const char* dir = std::getenv("BB_UI_4K");
+    if (!dir || !*dir || data + size > tpf.size()) return false;
+    char key[96];
+    std::snprintf(key, sizeof key, "%dx%d_%zu_%016llx.bbui", width, height, size,
+                  static_cast<unsigned long long>(XXH3_64bits(tpf.data() + data, size)));
+    std::ifstream in(std::filesystem::path(dir) / key, std::ios::binary);
+    const Bytes file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    if (file.size() < 12 || std::memcmp(file.data(), "BBUI", 4) != 0) return false;
+    std::uint32_t w = 0, h = 0;
+    std::memcpy(&w, file.data() + 4, 4);
+    std::memcpy(&h, file.data() + 8, 4);
+    if (!w || w % width != 0 || w / width < kSharpScale || h * width != w * height) return false;
+    Bytes rgba(std::size_t(w) * h * 4);
+    uLongf unpacked = uLong(rgba.size());
+    if (uncompress(rgba.data(), &unpacked, file.data() + 12, uLong(file.size() - 12)) != Z_OK || unpacked != rgba.size()) return false;
+    const int box = int(w) / width / kSharpScale;
+    if (box * width * kSharpScale != int(w)) return false;
+    const int out_w = width * kSharpScale, out_h = height * kSharpScale;
+    pixels.assign(std::size_t(out_w) * out_h, 0u);
+    for (int y = 0; y < out_h; ++y) {
+        for (int x = 0; x < out_w; ++x) {
+            int sum[4] = {};
+            for (int by = 0; by < box; ++by) {
+                for (int bx = 0; bx < box; ++bx) {
+                    const std::uint8_t* c = rgba.data() + (std::size_t(y * box + by) * w + (x * box + bx)) * 4;
+                    for (int i = 0; i < 4; ++i) sum[i] += c[i];
+                }
+            }
+            std::uint32_t& out = pixels[std::size_t(y) * out_w + x];
+            for (int i = 0; i < 4; ++i) out |= std::uint32_t(sum[i] / (box * box)) << (8 * i);
+        }
+    }
+    return true;
+}
+
 void Load() {
     const char* game = std::getenv("BB_GAME_DIR");
     if (!game || !*game) {
@@ -235,17 +279,27 @@ void Load() {
         return;
     }
     Bytes tpf;
-    std::size_t data = 0;
-    const int width = kAtlasWidth, height = kAtlasHeight;
-    if (!ReadPack(game, kPack, tpf) || !FindTexture(tpf, kAtlas, width, height, data)) {
+    std::size_t data = 0, size = 0;
+    int width = kAtlasWidth, height = kAtlasHeight;
+    if (!ReadPack(game, kPack, tpf) || !FindTexture(tpf, kAtlas, width, height, data, size)) {
         std::printf("Party HUD: the game's gauge art was not found; drawn bars are used\n");
         g_state = -1;
         return;
     }
     g_art.width = width;
     g_art.height = height;
-    g_art.pixels = Decode(tpf, data, width, Piece{0, 0, width, height});
-    for (const Piece& p : {kHeader, kFiligree}) {
+    int scale = 1;
+    if (g_sharp.load() && LoadSharp(tpf, data, size, width, height, g_art.pixels)) {
+        scale = kSharpScale;
+        width *= scale;
+        height *= scale;
+        g_art.width = width;
+        g_art.height = height;
+    } else {
+        g_art.pixels = Decode(tpf, data, width, Piece{0, 0, width, height});
+    }
+    for (const Piece& base : {kHeader, kFiligree}) {
+        const Piece p = Scaled(base, scale);
         for (int y = p.y; y < p.y + p.h; ++y) {
             for (int x = p.x; x < p.x + p.w; ++x) {
                 std::uint32_t& c = g_art.pixels[std::size_t(y) * width + x];
@@ -255,22 +309,23 @@ void Load() {
             }
         }
     }
-    g_art.frame = kFrame;
-    g_art.health = kHealth;
-    g_art.trail = kTrail;
-    g_art.stamina = kStamina;
-    g_art.portrait = kPortrait;
-    g_art.filigree = kFiligree;
-    g_art.rust = kRust;
-    g_art.teal = kTeal;
-    g_art.header = kHeader;
-    std::printf("Party HUD: the game's own gauge, frame and panel art loaded\n");
+    g_art.frame = Scaled(kFrame, scale);
+    g_art.health = Scaled(kHealth, scale);
+    g_art.trail = Scaled(kTrail, scale);
+    g_art.stamina = Scaled(kStamina, scale);
+    g_art.portrait = Scaled(kPortrait, scale);
+    g_art.filigree = Scaled(kFiligree, scale);
+    g_art.rust = Scaled(kRust, scale);
+    g_art.teal = Scaled(kTeal, scale);
+    g_art.header = Scaled(kHeader, scale);
+    std::printf("Party HUD: the game's own gauge, frame and panel art loaded%s\n", scale > 1 ? " from the 4K textures" : "");
     g_state = 1;
 }
 }
 
-void Start() {
+void Start(bool sharp) {
     int idle = 0;
+    if (g_state.load() == 0) g_sharp = sharp;
     if (!g_state.compare_exchange_strong(idle, 2)) return;
     std::thread(Load).detach();
 }

@@ -9,7 +9,7 @@ class VoiceGate {
 public:
     static constexpr int kFrameMs = 40;
     static constexpr int kPreRollFrames = 3;
-    static constexpr float kQuietestSpeech = 0.004f;
+    static constexpr float kQuietestSpeech = 0.002f;
     static constexpr float kLoudSpeech = 0.02f;
     static constexpr float kOpenOverNoise = 2.5f;
     static constexpr float kStayOverNoise = 1.6f;

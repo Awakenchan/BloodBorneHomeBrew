@@ -8,6 +8,7 @@
 // (optiscaler_*, the in-game menu; BbSettings::Values::startup_optiscaler).
 #pragma once
 
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <thread>
@@ -31,6 +32,8 @@ bool Part(const char* name);
 /// One submit thread: Part("BB_OPTISCALER_SYNC_SUBMIT") with its frame generation on, or the
 /// switch set to 1.
 bool SyncSubmit();
+std::filesystem::path PrivateFfxLibrary(const std::filesystem::path& source, const char* name);
+const char* FfxFailureHint();
 
 /// OptiScaler keeps a per-thread "a D3D device is being created" flag and skips its vkCreateInstance
 /// and vkCreateDevice hooks while it is set (for DXVK/vkd3d-proton). It was found set on the

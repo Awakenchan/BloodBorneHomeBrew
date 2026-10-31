@@ -9,6 +9,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "room_status.h"
+
 namespace BbRoom {
 
 struct Vitals {
@@ -56,9 +58,23 @@ bool CurrentNotice(std::string& text);
 bool CurrentAnnouncement(std::string& text, float& alpha);
 std::vector<std::pair<int, std::string>> PartyMembers();
 bool Kick(int slot);
+std::string NetworkId();
+std::string PlainName(const std::string& network_id);
 bool LeaveParty();
+bool IsDevSlot(int slot);
+void TakeDownSign();
+void NoteSentHome();
+bool TakeSentHome();
 void SendBring(int target);
 bool TakeBring();
+std::vector<PeerStatus> Connections();
+std::vector<PartyLine> PartyLines();
+bool CurrentReconnect(ReconnectNotice& out);
+bool LinkUp();
+void SendWarpAsk();
+bool WarpWaiting();
+void SetWarpRequests(bool on);
+void NoteBringFar();
 void SetVoice(bool on);
 void SendVoice(const std::vector<std::uint8_t>& packet);
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakeVoice();

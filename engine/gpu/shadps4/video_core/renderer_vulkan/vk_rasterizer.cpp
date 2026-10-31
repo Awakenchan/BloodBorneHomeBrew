@@ -842,7 +842,7 @@ void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size) {
 bool Rasterizer::ReadTrackingFiltered() {
     static const bool filtered = [] {
         const char* env = std::getenv("LANTERN_READ_FILTER");
-        return env && env[0] == '1';
+        return !env || env[0] == '1';
     }();
     return filtered;
 }
@@ -1854,7 +1854,8 @@ bool Rasterizer::FilterDrawPasses() const {
     return !(mode == Mode::Disable && (depth_copy || stencil_copy));
 }
 
-void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
+void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared,
+                      u64 gx_record) {
     RENDERER_TRACE;
     BbSections::ScopeA draw_scope{BbSections::ADraw};
     if (BbSections::Enabled()) {
@@ -1905,7 +1906,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
     }
     const u32 srt_faults = Shader::Info::srt_walk_faults;
     BbSections::ScopeA pipeline_scope{BbSections::APipeline};
-    const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline({}, prepared);
+    const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline({}, prepared, gx_record);
     pipeline_scope.End();
     const PreparedDraw* used_prepared = pipeline_cache.UsedPrepared();
     if (prepared) {

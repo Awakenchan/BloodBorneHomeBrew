@@ -238,6 +238,13 @@ private:
     VideoCore::ImageId scene_color{};
     bool done_this_frame = false;
     u32 preset_file_frames = 0; ///< BB_PRESET_FILE polling
+    u32 reset_frames = 0, reset_window_frames = 0;
+    std::chrono::steady_clock::time_point reset_window = std::chrono::steady_clock::now();
+    float slow_window_ms = 0.0f;
+    u32 slow_window_frames = 0, slow_frames = 0, slow_guard_used = 0;
+    bool Fsr4TooSlow(float frame_ms);
+    float jitter_speed = 0.0f;
+    float JitterAmount();
     int applied_output = -1;
     bool snapshot_taken = false;
     bool opaque_valid = false;

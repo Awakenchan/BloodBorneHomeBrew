@@ -26,6 +26,7 @@
 
 #include "bbport_toggles.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_optiscaler.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #endif
 
@@ -299,7 +300,13 @@ struct Fsr4Vk::Impl {
             return true;
         }
         const auto path = Fsr4Vk::Directory() / LibraryName;
-        module = LoadLibraryW(path.c_str());
+        const auto own = OptiScaler::PrivateFfxLibrary(path, "lantern_fsr4vk.dll");
+        if (!own.empty()) {
+            module = LoadLibraryW(own.c_str());
+        }
+        if (!module) {
+            module = LoadLibraryW(path.c_str());
+        }
         if (!module) {
             Fail("cannot load " + Fsr4Vk::LibraryPathUtf8() + " (error " + std::to_string(GetLastError()) + ")",
                  true);
@@ -564,7 +571,7 @@ struct Fsr4Vk::Impl {
         Transition(f.cmdbuf, f, false);
         if (result != ReturnOk) {
             Fail(std::string{"dispatch failed: "} + ReturnName(result) + " (" +
-                     std::to_string(result) + ")",
+                     std::to_string(result) + ")" + OptiScaler::FfxFailureHint(),
                  true);
             return false;
         }

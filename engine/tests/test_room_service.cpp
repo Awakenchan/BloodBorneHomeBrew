@@ -18,6 +18,7 @@
 
 #include <httplib.h>
 
+#include "gpu/bbnet/room/room_link.h"
 #include "gpu/bbnet/room/room_service.h"
 
 using Json = nlohmann::json;
@@ -97,6 +98,139 @@ bool SwapVitals(const char* own, const char* other) {
     return false;
 }
 
+bool HasLine(BbRoom::PartyLineKind kind, const std::string& name) {
+    for (const BbRoom::PartyLine& line : BbRoom::PartyLines())
+        if (line.kind == kind && line.name == name) return true;
+    return false;
+}
+
+bool WaitLine(BbRoom::PartyLineKind kind, const std::string& name, int seconds = 15) {
+    for (int i = 0; i < seconds * 20; ++i) {
+        if (HasLine(kind, name)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
+bool FindPeer(const std::string& name, BbRoom::PeerStatus& out) {
+    for (const BbRoom::PeerStatus& peer : BbRoom::Connections()) {
+        if (peer.name != name) continue;
+        out = peer;
+        return true;
+    }
+    return false;
+}
+
+bool WaitPing(const std::string& name, BbRoom::PeerStatus& out) {
+    for (int i = 0; i < 100; ++i) {
+        if (FindPeer(name, out) && out.ping_ms >= 0) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
+}
+
+std::vector<std::uint8_t> OldVitals(const std::string& name) {
+    std::vector<std::uint8_t> frame = {6, static_cast<std::uint8_t>(name.size())};
+    frame.insert(frame.end(), name.begin(), name.end());
+    frame.resize(frame.size() + 4 * 4 + 2 + 3 * 4 + 4);
+    return frame;
+}
+
+int HostStatus() {
+    BbRoom::PeerStatus guest;
+    if (!WaitPing("GuestHunter", guest)) return Fail("no ping to the guest");
+    if (guest.state != BbRoom::LinkState::Good) return Fail("the local guest's link should read good");
+    std::printf("host: guest ping %d ms, good\n", guest.ping_ms);
+    BbRoom::Link old;
+    if (!old.Start(std::getenv("BB_ROOM_SERVER"), std::getenv("BB_ROOM_NAME"), std::getenv("BB_ROOM_PASSWORD")))
+        return Fail("the older client did not start");
+    const auto stop_at = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const std::vector<std::uint8_t> vitals = OldVitals("OldHunter");
+    const std::uint8_t unknown[3] = {200, 1, 2};
+    BbRoom::PeerStatus aged;
+    while (std::chrono::steady_clock::now() < stop_at) {
+        old.Send(0, vitals.data(), vitals.size());
+        old.Send(0, unknown, sizeof unknown);
+        old.Drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    if (!FindPeer("OldHunter", aged)) return Fail("the older client is not listed");
+    if (aged.state != BbRoom::LinkState::Unknown || aged.ping_ms != -1) return Fail("the older client should read unknown");
+    std::printf("host: a client without the new frames stays in the room, ping unknown\n");
+    const std::uint8_t ask[1] = {22};
+    old.Send(old.HostSlot(), ask, sizeof ask);
+    bool refused = false;
+    for (int i = 0; i < 50 && !refused; ++i) {
+        for (const BbRoom::Event& e : old.Drain()) {
+            refused = refused || (e.kind == BbRoom::Event::Kind::Data && e.data.size() == 2 && e.data[0] == 23 && e.data[1] == BbRoom::kWarpRefused);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!refused) return Fail("a hunter outside the host's world should be refused");
+    if (!FindPeer("OldHunter", aged) || aged.asked) return Fail("a refused request should not show");
+    std::printf("host: a request from outside the world is refused\n");
+    old.Stop();
+    if (!WaitLine(BbRoom::PartyLineKind::Left, "OldHunter")) return Fail("no left line for the older client");
+    if (FindPeer("OldHunter", aged)) return Fail("the older client is still listed");
+    std::printf("host: left line for the older client\n");
+    BbRoom::PeerStatus asked;
+    for (int i = 0; i < 300; ++i) {
+        if (FindPeer("GuestHunter", asked) && asked.asked) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!asked.asked) return Fail("the guest's request never came");
+    if (!HasLine(BbRoom::PartyLineKind::WarpAsked, "GuestHunter")) return Fail("the host saw no request line");
+    if (!WaitLine(BbRoom::PartyLineKind::Died, "GuestHunter")) return Fail("no death line for the guest");
+    std::printf("host: request and death lines from the guest\n");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    BbRoom::SendBring(asked.slot);
+    BbRoom::SetWarpRequests(false);
+    if (!FindPeer("GuestHunter", asked) || asked.asked) return Fail("Bring did not clear the request");
+    std::printf("host: Bring accepted the request\n");
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    if (!FindPeer("GuestHunter", asked) || asked.asked) return Fail("a request with requests off should not show");
+    if (!BbRoom::Kick(asked.slot)) return Fail("the kick failed");
+    if (!WaitLine(BbRoom::PartyLineKind::Kicked, "GuestHunter")) return Fail("no kicked line");
+    std::printf("host: kicked line\n");
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    return 0;
+}
+
+int GuestStatus() {
+    BbRoom::PeerStatus host;
+    if (!WaitPing("HostHunter", host)) return Fail("no ping to the host");
+    std::printf("guest: host ping %d ms\n", host.ping_ms);
+    if (BbRoom::WarpWaiting()) return Fail("waiting before asking");
+    for (int i = 0; i < 300 && !HasLine(BbRoom::PartyLineKind::Left, "OldHunter"); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    BbRoom::SendWarpAsk();
+    if (!BbRoom::WarpWaiting()) return Fail("not waiting after asking");
+    if (!WaitLine(BbRoom::PartyLineKind::WarpSeen, "")) return Fail("the host did not answer the request");
+    if (BbRoom::TakeBring()) return Fail("moved before the host accepted");
+    BbRoom::Vitals v;
+    v.name = "GuestHunter";
+    v.hp_max = 800;
+    v.map = 0x1d0a5a00u;
+    v.hp = 500;
+    BbRoom::SendVitals(v);
+    v.hp = 0;
+    BbRoom::SendVitals(v);
+    bool brought = false;
+    for (int i = 0; i < 300 && !brought; ++i) {
+        brought = BbRoom::TakeBring();
+        if (!brought) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!brought) return Fail("the host's Bring never came");
+    if (BbRoom::WarpWaiting()) return Fail("still waiting after being brought");
+    std::printf("guest: asked, answered, brought only after the host's Bring\n");
+    BbRoom::SendWarpAsk();
+    if (!WaitLine(BbRoom::PartyLineKind::WarpOff, "")) return Fail("a host with requests off should refuse");
+    if (BbRoom::WarpWaiting()) return Fail("still waiting after a refusal");
+    std::printf("guest: refused by a host with requests off\n");
+    Json ev;
+    if (!Poll(ev, "room_member_kicked", 30)) return Fail("no kick event");
+    return 0;
+}
+
 constexpr std::uint64_t kEnteredDungeon = 0x8000000012345678ull;
 
 Json FixedSearch() {
@@ -165,6 +299,7 @@ int Host(int game_port, int http_port) {
         BbRoom::SendChalices({6109u, 6209u});
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
+    if (const int status = HostStatus()) return status;
     std::printf("HOST OK\n");
     return 0;
 }
@@ -253,6 +388,7 @@ int Guest(int game_port, int http_port, bool early) {
             for (int k = 0; k < 40 && !BbRoom::TakeChalices(chalices); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(200));
             if (chalices.size() != 2 || chalices[0] != 6109u) return Fail("no chalices from the host");
             std::printf("guest: dungeon progress and %zu chalice(s) from the host\n", chalices.size());
+            if (const int status = GuestStatus()) return status;
             std::printf("GUEST OK\n");
             return 0;
         }

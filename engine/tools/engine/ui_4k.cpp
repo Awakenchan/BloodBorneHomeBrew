@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include "hud_gauge.h"
 #include <xxhash.h>
 #include <zlib.h>
@@ -220,20 +224,38 @@ bool DecodeTexture(const Bytes& tpf, std::uint32_t offset, int format, int width
     return true;
 }
 
+template <typename Work>
+void RunWorkers(std::size_t count, const Work& work) {
+    std::atomic<std::size_t> next{0};
+    const unsigned threads = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
+    std::vector<std::thread> pool;
+    for (unsigned t = 0; t < threads; ++t)
+        pool.emplace_back([&] {
+            for (std::size_t i = next++; i < count; i = next++) work(i);
+        });
+    for (std::thread& thread : pool) thread.join();
+}
+
 int Export(const fs::path& menu, const fs::path& out) {
     std::error_code error;
     fs::create_directories(out, error);
-    std::set<std::string> seen;
-    int written = 0, total = 0;
+    std::vector<fs::path> files;
     for (const auto& entry : fs::recursive_directory_iterator(menu, error)) {
         if (!entry.is_regular_file()) continue;
         const std::string file = entry.path().filename().string();
-        const bool packed = file.ends_with(".tpf.dcx");
-        if (!packed && !file.ends_with(".tpf")) continue;
-        const Bytes data = ReadFile(entry.path());
+        if (file.ends_with(".tpf.dcx") || file.ends_with(".tpf")) files.push_back(entry.path());
+    }
+    std::mutex seen_mutex;
+    std::set<std::string> seen;
+    std::atomic<int> written{0}, total{0};
+    std::atomic<bool> failed{false};
+    RunWorkers(files.size(), [&](std::size_t n) {
+        std::error_code file_error;
+        const bool packed = files[n].filename().string().ends_with(".tpf.dcx");
+        const Bytes data = ReadFile(files[n]);
         Bytes tpf;
-        if (packed ? !BbHudGauge::InflateDcx(data, tpf) : (tpf = data, false)) continue;
-        if (tpf.size() < 0x10 || std::memcmp(tpf.data(), "TPF\0", 4) != 0) continue;
+        if (packed ? !BbHudGauge::InflateDcx(data, tpf) : (tpf = data, false)) return;
+        if (tpf.size() < 0x10 || std::memcmp(tpf.data(), "TPF\0", 4) != 0) return;
         const std::uint32_t count = Le<std::uint32_t>(tpf, 8);
         for (std::uint32_t i = 0; i < count; ++i) {
             const std::size_t at = 0x10 + std::size_t(i) * 36;
@@ -245,22 +267,27 @@ int Export(const fs::path& menu, const fs::path& out) {
             char key[96];
             std::snprintf(key, sizeof key, "%dx%d_%u_%016llx", width, height, size,
                           static_cast<unsigned long long>(XXH3_64bits(tpf.data() + offset, size)));
-            if (!seen.insert(key).second) continue;
+            {
+                std::scoped_lock lock{seen_mutex};
+                if (!seen.insert(key).second) continue;
+            }
             const fs::path png = out / (std::string(key) + ".png");
             std::vector<std::uint32_t> pixels;
-            if (fs::exists(png, error) || !DecodeTexture(tpf, offset, format, width, height, pixels)) {
-                if (fs::exists(png, error)) ++total;
+            if (fs::exists(png, file_error) || !DecodeTexture(tpf, offset, format, width, height, pixels)) {
+                if (fs::exists(png, file_error)) ++total;
                 continue;
             }
             if (!WritePng(png, width, height, pixels)) {
                 std::fprintf(stderr, "could not write %s\n", png.string().c_str());
-                return 1;
+                failed = true;
+                return;
             }
             ++written;
             ++total;
         }
-    }
-    std::printf("exported %d textures (%d new)\n", total, written);
+    });
+    if (failed) return 1;
+    std::printf("exported %d textures (%d new)\n", total.load(), written.load());
     return total > 0 ? 0 : 1;
 }
 
@@ -271,16 +298,20 @@ int Pack(const fs::path& in, const fs::path& out) {
     for (const auto& entry : fs::directory_iterator(in, error))
         if (entry.path().extension() == ".png") pngs.push_back(entry.path());
     std::sort(pngs.begin(), pngs.end());
-    int done = 0, failed = 0;
-    for (const fs::path& png : pngs) {
+    std::atomic<int> done{0}, failed{0};
+    std::atomic<bool> stopped{false};
+    std::mutex print_mutex;
+    RunWorkers(pngs.size(), [&](std::size_t n) {
+        const fs::path& png = pngs[n];
+        std::error_code file_error;
         const fs::path target = out / (png.stem().string() + ".bbui");
-        if (!fs::exists(target, error)) {
+        if (!fs::exists(target, file_error)) {
             Bytes pixels;
             std::uint32_t w = 0, h = 0;
             if (!ReadPng(png, pixels, w, h)) {
                 std::fprintf(stderr, "could not read %s\n", png.string().c_str());
                 ++failed;
-                continue;
+                return;
             }
             while (w > kLargestSide || h > kLargestSide) Halve(pixels, w, h);
             uLongf size = compressBound(uLong(pixels.size()));
@@ -290,18 +321,21 @@ int Pack(const fs::path& in, const fs::path& out) {
             std::memcpy(body.data() + 8, &h, 4);
             if (compress2(body.data() + 12, &size, pixels.data(), uLong(pixels.size()), 6) != Z_OK) {
                 ++failed;
-                continue;
+                return;
             }
             body.resize(12 + size);
             if (!WriteFile(target, body)) {
                 std::fprintf(stderr, "could not write %s\n", target.string().c_str());
-                return 1;
+                stopped = true;
+                return;
             }
         }
+        std::scoped_lock lock{print_mutex};
         std::printf("packed %d of %zu\n", ++done, pngs.size());
         std::fflush(stdout);
-    }
-    std::printf("packed %d textures, %d failed\n", done, failed);
+    });
+    if (stopped) return 1;
+    std::printf("packed %d textures, %d failed\n", done.load(), failed.load());
     return failed == 0 && done > 0 ? 0 : 1;
 }
 }

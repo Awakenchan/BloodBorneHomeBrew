@@ -44,6 +44,7 @@ public:
 
     bool Connected() const { return connected_.load(); }
     int Slot() const { return slot_.load(); }
+    bool IsDev(int slot) const;
     int HostSlot() const { return host_.load(); }
     std::vector<int> Members() const;
     const std::string& RoomId() const { return secret_.room_id; }
@@ -68,6 +69,7 @@ private:
     std::condition_variable cv_;
     std::deque<Event> events_;
     std::vector<int> members_;
+    std::vector<int> devs_;
     std::mutex socket_mutex_;
     std::shared_ptr<WebSocket> socket_;
     std::string last_error_;

@@ -84,7 +84,8 @@ namespace BloodborneLauncher.Core
                 });
                 try
                 {
-                    await RunAsync(upscaler, new[] { "-i", todo, "-o", upscaled, "-n", Model, "-f", "png" }, Path.GetDirectoryName(upscaler), cancel);
+                    var files = Math.Clamp(Environment.ProcessorCount / 2, 2, 8);
+                    await RunAsync(upscaler, new[] { "-i", todo, "-o", upscaled, "-n", Model, "-f", "png", "-j", $"{files}:1:{files}" }, Path.GetDirectoryName(upscaler), cancel);
                 }
                 finally
                 {

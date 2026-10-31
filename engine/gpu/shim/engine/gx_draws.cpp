@@ -412,7 +412,7 @@ void Report() {
 
 bool Install(std::uint8_t* image, std::size_t size) {
     const char* on = std::getenv("LANTERN_GX_DRAWS");
-    if (!on || on[0] != '1') return false;
+    if (on && on[0] != '1') return false;
     g_image = reinterpret_cast<u64>(image);
     Hook hook;
     if (!Prepare(hook, image, size, kBind, kBindEntry, OnBind)) {

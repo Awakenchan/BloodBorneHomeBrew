@@ -245,10 +245,13 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     std::error_code fsr411_error;
     const bool fsr411_assets = std::filesystem::is_directory(
         fsr411_dir && fsr411_dir[0] ? fsr411_dir : "fsr4_411", fsr411_error);
+    const char* fsr4_builtin_amd = std::getenv("BB_FSR4_BUILTIN_AMD");
     BbSettings::ConfigureUpscalerSupport(instance.IsFsr4Int8Supported(),
                                          (instance.IsFsr411Supported() && fsr411_assets) ||
                                              instance.IsFsr4VkSupported(),
-                                         dlss && dlss->Available(), instance.IsFsrSdkAvailable());
+                                         dlss && dlss->Available(), instance.IsFsrSdkAvailable(),
+                                         instance.GetVendorID() == 0x1002 &&
+                                             !(fsr4_builtin_amd && fsr4_builtin_amd[0] == '1'));
     fsr4 = std::make_unique<Fsr4Upscaler>(instance, scheduler);
     // Available unless BB_UPSCALER=none; on/off and the parameters are the menu's settings.
     const char* env = std::getenv("BB_UPSCALER");
@@ -486,6 +489,15 @@ bool TemporalUpscaler::OnFrameStart() {
                                              std::memory_order_relaxed);
     if (changed || !dispatched_last_frame) reset = true;
     if (changed) jitter_index = 0;
+    reset_frames += reset && dispatched_last_frame ? 1 : 0;
+    ++reset_window_frames;
+    if (const auto now = std::chrono::steady_clock::now(); now - reset_window >= std::chrono::seconds(5)) {
+        if (reset_frames * 10 > reset_window_frames) {
+            std::printf("Upscaler: history reset on %u of %u frames in 5 s\n", reset_frames, reset_window_frames);
+        }
+        reset_window = now;
+        reset_frames = reset_window_frames = 0;
+    }
     applied_preset = preset;
     applied_scale = preset_scale;
     applied_output = output;
@@ -514,8 +526,44 @@ bool TemporalUpscaler::OnFrameStart() {
     const u32 phases = Scaled() ? Motion::JitterPhases(render_width, target_width)
         : Motion::JitterPhases(scene_targets.Size().width, 1920);
     jitter_index = jitter_index % phases + 1;
-    jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
+    const float amount = JitterAmount();
+    jitter = {(Halton(jitter_index, 2) - 0.5f) * amount, (Halton(jitter_index, 3) - 0.5f) * amount};
     return changed;
+}
+
+float TemporalUpscaler::JitterAmount() {
+    static const float floor = [] {
+        const char* env = std::getenv("BB_JITTER_MOTION_MIN");
+        return env && env[0] ? std::clamp(float(std::atof(env)), 0.0f, 1.0f) : 0.0f;
+    }();
+    const auto camera = camera_motion.CameraMatrices();
+    if (floor >= 1.0f || !camera.valid || BbSettings::Get().upscaler != BbSettings::UpscalerDlss) {
+        jitter_speed = 0.0f;
+        return 1.0f;
+    }
+    const float width = float(Scaled() ? render_width : scene_targets.Size().width);
+    const float height = float(Scaled() ? render_height : scene_targets.Size().height);
+    constexpr float z = 5.0f;
+    float speed = 0.0f;
+    for (const float ndc_x : {0.0f, -0.7f, 0.7f}) {
+        const float vx = ndc_x * z / camera.proj[0];
+        std::array<float, 3> world;
+        for (int r = 0; r < 3; ++r) {
+            world[r] = camera.inv_view[r * 4] * vx + camera.inv_view[r * 4 + 2] * z + camera.inv_view[r * 4 + 3];
+        }
+        std::array<float, 3> before;
+        for (int r = 0; r < 3; ++r) {
+            before[r] = camera.prev_view[r * 4] * world[0] + camera.prev_view[r * 4 + 1] * world[1] +
+                        camera.prev_view[r * 4 + 2] * world[2] + camera.prev_view[r * 4 + 3];
+        }
+        const float w = std::max(before[2], 1e-4f);
+        const float dx = (before[0] * camera.prev_proj[0] / w - ndc_x) * 0.5f * width;
+        const float dy = before[1] * camera.prev_proj[1] / w * 0.5f * height;
+        const float moved = std::sqrt(dx * dx + dy * dy);
+        speed = std::max(speed, std::isfinite(moved) ? moved : 0.0f);
+    }
+    jitter_speed = std::max(speed, jitter_speed * 0.85f);
+    return 1.0f - (1.0f - floor) * std::clamp((jitter_speed - 0.25f) / 0.75f, 0.0f, 1.0f);
 }
 
 void TemporalUpscaler::OnDispatch(u64 cs_hash) {
@@ -2631,6 +2679,30 @@ bool TemporalUpscaler::UseFsr4() const {
     return BbSettings::IsFsr4(selected) && supported && !fsr4_failed && !fsr4_building;
 }
 
+bool TemporalUpscaler::Fsr4TooSlow(float frame_ms) {
+    static const bool guard = [] {
+        const char* env = std::getenv("BB_FSR4_SLOW_GUARD");
+        return !(env && env[0] == '0');
+    }();
+    const u32 selected = 1u << BbSettings::Get().upscaler.load();
+    if (!guard || reset || (slow_guard_used & selected)) {
+        slow_window_ms = 0.0f;
+        slow_window_frames = slow_frames = 0;
+        return false;
+    }
+    slow_window_ms += frame_ms;
+    ++slow_window_frames;
+    slow_frames += frame_ms >= 50.0f ? 1 : 0;
+    if (slow_window_ms < 5000.0f) {
+        return false;
+    }
+    const bool slow = slow_frames * 10 >= slow_window_frames * 9;
+    slow_window_ms = 0.0f;
+    slow_window_frames = slow_frames = 0;
+    slow_guard_used |= slow ? selected : 0u;
+    return slow;
+}
+
 bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image color,
                                   Fsr4Upscaler::Image depth, u32 w, u32 h, u32 ow, u32 oh,
                                   float frame_ms, bool reactive) {
@@ -2664,6 +2736,18 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
                         : Fsr4Upscaler::Image{},
     };
     const bool ok = use_dlss ? dlss->Record(frame) : fsr4->Record(frame);
+    if (ok && !use_dlss && Fsr4TooSlow(frame_ms)) {
+        static const std::string slow =
+            "too slow on this GPU (under 20 FPS for 5 s); you can select it again to retry";
+        BbSettings::Get().fsr4_problem = slow.c_str();
+        const bool to_sdk = settings.upscaler != BbSettings::UpscalerFsr && instance.IsFsrSdkAvailable();
+        std::printf("Upscaler: FSR 4 too slow on this GPU (under 20 FPS for 5 s); falling back to %s "
+                    "(BB_FSR4_SLOW_GUARD=0 keeps it)\n", to_sdk ? "FSR (AMD FSR SDK)" : "FSR 3.1");
+        BbSettings::Get().upscaler = to_sdk ? BbSettings::UpscalerFsr : BbSettings::UpscalerFsr3;
+        fsr4_failed = !to_sdk;
+        reset = true;
+        return ok;
+    }
     // The menu shows the reason; it outlives this frame (FSR 4 keeps its last message).
     static std::string shown;
     const char* problem = use_dlss ? dlss->Problem() : fsr4->Problem();

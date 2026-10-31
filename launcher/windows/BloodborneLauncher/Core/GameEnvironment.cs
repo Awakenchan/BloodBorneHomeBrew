@@ -216,6 +216,8 @@ namespace BloodborneLauncher.Core
                 env["BB_GC_PRESSURE_SECONDS"] = "0";
                 env["BB_GPU_THREAD_PRIORITY"] = "0";
                 env["BB_NATIVE_SHADERS"] = "0";
+                foreach (var native in EngineSwitches.NativeSwitches)
+                    env[native] = "0";
                 env["BB_SLEEP_SPIN_US"] = "600";
                 env["BB_ASYNC_PIPELINES"] = "0";
                 env["BB_OCCLUSION"] = "0";

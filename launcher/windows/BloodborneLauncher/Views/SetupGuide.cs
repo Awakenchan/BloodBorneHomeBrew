@@ -368,7 +368,7 @@ namespace BloodborneLauncher.Views
                         foreach (var item in r.Items.Where(i => i.Health != Health.Good && !i.Optional))
                             Line(item.Health, item.Text);
                     _extra.Children.Add(Caption(L.T("Next, if you like:") + "\n" +
-                        L.T("•  Have a character from shadPS4 or another port? Play page › Import saves.") + "\n" +
+                        L.T("•  Have a character from shadPS4 or another port? Saves page › Import saves.") + "\n" +
                         L.T("•  A controller works as it is. Keyboard and mouse keys are on the Controls page.")));
                     break;
             }

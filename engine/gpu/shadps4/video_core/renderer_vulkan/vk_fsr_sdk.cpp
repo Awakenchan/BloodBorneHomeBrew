@@ -24,6 +24,7 @@
 
 #include "bbport_toggles.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_optiscaler.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #endif
 
@@ -263,8 +264,19 @@ struct FsrSdk::Impl {
             return false;
         }
         const auto path = FsrSdk::Directory() / LoaderName;
-        module = LoadLibraryExW(path.c_str(), nullptr,
-                                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        const auto own = OptiScaler::PrivateFfxLibrary(FsrSdk::Directory() / UpscalerName, "lantern_fsr_sdk_vk.dll");
+        if (!own.empty()) {
+            module = LoadLibraryExW(own.c_str(), nullptr,
+                                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+            if (module) {
+                std::printf("Upscaler: AMD FSR SDK runs from its own copy, past OptiScaler's FSR hook "
+                            "(BB_OPTISCALER_FFX_PRIVATE)\n");
+            }
+        }
+        if (!module) {
+            module = LoadLibraryExW(path.c_str(), nullptr,
+                                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        }
         if (!module) {
             Fail("cannot load " + Utf8(path) + " (error " + std::to_string(GetLastError()) + ")", true);
             return false;
@@ -494,7 +506,8 @@ struct FsrSdk::Impl {
         const u32 result = dispatch(&context, &d.header);
         Transition(f.cmdbuf, f, false);
         if (result != ReturnOk) {
-            Fail(std::string{"dispatch failed: "} + ReturnName(result) + " (" + std::to_string(result) + ")",
+            Fail(std::string{"dispatch failed: "} + ReturnName(result) + " (" + std::to_string(result) + ")" +
+                     OptiScaler::FfxFailureHint(),
                  true);
             return false;
         }

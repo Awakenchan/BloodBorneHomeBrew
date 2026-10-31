@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <magic_enum/magic_enum.hpp>
+#include "engine/gx_objects.h"
 #include "bbport_copy.h"
 #include "bbport_platform.h"
 #include "bbport_toggles.h"
@@ -2295,7 +2296,8 @@ void BufferCache::ProcessDynamicRetries(u32 now) {
         if (budget == 0) {
             break;
         }
-        if (now - retry.since < (base << std::min<u32>(retry.strikes - 1, 5)) ||
+        if (gx_upload_blocks.Contains(block) ||
+            now - retry.since < (base << std::min<u32>(retry.strikes - 1, 5)) ||
             (DynamicRetryStrikes() != 0 && retry.strikes >= DynamicRetryStrikes())) {
             continue;
         }
@@ -3040,8 +3042,26 @@ void BufferCache::UnmapInPlace(VAddr addr, u64 size) {
     unmaps_pending.store(true, std::memory_order_release);
 }
 
+void BufferCache::ProcessGxUploadArena() {
+    u64 base = 0, bytes = 0;
+    if (!BbEngine::GxObjects::BuffersOwned() || !GuestInPlace() ||
+        !BbEngine::GxObjects::TakeUploadArena(&base, &bytes) || bytes == 0) {
+        return;
+    }
+    const u64 first = base >> block_shift, last = (base + bytes - 1) >> block_shift;
+    gx_upload_blocks.Add({first, last + 1});
+    dynamic_blocks.Add({first, last + 1});
+    for (u64 block = first; block <= last; ++block) {
+        demotions_waiting.push_back({block, scheduler.CurrentTick(), true});
+    }
+    std::printf("GX buffers: the upload arena %#llx, %llu MiB, %llu blocks, stays in place\n",
+                static_cast<unsigned long long>(base), static_cast<unsigned long long>(bytes >> 20),
+                static_cast<unsigned long long>(last - first + 1));
+}
+
 void BufferCache::Maintain() {
     maintained_epoch = packet_epoch;
+    ProcessGxUploadArena();
     ProcessPendingUnmaps();
     ProcessIdleBlocks();
     ProcessDemotions();

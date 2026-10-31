@@ -134,6 +134,9 @@ namespace BloodborneLauncher.Core
             }
         }
 
+        public static string ProfileCopies(string root, string profile) =>
+            Path.Combine(VaultDir, PlaceId(root), PlayerProfiles.SafeName(profile));
+
         /// <summary>A profile's copies in the vault, newest first.</summary>
         private static List<string> Copies(string folder)
         {

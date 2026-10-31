@@ -1160,11 +1160,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
     ASSERT(info.guest_address != 0);
 
-    if (BbEngine::GxObjects::TexturesOwned() && desc.type <= BindingType::RenderTarget &&
-        info.num_samples == 1 && info.pixel_format != vk::Format::eUndefined) {
+    const bool owned = BbEngine::GxObjects::TexturesOwned();
+    if (owned && desc.type <= BindingType::DepthTarget && info.num_samples == 1 &&
+        info.pixel_format != vk::Format::eUndefined) {
         BbEngine::GxObjects::TextureExtent whole;
-        if (BbEngine::GxObjects::TextureAt(info.guest_address, &whole) &&
-            whole.width == info.size.width && whole.height == info.size.height &&
+        const bool known = BbEngine::GxObjects::TextureAt(info.guest_address, &whole);
+        if (known && (whole.width != info.size.width || whole.height != info.size.height)) {
+            BbEngine::GxObjects::NoteWiden(BbEngine::GxObjects::WidenOtherSize);
+        } else if (known &&
             whole.levels <= info.mips_layout.size() && whole.levels >= info.resources.levels &&
             whole.layers >= info.resources.layers &&
             (whole.levels > info.resources.levels || whole.layers > info.resources.layers)) {
@@ -1233,14 +1236,77 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         return cached.image_id;
     }
 
-    ImageIds image_ids;
-    ForEachImageInRegion(info.guest_address, info.guest_size,
-                         [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
-
     ImageId image_id{};
 
     int view_mip{-1};
     int view_slice{-1};
+    bool held_served = false;
+    const bool at_object = owned && [&] {
+        using namespace BbEngine::GxObjects;
+        const HeldImage held = HeldAt(info.guest_address);
+        if (!held.object) {
+            NoteObjectPath(PathNoObject);
+            return false;
+        }
+        if (!held.uid) {
+            NoteObjectPath(PathNothingHeld);
+            return true;
+        }
+        const ImageId held_id{held.index};
+        if (!IsRegisteredImage(held_id, held.uid)) {
+            NoteObjectPath(PathHeldGone);
+            return true;
+        }
+        const Image& candidate = slot_images[held_id];
+        int mip{}, slice{};
+        std::string_view reason = ReuseRejection(info, candidate.info, desc.type, exact_fmt, mip, slice);
+        if (reason.empty() && info.props.is_depth && !candidate.info.props.is_depth) {
+            reason = "depth requested of a color image";
+        }
+        if (!reason.empty()) {
+            NoteObjectPath(PathHeldRefused, reason.data(), reason.size());
+            return true;
+        }
+        NoteObjectPath(PathServed);
+        image_id = held_id;
+        held_served = true;
+        return true;
+    }();
+    ImageIds image_ids;
+    if (!held_served || BbEngine::GxObjects::TexturesChecked()) {
+        ForEachImageInRegion(info.guest_address, info.guest_size,
+                             [&](ImageId id, Image&) { image_ids.push_back(id); });
+    }
+    if (at_object && !held_served) {
+        image_ids.erase(std::remove_if(image_ids.begin(), image_ids.end(), [&](ImageId id) {
+            const ImageInfo& other = slot_images[id].info;
+            return other.guest_address >= info.guest_address + info.guest_size ||
+                   info.guest_address >= other.guest_address + other.guest_size;
+        }), image_ids.end());
+        BbEngine::GxObjects::NoteObjectPath(image_ids.empty() ? BbEngine::GxObjects::PathMadeDirectly
+                                                              : BbEngine::GxObjects::PathOverlapped);
+    }
+    if (held_served && BbEngine::GxObjects::TexturesChecked()) {
+        using namespace BbEngine::GxObjects;
+        ImageId exact{};
+        u32 others = 0;
+        for (const auto id : image_ids) {
+            const Image& candidate = slot_images[id];
+            if (id != image_id && candidate.info.pixel_format != vk::Format::eUndefined) {
+                ++others;
+            }
+            int mip{}, slice{};
+            if (!exact && candidate.info.pixel_format != vk::Format::eUndefined &&
+                candidate.info.guest_address == info.guest_address &&
+                candidate.info.guest_size == info.guest_size && candidate.info.size == info.size &&
+                candidate.info.resources == info.resources &&
+                ReuseRejection(info, candidate.info, desc.type, exact_fmt, mip, slice).empty()) {
+                exact = id;
+            }
+        }
+        NoteHeldCheck(exact == image_id ? CheckSame : !exact ? CheckResolver : CheckOther, others);
+        image_ids.clear();
+    }
     // Preserve the exact-match fast path, but validate independent mip/layer coverage too.
     // Other covering parents go through resolution so modified child targets can be merged.
     for (const auto cache_id : image_ids) {
@@ -1326,6 +1392,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         .view_mip = view_mip,
         .view_slice = view_slice,
     };
+    if (at_object && !held_served && view_mip <= 0 && view_slice <= 0 &&
+        slot_images[image_id].info.guest_address == info.guest_address) {
+        BbEngine::GxObjects::HoldImage(info.guest_address, image_id.index, slot_images[image_id].image_uid);
+    }
     if (BbEngine::GxObjects::On()) {
         BbEngine::GxObjects::NoteImage(info.guest_address, info.guest_size, ImageUid(image_id), info.size.width, info.size.height,
                                        static_cast<u32>(info.pixel_format));

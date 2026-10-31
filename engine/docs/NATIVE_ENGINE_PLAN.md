@@ -14,8 +14,8 @@ per step. Details belong in the commit that did the step.
 | A. Tools (Ghidra, full dump, GX facts) | done 2026-10-29 |
 | B. GX trace | done 2026-10-30 on this branch: 0 differences over 5.36 million draws in three areas (a boss still to check) |
 | C. GX objects | done 2026-10-30 on this branch: every bound object known over 2.2 million draws |
-| D. Draws from GX | started: shader resources proven to be in GX's slots; the resource bind is Lantern's for 90% of binds behind `LANTERN_GX_DRAWS=1`, 0 differences (`GX_NATIVE_PLAN.md`) |
-| E. Buffers and textures by object | started: GX and YEBIS textures are in the object table and 97% of image lookups map to one; a texture's description sets its image's mips and layers behind `LANTERN_GX_TEXTURES=1` |
+| D. Draws from GX | started: shader resources proven to be in GX's slots; the resource bind is Lantern's for 90% of binds behind `LANTERN_GX_DRAWS=1`, 0 differences; `LANTERN_GX_RECORDS=1` picks a draw's pipeline from a GX record, not yet run in the game (`GX_NATIVE_PLAN.md`) |
+| E. Buffers and textures by object | started: GX and YEBIS textures and the display buffers are in the object table; behind `LANTERN_GX_TEXTURES=1` a texture's description sets its image's mips and layers, depth targets included, and a texture holds its image, the old search taking the rest by reason, 99.99% of lookups map to an object; `LANTERN_GX_BUFFERS=1` keeps GX's upload arena in place, write faults 5,500 a second to 0 in the in-place memory model |
 | F, H-I. Renderer | not started |
 | G. Shaders | lifter built behind `LANTERN_LIFTER`, off by default: all 9,847 programs lift, 0 different from the recompiler on the dev cache for every family profile; not yet run in the game (`native_shader_compiler.md`) |
 | J. System libraries | done on this branch except GnmDriver (waits for the GX path) and online (the user's call); steps 6a-9 not played by a person yet: one unattended boot on copied saves, offline, reached the game (60 FPS, 847 draws a frame, two lamp warps) |

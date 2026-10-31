@@ -150,7 +150,8 @@ public:
     bool LoadPipelineStage(Serialization::Archive& ar, size_t stage, u64 expected_hash);
 
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {},
-                                                const PreparedDraw* prepared = nullptr);
+                                                const PreparedDraw* prepared = nullptr,
+                                                u64 gx_record = 0);
 
     /// bbport: worker side of draw preparation: selects the pipeline key for `sel.regs` without
     /// creating anything. False when a program or permutation does not exist yet.
@@ -222,6 +223,15 @@ private:
     std::shared_mutex programs_mutex;
     u64 prepared_hits = 0, prepared_misses = 0;
     const PreparedDraw* used_prepared = nullptr;
+    struct GxPipeline {
+        const GraphicsPipeline* pipeline = nullptr;
+        Shader::Info* vertex = nullptr;
+        Shader::Info* fragment = nullptr;
+    };
+    bool RestoreGxPipeline(const GxPipeline& memo);
+    void NoteGxRecords();
+    std::unordered_map<u64, GxPipeline> gx_pipelines;
+    u64 gx_hits = 0, gx_misses = 0, gx_differ = 0, gx_none = 0;
     tsl::robin_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_pipelines;
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
     PipelineSelection sel{}; ///< GPU thread selection state

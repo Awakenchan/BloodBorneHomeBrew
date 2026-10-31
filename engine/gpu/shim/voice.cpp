@@ -50,6 +50,7 @@ struct Remote {
 std::atomic<bool> g_started{false};
 std::atomic<bool> g_available{false};
 std::atomic<bool> g_speaking{false};
+std::atomic<bool> g_mic_silent{false};
 std::mutex g_mu;
 std::map<std::string, Clock::time_point> g_heard;
 std::set<std::string> g_muted;
@@ -121,12 +122,16 @@ void Loop() {
     const SDL_AudioSpec spec{SDL_AUDIO_S16, 1, kRate};
     SDL_AudioStream* mic = nullptr;
     OpusEncoder* encoder = nullptr;
-    std::map<std::string, Remote> remotes;
+    std::map<std::pair<int, std::string>, Remote> remotes;
     std::uint16_t seq = 0;
     VoiceGate gate;
     Clock::time_point loud{};
     std::deque<std::vector<std::int16_t>> pre_roll;
     bool told_mic = false;
+    bool told_silent = false;
+    float loudest = 0.0f;
+    int sent = 0, heard = 0;
+    Clock::time_point reported = Clock::now();
     std::int16_t pcm[kFrame];
     std::int16_t decoded[kFrame];
     std::uint8_t frame[kMaxFrameBytes];
@@ -165,13 +170,18 @@ void Loop() {
             if (mic) SDL_DestroyAudioStream(mic);
             mic = nullptr;
             g_speaking = false;
+            g_mic_silent = false;
         } else if (!mic) {
             mic = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_RECORDING, &spec, nullptr, nullptr);
             if (mic) {
                 SDL_ResumeAudioStreamDevice(mic);
-                if (!told_mic)
-                    std::printf("Voice: microphone open (%s%s)\n", s.voice_push_to_talk ? "push to talk, hold " : "voice activated",
-                                s.voice_push_to_talk ? KeyName(s.voice_talk_key).c_str() : "");
+                reported = Clock::now();
+                loudest = 0.0f;
+                if (!told_mic) {
+                    const char* device = SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(mic));
+                    std::printf("Voice: microphone open (%s%s) on %s\n", s.voice_push_to_talk ? "push to talk, hold " : "voice activated",
+                                s.voice_push_to_talk ? KeyName(s.voice_talk_key).c_str() : "", device ? device : "the default device");
+                }
             } else if (!told_mic) {
                 std::printf("Voice: no microphone (%s); listening only\n", SDL_GetError());
             }
@@ -180,15 +190,17 @@ void Loop() {
         const std::string own = BbRoom::PlayerName().substr(0, kLongestName);
         while (mic && SDL_GetAudioStreamAvailable(mic) >= int(sizeof pcm)) {
             SDL_GetAudioStreamData(mic, pcm, sizeof pcm);
+            const float level = Level(pcm, kFrame);
+            loudest = std::max(loudest, level);
             bool send = false;
             if (s.voice_push_to_talk) {
                 send = PushToTalkHeld();
             } else if (OldGate()) {
                 const auto now = Clock::now();
-                if (Level(pcm, kFrame) >= VoiceGate::kLoudSpeech) loud = now;
+                if (level >= VoiceGate::kLoudSpeech) loud = now;
                 send = now - loud < std::chrono::milliseconds(400);
             } else {
-                send = gate.Step(Level(pcm, kFrame));
+                send = gate.Step(level);
             }
             g_speaking = send;
             const auto encode_and_send = [&](const std::int16_t* samples) {
@@ -203,6 +215,7 @@ void Loop() {
                 packet.push_back(std::uint8_t(seq >> 8));
                 packet.insert(packet.end(), frame, frame + bytes);
                 BbRoom::SendVoice(packet);
+                ++sent;
             };
             if (!send) {
                 pre_roll.emplace_back(pcm, pcm + kFrame);
@@ -225,7 +238,7 @@ void Loop() {
                 if (g_muted.count(name)) continue;
                 g_heard[name] = Clock::now();
             }
-            Remote& r = remotes[name];
+            Remote& r = remotes[{sender, name}];
             if (!r.decoder) {
                 int error = 0;
                 r.decoder = opus_decoder_create(kRate, 1, &error);
@@ -236,18 +249,34 @@ void Loop() {
             }
             if (!r.decoder || !r.stream) continue;
             SDL_SetAudioStreamGain(r.stream, s.voice_volume.load());
+            ++heard;
             Play(r, data.data() + at + 2, int(data.size() - at - 2), packet_seq, decoded);
         }
         {
             std::lock_guard lock(g_mu);
             for (auto it = remotes.begin(); it != remotes.end();) {
-                if (g_muted.count(it->first)) {
+                if (g_muted.count(it->first.second)) {
                     Drop(it->second);
                     it = remotes.erase(it);
                 } else {
                     ++it;
                 }
             }
+        }
+        const auto now = Clock::now();
+        if (now - reported >= std::chrono::seconds(30)) {
+            reported = now;
+            const bool silent = mic && loudest < 0.0002f;
+            g_mic_silent = silent;
+            if (silent && !told_silent) {
+                std::printf("Voice: the microphone gives no sound: check its Windows privacy setting and the default input device\n");
+                told_silent = true;
+            }
+            if (sent || heard || mic) {
+                std::printf("Voice: last 30 s: loudest mic level %.4f, %d packets sent, %d heard\n", loudest, sent, heard);
+            }
+            loudest = 0.0f;
+            sent = heard = 0;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -265,6 +294,10 @@ bool Available() {
 
 bool Speaking() {
     return g_speaking.load();
+}
+
+bool MicSilent() {
+    return g_mic_silent.load();
 }
 
 std::vector<Talker> Talkers() {

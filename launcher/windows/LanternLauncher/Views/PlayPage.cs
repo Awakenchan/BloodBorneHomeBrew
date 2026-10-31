@@ -12,16 +12,14 @@ namespace BloodborneLauncher.Views
     {
         private readonly InfoBar _problem;
         private readonly SettingRow _engineCard;
-        private readonly AppButton _profileButton;
-        private readonly TextBlock _profileHint, _backupHint;
-        private readonly AppButton _restoreButton;
-        private readonly TextBlock _gameHint, _dlcHint, _userHint, _statGame, _statUpscaler, _statResolution, _statFps, _statVia;
+        private readonly TextBlock _savesHint;
+        private readonly TextBlock _gameHint, _dlcHint, _statGame, _statUpscaler, _statResolution, _statFps, _statVia;
         private readonly SymbolIcon _gameIcon;
-        private readonly AppButton _play, _resetUser, _resetDlc;
+        private readonly AppButton _play, _resetDlc;
         private readonly TextBlock _playStatus;
         private readonly DispatcherTimer _clock;
 
-        public PlayPage() : base(L.T("Play"), L.T("Check the game folder, choose where saves go, and start Bloodborne."))
+        public PlayPage() : base(L.T("Play"), L.T("Check the game folder and start Bloodborne."))
         {
             // ==================== Summary + Play ====================
             // A glass pane in the Modern layout, a card in Classic.
@@ -132,49 +130,8 @@ namespace BloodborneLauncher.Views
                 L.T("Bloodborne as a non-Steam game in your Steam library: Steam Input, the overlay and Big Picture work with it"),
                 SmallButton(L.T("Add to Steam"), SymbolRegular.Add24, (_, _) => AddToSteam()), out _));
 
-            // Player profiles: each its own saves and trophies (a button with a menu, not a drop-down,
-            // so a click can't pick an entry by itself).
-            _profileButton = SmallButton("Main", SymbolRegular.Person24, (_, _) => ShowProfileMenu());
-            Add(Card(SymbolRegular.People24, L.T("Player profile"),
-                L.T("Each profile has its own save files and trophies, so several people can play their own runs on this PC"), Row(
-                _profileButton,
-                SmallButton(L.T("New…"), SymbolRegular.PersonAdd24, (_, _) => NewProfile()),
-                IconButton(SymbolRegular.Rename24, L.T("Rename this profile"), (_, _) => RenameProfile()),
-                IconButton(SymbolRegular.PersonDelete24, L.T("Remove this profile from the list (its saves stay on disk)"), (_, _) => RemoveProfile())),
-                out _profileHint));
-
-            _resetUser = IconButton(SymbolRegular.ArrowUndo24, L.T("Back to the default folder"), (_, _) =>
-            {
-                S.Set("user_dir", "");
-                Ws.SaveSoon();
-                Refresh();
-            });
-            Add(Card(SymbolRegular.Save24, L.T("Saves folder"), "", Row(
-                SmallButton(L.T("Browse"), SymbolRegular.FolderOpen24, (_, _) => ChooseUser()),
-                IconButton(SymbolRegular.Open24, OpenTip, (_, _) => Paths.OpenFolder(GameEnvironment.SavesRoot(S))),
-                _resetUser), out _userHint));
-
-            // Save backups: made before each start when the saves changed (Workspace.StartGame).
-            _restoreButton = SmallButton(L.T("Restore…"), SymbolRegular.History24, (_, _) => ShowBackupMenu());
-            var backupToggle = new ToggleSwitch { IsChecked = S.Bool("save_backups"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
-            backupToggle.Click += (_, _) =>
-            {
-                S.Set("save_backups", backupToggle.IsChecked == true);
-                Ws.SaveSoon();
-                RefreshBackups();
-            };
-            Add(Card(SymbolRegular.ArrowSync24, L.T("Save backups"),
-                L.F($"Before every start and every {SaveBackups.PlayEvery.TotalMinutes:0} minutes while playing, when this profile's saves changed. The newest {SaveBackups.Keep} and {SaveBackups.PlayKeep} from play are kept"), Row(
-                _restoreButton,
-                IconButton(SymbolRegular.Open24, L.T("Open the backups folder"), (_, _) =>
-                {
-                    Directory.CreateDirectory(SaveBackups.Folder(S));
-                    Paths.OpenFolder(SaveBackups.Folder(S));
-                }),
-                backupToggle), out _backupHint));
-            Add(Card(SymbolRegular.ArrowImport24, L.T("Import saves"),
-                L.T("From shadPS4, another Bloodborne port, or a PS4 save exported decrypted (Apollo Save Tool, Save Wizard). This profile's saves are backed up first"),
-                SmallButton(L.T("Import…"), SymbolRegular.FolderArrowRight24, (_, _) => ImportSaves()), out _));
+            Add(Card(SymbolRegular.Save24, L.T("Saves and profiles"), L.T("Who is playing, their backups, and importing saves"),
+                SmallButton(L.T("Manage"), SymbolRegular.FolderOpen24, (_, _) => MainWindow.Instance?.Show("saves")), out _savesHint));
 
             ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
                 Choices.MenuLanguages, () => Ini.Get("menu_language", "en"), v => Ini.Set("menu_language", v));
@@ -183,7 +140,7 @@ namespace BloodborneLauncher.Views
             _clock.Tick += (_, _) => UpdateRunning();
 
             Ws.PortChanged += Refresh;
-            Ws.GameStateChanged += () => { RefreshProfile(); RefreshBackups(); };
+            Ws.GameStateChanged += RefreshSaves;
             Ws.Saved += RefreshSummary;
             Ws.TrophiesChanged += RefreshSummary;
         }
@@ -204,7 +161,7 @@ namespace BloodborneLauncher.Views
 
         /// <summary>The game folder's last check (null until the first one is done).</summary>
         private GameStatus? _status;
-        private int _refreshes, _profileReads, _backupReads;
+        private int _refreshes;
 
         /// <summary>Shows what is known at once, then checks the game folder (eboot.bin, param.sfo, an
         /// update folder beside it, a DLC dump nearby) on a worker thread: on a slow or sleeping
@@ -214,13 +171,8 @@ namespace BloodborneLauncher.Views
             var gameDir = GameEnvironment.GameDir(S);
             var dlcChosen = S.Str("dlc_dir");
             SetHint(_gameHint, string.IsNullOrEmpty(gameDir) ? L.T("Not chosen") : gameDir);
-            var custom = S.Str("user_dir").Length > 0;
-            var root = GameEnvironment.SavesRoot(S);
-            SetHint(_userHint, (custom ? root : L.F($"Default: {root}")) + L.T("  ·  every profile's saves live here"));
-            _resetUser.IsEnabled = custom;
             _resetDlc.IsEnabled = dlcChosen.Length > 0;
-            RefreshProfile();
-            RefreshBackups();
+            RefreshSaves();
             _engineCard.IsVisible = Updater.EngineOutdated;
             RefreshSummary();
             UpdateRunning();
@@ -369,260 +321,11 @@ namespace BloodborneLauncher.Views
             Refresh();
         }
 
-        // ---------------------------------------------------------------- player profiles
-
-        /// <summary>The profile line; whether saves exist is looked up on a worker thread.</summary>
-        private async void RefreshProfile()
+        private void RefreshSaves()
         {
-            var read = ++_profileReads;
             var profile = PlayerProfiles.Current(S);
-            _profileButton.Text = profile;
-            var dir = GameEnvironment.UserDir(S);
-            var saves = Path.Combine(dir, "savedata");
             var played = SessionStats.Playtime(S, profile);
-            bool found;
-            try { found = await Task.Run(() => Directory.Exists(saves) && Directory.EnumerateFileSystemEntries(saves).Any()); }
-            catch { found = false; }
-            if (read != _profileReads) return;
-            SetHint(_profileHint, dir + (found ? L.T("  ·  saves found") : L.T("  ·  no saves yet; the game creates them here")) +
-                                  L.F($"  ·  {Ws.Trophies.Count} / {TrophyTracker.All.Length} trophies") +
-                                  (played.TotalMinutes >= 1 ? L.F($"  ·  {SessionStats.Duration(played)} played") : ""));
-        }
-
-        // ---------------------------------------------------------------- save backups
-
-        /// <summary>The backups line. Listing them adds up every backup's size, so it is done on a
-        /// worker thread (it ran at each game start and stop, right when the launcher is busiest).</summary>
-        private async void RefreshBackups()
-        {
-            var read = ++_backupReads;
-            var folder = SaveBackups.Folder(S);
-            var profile = PlayerProfiles.Current(S);
-            List<SaveBackups.Backup> list;
-            try { list = await Task.Run(() => SaveBackups.ListIn(folder)); }
-            catch { list = new(); }
-            if (read != _backupReads) return;
-            _restoreButton.IsEnabled = list.Count > 0;
-            SetHint(_backupHint, !S.Bool("save_backups") ? L.T("Off: no backups are made")
-                : list.Count == 0 ? L.T("None yet: the first is made when you next press Play")
-                : L.F($"{list.Count} for {profile}  ·  newest {list[0].When:d MMM, HH:mm}"));
-        }
-
-        private void ShowBackupMenu()
-        {
-            var menu = new ContextMenu { Placement = PlacementMode.BottomEdgeAlignedLeft };
-            foreach (var backup in SaveBackups.List(S))
-            {
-                var item = new MenuItem
-                {
-                    Header = L.F($"{backup.When:d MMM yyyy, HH:mm}  ·  {backup.Bytes / 1048576.0:0.0} MB") +
-                             (backup.MadeBeforeRestore ? L.T("  ·  before a restore") : backup.MadeDuringPlay ? L.T("  ·  while playing") : ""),
-                };
-                var chosen = backup;
-                item.Click += (_, _) => Dispatcher.UIThread.Post(() => RestoreBackup(chosen));
-                menu.Items.Add(item);
-            }
-            menu.Open(_restoreButton);
-        }
-
-        private void ImportSaves()
-        {
-            if (Ws.Game.Running)
-            {
-                Prompt.Tell(L.T("Import saves"), L.T("Close the game first: it has the saves open."));
-                return;
-            }
-            string? from = null;
-            if (SaveImport.Known(S).FirstOrDefault() is { } found)
-            {
-                var choice = Prompt.Choose(L.T("Import saves"),
-                    L.F($"Bloodborne saves found ({found.From}), last saved {found.Saved:d MMM yyyy, HH:mm}:\n{found.Dir}"),
-                    L.T("Cancel"), L.T("Choose others…"), L.T("Import these"));
-                if (choice <= 0) return;
-                if (choice == 2) from = found.Dir;
-            }
-            if (from == null)
-            {
-                var how = Prompt.Choose(L.T("Import saves"),
-                    L.T("Choose the folder with your saves (another port's whole folder is fine), or a save file: ") +
-                    L.T("a .zip of the save, or one of its files (userdata0000)."),
-                    L.T("Cancel"), L.T("A folder…"), L.T("A file or .zip…"));
-                if (how <= 0) return;
-                string? folder;
-                if (how == 1)
-                {
-                    folder = PickFolder(L.T("The folder with your saves (another port's whole folder is fine)"), "");
-                }
-                else
-                {
-                    var file = Ui.OpenFile(L.T("A save file: a .zip of the save, or one of its files (userdata0000)"),
-                        L.T("Bloodborne saves (*.zip;userdata*)|*.zip;userdata*|All files|*.*"));
-                    try { folder = file != null ? SaveImport.FolderOfFile(file) : null; }
-                    catch (Exception e)
-                    {
-                        Prompt.Tell(L.T("Import saves"), L.T("Could not open that file: ") + e.Message);
-                        return;
-                    }
-                }
-                if (folder == null) return;
-                if (SaveImport.Find(folder, L.T("chosen folder")).FirstOrDefault() is not { } inside)
-                {
-                    Prompt.Tell(L.T("Import saves"), SaveImport.HasEncryptedPs4Save(folder)
-                        ? L.T("That is a PS4 save as the console copies it to USB: it is encrypted with that PS4's own keys, ") +
-                          L.T("which only the console has, so no PC program can open it.\n\n") +
-                          L.T("Export it decrypted instead: on a jailbroken PS4 with Apollo Save Tool (Copy save game → decrypted, to USB), ") +
-                          L.T("or with Save Wizard for PS4. Then import that folder here.")
-                        : L.T("No Bloodborne saves in that folder or the folders under it (a SPRJ0005 folder with userdata files)."));
-                    return;
-                }
-                from = inside.Dir;
-            }
-            var target = SaveImport.Target(S);
-            if (string.Equals(Path.GetFullPath(from), Path.GetFullPath(target),
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            {
-                Prompt.Tell(L.T("Import saves"), L.T("Those are already this profile's saves."));
-                return;
-            }
-            var replacing = SaveImport.HasSaves(target)
-                ? L.T("\n\nThis profile's current saves are backed up first: Save backups › Restore… brings them back.")
-                : "";
-            if (!Prompt.Confirm(L.T("Import saves"), L.F($"Copy the saves from\n{from}\ninto {PlayerProfiles.Current(S)}'s saves?{replacing}"), L.T("Import")))
-                return;
-            try
-            {
-                SaveImport.Import(S, from);
-                Ws.Log(L.F($"Saves imported from {from}."), LogLevel.Good);
-                Prompt.Tell(L.T("Saves imported"), L.T("Start the game and choose Continue or Load Game."));
-            }
-            catch (Exception e)
-            {
-                Ws.Log(L.T("Could not import the saves: ") + e.Message, LogLevel.Bad);
-                Prompt.Tell(L.T("Import saves"), L.T("Could not import: ") + e.Message);
-            }
-            Refresh();
-        }
-
-        private void RestoreBackup(SaveBackups.Backup backup)
-        {
-            if (Ws.Game.Running)
-            {
-                Prompt.Tell(L.T("Restore saves"), L.T("Close the game first: it has the saves open."));
-                return;
-            }
-            if (!Prompt.Confirm(L.T("Restore saves"),
-                    L.F($"{PlayerProfiles.Current(S)}'s saves go back to {backup.When:d MMM yyyy, HH:mm}. ") +
-                    L.T("What is there now is backed up first, so you can undo this from the same list."), L.T("Restore")))
-                return;
-            try
-            {
-                SaveBackups.Restore(S, backup);
-                Ws.Log(L.F($"Saves restored from {backup.When:d MMM yyyy, HH:mm}."), LogLevel.Good);
-            }
-            catch (Exception e)
-            {
-                Ws.Log(L.T("Could not restore the saves: ") + e.Message, LogLevel.Bad);
-                Prompt.Tell(L.T("Restore saves"), L.T("Could not restore: ") + e.Message);
-            }
-            Refresh();
-        }
-
-        private void ShowProfileMenu()
-        {
-            var menu = new ContextMenu { Placement = PlacementMode.BottomEdgeAlignedLeft };
-            var current = PlayerProfiles.Current(S);
-            foreach (var profile in PlayerProfiles.All(S))
-            {
-                var name = profile;
-                var item = new MenuItem
-                {
-                    Header = name,
-                    ToggleType = MenuItemToggleType.CheckBox,
-                    IsChecked = name.Equals(current, StringComparison.OrdinalIgnoreCase),
-                };
-                item.Click += (_, _) => Dispatcher.UIThread.Post(() => SwitchProfile(name));
-                menu.Items.Add(item);
-            }
-            menu.Open(_profileButton);
-        }
-
-        private bool GameBlocksProfiles()
-        {
-            if (!Ws.Game.Running) return false;
-            Prompt.Tell(L.T("Player profile"), L.T("Close the game before changing profiles: it is using this profile's saves."));
-            return true;
-        }
-
-        private void SwitchProfile(string name)
-        {
-            if (name.Equals(PlayerProfiles.Current(S), StringComparison.OrdinalIgnoreCase) || GameBlocksProfiles()) return;
-            S.Set("player_profile", PlayerProfiles.IsMain(name) ? "" : name);
-            Directory.CreateDirectory(GameEnvironment.UserDir(S));
-            Ws.Trophies.SetUserDir(GameEnvironment.UserDir(S));
-            Ws.SaveSoon();
-            Ws.Log(L.F($"Player profile: {name}."), LogLevel.Step);
-            Refresh();
-        }
-
-        private void NewProfile()
-        {
-            if (GameBlocksProfiles()) return;
-            var values = Prompt.Ask(L.T("New player profile"), L.T("Its own save files and trophies. The game starts a new character the first time."),
-                new Prompt.Field(L.T("Name"), "", L.T("e.g. Alex")));
-            if (values == null) return;
-            var name = PlayerProfiles.Validate(S, values[0], out var error);
-            if (name == null) { Prompt.Tell(L.T("New player profile"), error); return; }
-            PlayerProfiles.Add(S, name);
-            SwitchProfile(name);
-        }
-
-        private void RenameProfile()
-        {
-            var current = PlayerProfiles.Current(S);
-            if (PlayerProfiles.IsMain(current)) { Prompt.Tell(L.T("Rename profile"), L.T("Main is the original saves folder and keeps its name.")); return; }
-            if (GameBlocksProfiles()) return;
-            var values = Prompt.Ask(L.T("Rename profile"), null, new Prompt.Field(L.T("Name"), current));
-            if (values == null) return;
-            var name = PlayerProfiles.Validate(S, values[0], out var error, renaming: current);
-            if (name == null) { Prompt.Tell(L.T("Rename profile"), error); return; }
-            try
-            {
-                PlayerProfiles.Rename(S, current, name);
-            }
-            catch (Exception e)
-            {
-                Prompt.Tell(L.T("Rename profile"), L.T("Could not rename its folder: ") + e.Message);
-                return;
-            }
-            Ws.Trophies.SetUserDir(GameEnvironment.UserDir(S));
-            Ws.SaveSoon();
-            Refresh();
-        }
-
-        private void RemoveProfile()
-        {
-            var current = PlayerProfiles.Current(S);
-            if (PlayerProfiles.IsMain(current)) { Prompt.Tell(L.T("Remove profile"), L.T("Main is the original saves folder and can't be removed.")); return; }
-            if (GameBlocksProfiles()) return;
-            if (!Prompt.Confirm(L.T("Remove profile"),
-                    L.F($"{current} is taken off the list and the launcher switches to Main. Its saves and trophies are not deleted: ") +
-                    L.F($"they stay in {GameEnvironment.UserDir(S)}, and adding a profile with the same name brings them back."), L.T("Remove")))
-                return;
-            PlayerProfiles.Remove(S, current);
-            S.Set("player_profile", "");
-            Ws.Trophies.SetUserDir(GameEnvironment.UserDir(S));
-            Ws.SaveSoon();
-            Refresh();
-        }
-
-        private void ChooseUser()
-        {
-            if (GameBlocksProfiles()) return;
-            var path = PickFolder(L.T("Saves folder"), GameEnvironment.SavesRoot(S));
-            if (path == null) return;
-            S.Set("user_dir", path);
-            Ws.SaveSoon();
-            Refresh();
+            SetHint(_savesHint, played.TotalMinutes >= 1 ? L.F($"{profile}  ·  {SessionStats.Duration(played)} played") : profile);
         }
     }
 }

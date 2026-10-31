@@ -212,4 +212,41 @@ bool SyncSubmit() {
     return Part("BB_OPTISCALER_SYNC_SUBMIT") && (!Detect().frame_generation.empty() || always);
 }
 
+std::filesystem::path PrivateFfxLibrary(const std::filesystem::path& source, const char* name) {
+#ifdef _WIN32
+    const char* env = std::getenv("BB_OPTISCALER_FFX_PRIVATE");
+    if (!(env && env[0] == '1') && !Part("BB_OPTISCALER_FFX_PRIVATE")) {
+        return {};
+    }
+    std::wstring exe(MAX_PATH, L'\0');
+    exe.resize(GetModuleFileNameW(nullptr, exe.data(), DWORD(exe.size())));
+    const auto dir = std::filesystem::path{exe}.parent_path() / "ffx-private";
+    const auto target = dir / name;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const auto source_size = std::filesystem::file_size(source, ec);
+    if (ec) {
+        return {};
+    }
+    const auto source_time = std::filesystem::last_write_time(source, ec);
+    const bool same = std::filesystem::file_size(target, ec) == source_size && !ec &&
+                      std::filesystem::last_write_time(target, ec) == source_time && !ec;
+    if (!same) {
+        std::filesystem::remove(target, ec);
+        if (!CreateHardLinkW(target.c_str(), source.c_str(), nullptr)) {
+            std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
+        }
+    }
+    return std::filesystem::exists(target, ec) ? target : std::filesystem::path{};
+#else
+    return {};
+#endif
+}
+
+const char* FfxFailureHint() {
+    return Detect().loaded ? "; OptiScaler took over this call: set EnableFfxInputs=false in OptiScaler.ini, "
+                             "or take its files out of engine\\out"
+                           : "";
+}
+
 } // namespace Vulkan::OptiScaler

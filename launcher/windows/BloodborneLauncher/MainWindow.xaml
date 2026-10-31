@@ -439,6 +439,13 @@
                                 <TextBlock Text="{loc:Tr &#x27;Play&#x27;}" />
                             </StackPanel>
                         </RadioButton>
+                        <RadioButton x:Name="ClassicSaves" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:SavesPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Save24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Saves&#x27;}" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </RadioButton>
                         <RadioButton x:Name="ClassicControls" GroupName="Classic" Style="{StaticResource SidebarItem}"
                                      Tag="{x:Type views:ControlsPage}" Checked="SidebarItem_Checked">
                             <StackPanel Orientation="Horizontal">
@@ -490,6 +497,13 @@
                                 <TextBlock Text="{loc:Tr &#x27;Cheats&#x27;}" />
                             </StackPanel>
                         </RadioButton>
+                        <RadioButton GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:SaveEditorPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Save24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Save editor&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
                         <TextBlock Text="{loc:Tr &#x27;LANTERN&#x27;}" Style="{StaticResource SidebarHeader}" Margin="18,18,0,6" />
                         <RadioButton x:Name="ClassicSettings" GroupName="Classic" Style="{StaticResource SidebarItem}"
                                      Tag="{x:Type views:SettingsPage}" Checked="SidebarItem_Checked">
@@ -522,6 +536,8 @@
                 <StackPanel Orientation="Horizontal">
                     <RadioButton x:Name="PlayItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Play&#x27;}"
                                  Tag="{x:Type views:PlayPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton x:Name="SavesItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Saves&#x27;}"
+                                 Tag="{x:Type views:SavesPage}" Checked="SidebarItem_Checked" />
                     <RadioButton Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Display&#x27;}"
                                  Tag="{x:Type views:DisplayPage}" Checked="SidebarItem_Checked" />
                     <RadioButton Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Graphics&#x27;}"
