@@ -596,7 +596,12 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *e) {
         regs.gpr[8] = c->R8; regs.gpr[9] = c->R9; regs.gpr[10] = c->R10; regs.gpr[11] = c->R11;
         regs.gpr[12] = c->R12; regs.gpr[13] = c->R13; regs.gpr[14] = c->R14; regs.gpr[15] = c->R15;
         uintptr_t next_rip = 0;
-        if (isa_rewrite_trap(isa_table, (uintptr_t)c->Rip - 1, &regs, &next_rip)) {
+        uintptr_t rip = (uintptr_t)c->Rip;
+        /* Windows reports the breakpoint RIP at the INT3 byte on some paths, while
+         * other paths report the following byte. Accept either convention. */
+        int handled = isa_rewrite_trap(isa_table, rip - 1, &regs, &next_rip);
+        if (!handled) handled = isa_rewrite_trap(isa_table, rip, &regs, &next_rip);
+        if (handled) {
             c->Rax = regs.gpr[0]; c->Rcx = regs.gpr[1]; c->Rdx = regs.gpr[2]; c->Rbx = regs.gpr[3];
             c->Rsp = regs.gpr[4]; c->Rbp = regs.gpr[5]; c->Rsi = regs.gpr[6]; c->Rdi = regs.gpr[7];
             c->R8 = regs.gpr[8]; c->R9 = regs.gpr[9]; c->R10 = regs.gpr[10]; c->R11 = regs.gpr[11];
