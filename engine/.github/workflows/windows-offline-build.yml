@@ -15,6 +15,7 @@ on:
       - "src/**"
       - "engine/src/**"
       - "engine/tools/isa-scan/**"
+      - "engine/tools/setup/**"
       - "engine/start/**"
       - "engine/build.sh"
       - "engine/run.sh"
