@@ -59,3 +59,20 @@ jobs:
           if (!(Test-Path engine/tools/isa-scan/target/release/bb-isa-scan.exe)) {
             throw "The Windows ISA scanner executable was not produced."
           }
+
+      - name: Setup MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: mingw-w64-clang-x86_64-clang
+
+      - name: Syntax-check Windows loader and compile ISA helpers
+        shell: msys2 {0}
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0A00 \
+            -Iengine -Iengine/src -fsyntax-only engine/src/probe.c
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only \
+            -Iengine/src -c engine/src/isa_emulate.c -o "$RUNNER_TEMP/isa_emulate.obj"
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror \
+            -Iengine/src -c engine/src/isa_rewrite.c -o "$RUNNER_TEMP/isa_rewrite.obj"
