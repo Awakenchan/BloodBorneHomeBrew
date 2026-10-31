@@ -35,6 +35,10 @@ jobs:
             -c engine/src/isa_rewrite.c -o "$RUNNER_TEMP/isa_rewrite.o"
           clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only -Iengine/src \
             -c engine/src/isa_emulate.c -o "$RUNNER_TEMP/isa_emulate.o"
+      - name: Syntax-check the integrated Linux loader
+        run: |
+          clang -std=gnu11 -O2 -Wall -Wextra -Werror -pthread -Iengine -Iengine/src \
+            -fsyntax-only engine/src/probe.c
       - name: Differentially test instruction semantics
         run: |
           clang -std=gnu11 -O2 -Wall -Wextra -Werror -mgeneral-regs-only -Iengine/src \
