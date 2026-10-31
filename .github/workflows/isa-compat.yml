@@ -23,6 +23,8 @@ on:
       - ".github/workflows/isa-compat.yml"
   pull_request:
     paths:
+      - "engine/gpu/third_party/fsr-vulkan/CMakeLists.txt"
+      - "engine/gpu/third_party/fsr-vulkan/src/ffx_1_1_4_portability.hpp"
       - "engine/build.sh"
       - "engine/scripts/run_windows.py"
       - "engine/src/isa_*.c"
@@ -93,6 +95,18 @@ jobs:
           cargo build --manifest-path engine/tools/isa-scan/Cargo.toml --release
           test -f engine/tools/isa-scan/target/release/bb-isa-scan.exe
           ldd engine/tools/isa-scan/target/release/bb-isa-scan.exe
+
+      - name: Check FSR SDK portability macros under Windows MinGW
+        shell: msys2 {0}
+        run: |
+          cat > "$RUNNER_TEMP/ffx-countof-check.cpp" <<'EOF'
+          #include "ffx_1_1_4_portability.hpp"
+          int values[3];
+          static_assert(_countof(values) == 3, "MinGW must provide the FSR SDK _countof fallback");
+          EOF
+          clang++ -std=c++17 -Wall -Wextra -Werror \
+            -Iengine/gpu/third_party/fsr-vulkan/src \
+            -fsyntax-only "$RUNNER_TEMP/ffx-countof-check.cpp"
 
       - name: Syntax-check Windows loader and compile ISA helpers
         shell: msys2 {0}
