@@ -11,10 +11,6 @@ if [[ -z ${CC:-} ]]; then
     fi
 fi
 if [[ -z ${CC:-} ]]; then echo 'Install GCC/Clang or set CC.' >&2; exit 1; fi
-if ! command -v cargo >/dev/null 2>&1; then
-    echo 'Install the Rust toolchain (cargo) to build the MOVBE/BMI1/LZCNT scanner.' >&2
-    exit 1
-fi
 # Dependencies come from pkg-config (Vulkan loader/headers, SDL3). On NixOS the
 # environment is provided by shell.nix; re-enter it automatically if needed.
 if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && command -v cmake >/dev/null && command -v ninja >/dev/null; }; then
@@ -22,6 +18,10 @@ if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && co
         exec env BB_IN_NIX_SHELL=1 nix-shell shell.nix --run "bash build.sh $*"
     fi
     echo 'Need pkg-config with vulkan and sdl3, cmake and ninja (see shell.nix).' >&2; exit 1
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+    echo 'Install the Rust toolchain (cargo) to build the MOVBE/BMI1/LZCNT scanner.' >&2
+    exit 1
 fi
 read -r -a includes <<< "$(pkg-config --cflags vulkan sdl3)"
 read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3)"
