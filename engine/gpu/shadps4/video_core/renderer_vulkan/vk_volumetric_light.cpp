@@ -120,8 +120,10 @@ VolumetricLight::VolumetricLight(const Instance& instance_, Scheduler& scheduler
     CreatePass(point, {vk::DescriptorType::eStorageBuffer,
                        vk::DescriptorType::eStorageBuffer,
                        vk::DescriptorType::eCombinedImageSampler,
-                       vk::DescriptorType::eStorageImage},
-               POINT_VOLUMETRIC_COMP, 3 * sizeof(u32));
+                       vk::DescriptorType::eStorageImage,
+                       vk::DescriptorType::eStorageBuffer,
+                       vk::DescriptorType::eStorageBuffer},
+               POINT_VOLUMETRIC_COMP, 16 * sizeof(u32));
     CreatePass(celestial, {vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
                           vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer,
                           vk::DescriptorType::eStorageBuffer, vk::DescriptorType::eStorageBuffer},
@@ -407,7 +409,8 @@ void VolumetricLight::Tint(const vk::DescriptorBufferInfo& lighting, u32 offset_
     }
 }
 
-void VolumetricLight::PointLights(const PointShadow::Inputs& in, u32 count) {
+void VolumetricLight::PointLights(const PointShadow::Inputs& in, u32 count,
+                                const PointRegion& region) {
     if (!ready || !Enabled()) return;
     const float intensity = BbSettings::Get().graphics_point_fog_intensity.load(
         std::memory_order_relaxed);
@@ -421,8 +424,21 @@ void VolumetricLight::PointLights(const PointShadow::Inputs& in, u32 count) {
         std::printf("Point volumetric lighting: unexpected point-light buffer layout; off\n");
         return;
     }
-    struct PointParams { u32 offsets, count; float intensity; };
-    const PointParams params{in.offsets, count, std::clamp(intensity, 0.0f, 3.0f)};
+    struct PointParams {
+        u32 offsets, count;
+        float intensity;
+        u32 vertex_offset, vertex_stride, index_offset, index_size;
+        s32 first_vertex;
+        std::array<float, 4> viewport;
+        std::array<s32, 4> scissor;
+    };
+    static_assert(sizeof(PointParams) == 64);
+    const PointParams params{in.offsets, count, std::clamp(intensity, 0.0f, 3.0f),
+        region.vertex_offset, region.vertex_stride, region.index_offset, region.index_size,
+        region.first_vertex, region.viewport,
+        {region.scissor.offset.x, region.scissor.offset.y,
+         region.scissor.offset.x + s32(region.scissor.extent.width),
+         region.scissor.offset.y + s32(region.scissor.extent.height)}};
     scheduler.EndRendering();
     const vk::DescriptorBufferInfo constants{in.constants, in.constants_offset, in.constants_range};
     const vk::DescriptorBufferInfo lights{in.lights, in.lights_offset, in.lights_range};
@@ -430,10 +446,11 @@ void VolumetricLight::PointLights(const PointShadow::Inputs& in, u32 count) {
     const vk::DescriptorImageInfo out{{}, *point_view, vk::ImageLayout::eGeneral};
     scheduler.RecordCrumb(
         {.name = "Unshadowed point volumetric integration"},
-        [params, constants, lights, depth, out, w = depth_width, h = depth_height,
+        [params, constants, lights, depth, out, vertices = region.vertices, indices = region.indices,
+         w = depth_width, h = depth_height,
          pipeline = *point.pipeline, layout = *point.layout](vk::CommandBuffer cmd) {
             Before(cmd);
-            const std::array<vk::WriteDescriptorSet, 4> writes{{
+            const std::array<vk::WriteDescriptorSet, 6> writes{{
                 {.dstBinding = 0, .descriptorCount = 1,
                  .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &constants},
                 {.dstBinding = 1, .descriptorCount = 1,
@@ -442,6 +459,10 @@ void VolumetricLight::PointLights(const PointShadow::Inputs& in, u32 count) {
                  .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &depth},
                 {.dstBinding = 3, .descriptorCount = 1,
                  .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &out},
+                {.dstBinding = 4, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &vertices},
+                {.dstBinding = 5, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &indices},
             }};
             cmd.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
             cmd.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, layout, 0, writes);

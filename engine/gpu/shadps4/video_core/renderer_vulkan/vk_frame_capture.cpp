@@ -245,7 +245,8 @@ void FrameCapture::Dispatch(u64 cs_hash, u32 x, u32 y, u32 z) {
 }
 
 void FrameCapture::Buffer(u64 stage_hash, u32 slot, VAddr address, const void* data, u64 size) {
-    const u64 bytes = std::min<u64>(size, 1024) & ~u64(3);
+    const bool motion_constants = stage_hash == 0x29e06868 || stage_hash == 0xd3c8bb21;
+    const u64 bytes = std::min<u64>(size, motion_constants ? 4096 : 1024) & ~u64(3);
     std::string out = std::format("  buffer stage {:016x} slot {} at {:#x} size {}:", stage_hash,
                                   slot, address, size);
     const auto* words = static_cast<const float*>(data);

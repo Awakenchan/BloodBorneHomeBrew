@@ -405,6 +405,15 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
     if (!LoadShaderMeta(ar, program->info, fetch, spec, perm_idx, expected_hash)) {
         return false;
     }
+    // Standalone modules include the ordinary variants inspected before selecting
+    // object-motion pipelines, even though no final pipeline references those variants.
+    // Compute pipelines use selection slot zero, not SwStage::Compute.
+    const size_t record_stage = program->info.hw_stage == Shader::HwStage::Compute ?
+        0u : u32(program->info.sw_stage);
+    if (stage == MaxShaderStages) stage = record_stage;
+    if (stage >= MaxShaderStages || record_stage != stage) {
+        return false;
+    }
 
     std::vector<u32> spv;
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderBinary,
@@ -421,17 +430,18 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         word += count;
     }
 
-    if (stage == u32(Shader::SwStage::Fragment)) {
+    const bool fragment = program->info.sw_stage == Shader::SwStage::Fragment;
+    if (fragment) {
         PatchSsrComposite(program->info.pgm_hash, Shader::HwStage::Fragment, spv);
         Pom::PatchPom(program->info.pgm_hash, true, spv);
     }
-    const bool gtao_stage = stage == u32(Shader::SwStage::Fragment) &&
+    const bool gtao_stage = fragment &&
                             IsGtaoReplacement(program->info.pgm_hash, Shader::HwStage::Fragment);
     if (gtao_stage) {
         LOG_WARNING(Render_Vulkan, "SSAO shader {:#x} replaced with GTAO (cached pipeline)",
                     program->info.pgm_hash);
     }
-    const bool ssr_stage = stage == u32(Shader::SwStage::Fragment) &&
+    const bool ssr_stage = fragment &&
                            IsSsrReplacement(program->info.pgm_hash, Shader::HwStage::Fragment);
     auto it = program_cache.find(program->info.pgm_hash);
     Program* target = it == program_cache.end() ? program.get() : it->second.get();
@@ -444,10 +454,17 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         }
         module = target->modules[perm_idx].module;
     } else {
+        const auto blur = NativeMotionBlurShader(program->info, profile, spec.start);
+        if (!blur.empty()) {
+            LOG_WARNING(Render_Vulkan, "Motion blur {:#x}: high-quality native filtering (cached)",
+                        program->info.pgm_hash);
+        }
         const auto [result, compiled] = instance.GetDevice().createShaderModule(
             gtao_stage
                 ? vk::ShaderModuleCreateInfo{.codeSize = sizeof(GTAO_FRAG),
                                              .pCode = GTAO_FRAG}
+            : !blur.empty()
+                ? vk::ShaderModuleCreateInfo{.codeSize = blur.size_bytes(), .pCode = blur.data()}
             : ssr_stage
                 ? vk::ShaderModuleCreateInfo{.codeSize = sizeof(SSR_FRAG), .pCode = SSR_FRAG}
                 : vk::ShaderModuleCreateInfo{.codeSize = spv.size() * sizeof(u32),
@@ -762,6 +779,46 @@ void PipelineCache::WarmUp() {
         database.Save(Storage::BlobType::ShaderProfile, "profile", std::move(profile_data));
         std::scoped_lock lock{progress_mutex};
         precache_progress.loaded = 0;
+    }
+    if (!damaged) {
+        u32 restored = 0, rejected = 0;
+        const auto module_count = [&] {
+            size_t count = 0;
+            for (const auto& [_, program] : program_cache) {
+                for (const auto& module : program->modules) {
+                    count += bool(module.module);
+                }
+            }
+            return count;
+        };
+        const size_t before = module_count();
+        for (const auto& name : database.ListBlobs(Storage::BlobType::ShaderMeta)) {
+            sel = {.regs = regs};
+            try {
+                size_t used = 0;
+                const u64 hash = std::stoull(name, &used, 16);
+                if (used != name.size()) {
+                    ++rejected;
+                    LOG_WARNING(Render, "Skipping shader record with invalid name {}", name);
+                    continue;
+                }
+                std::vector<u8> data;
+                database.Load(Storage::BlobType::ShaderMeta, name, data);
+                Serialization::Archive ar{std::move(data)};
+                if (LoadPipelineStage(ar, MaxShaderStages, hash)) {
+                    ++restored;
+                } else {
+                    ++rejected;
+                    LOG_WARNING(Render, "Skipping incompatible shader record {}", name);
+                }
+            } catch (const std::exception& error) {
+                ++rejected;
+                LOG_WARNING(Render, "Skipping shader record {}: {}", name, error.what());
+            }
+        }
+        std::printf("GPU cache: %u shader records restored, %zu additional modules not referenced "
+                    "by pipelines (%u left out)\n", restored, module_count() - before, rejected);
+        sel = {.regs = regs};
     }
     const auto status = GetPrecacheProgress();
     LOG_INFO(Render, "Preloaded {} of {} pipelines ({} rejected)", status.loaded, status.total,

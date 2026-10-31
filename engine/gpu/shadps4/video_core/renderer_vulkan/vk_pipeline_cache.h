@@ -31,6 +31,9 @@ namespace Vulkan {
 /// True for the game's SSAO pixel shader while GTAO stands in for it (BB_GTAO).
 bool IsGtaoReplacement(u64 pgm_hash, Shader::HwStage stage);
 bool IsSsrReplacement(u64 pgm_hash, Shader::HwStage stage);
+std::span<const u32> NativeMotionBlurShader(const Shader::Info& info,
+                                           const Shader::Profile& profile,
+                                           const Shader::Backend::Bindings& start);
 void PatchSsrComposite(u64 pgm_hash, Shader::HwStage stage, std::vector<u32>& spv);
 } // namespace Vulkan
 

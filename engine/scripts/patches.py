@@ -8,6 +8,7 @@ image places eboot vaddr 0 at image offset 0. Only literal writes are supported
 import argparse
 import json
 import os
+import re
 import struct
 import sys
 import xml.etree.ElementTree as ET
@@ -19,6 +20,33 @@ FPS_PRESETS={'30':[],'60':['60 FPS++'],'90':['90 FPS++','Sprint Fix (High FPS)']
              'uncap':['Uncap FPS++','Sprint Fix (High FPS)']}
 SCALED_FPS={'120':120,'144':144}
 SCALED_BASE='90 FPS++'
+
+def engine_performance(name):
+    return name=='Performance Patch (perf increase)' or name.endswith('Light Grid (READ NOTES)')
+
+
+def performance_writes(elf, output):
+    """Share the native start's version-checked defaults, without requiring the XML toggle."""
+    writes=[]
+    table=Path(__file__).resolve().parent.parent/'start/performance.inc'
+    for line in table.read_text().splitlines():
+        if not line.strip() or line.startswith('//'):
+            continue
+        match=re.fullmatch(r'\{0x([0-9a-f]+), 0x([0-9a-f]+)u, "([0-9a-f]+)"\},',line)
+        if not match:
+            raise ValueError(f'Invalid built-in performance operation: {line}')
+        offset,crc=int(match[1],16),int(match[2],16)
+        data=bytes.fromhex(match[3])
+        original=original_bytes(elf,offset,len(data))
+        if original is None or zlib.crc32(original)!=crc:
+            print(f'Engine performance: not applied: executable differs from 1.09 at image offset {offset:#x}')
+            return []
+        if offset in (0x2295cb6,0x2295cc0):
+            data=data[:6]+struct.pack('<I',output[0 if offset==0x2295cb6 else 1])
+        writes.append((offset,data))
+    print(f'Engine performance: built-in renderer defaults, profiling bypasses and worker waits; '
+          f'light grid {output[0]}x{output[1]} (no optional patch required)')
+    return writes
 
 
 def scaled_rate_values(fps):
@@ -476,7 +504,7 @@ def external_patches(directory, app_version='01.09', exclude=Path(__file__).reso
 
 
 def managed_builtin(name):
-    return (name in {n for names in FPS_PRESETS.values() for n in names} or name in (SCALED_BASE, '30 FPS++',
+    return (engine_performance(name) or name in {n for names in FPS_PRESETS.values() for n in names} or name in (SCALED_BASE, '30 FPS++',
             '60FPS (no deltatime)', INTEL_TONEMAP, SFX_WORKAROUND) or
             name in {n for pair in EFFECTS.values() for n in pair if n} or name in MODEL_LOD.values() or
             name.startswith('Resolution Patch'))
@@ -617,6 +645,7 @@ def main():
     names+=[n for n in effect_patches(read_settings(a.settings)) if n not in names]
     selected=[n for n in builtin_selection(a.xml,a.patches_config) if n not in names]
     names+=selected
+    names=[n for n in names if not engine_performance(n)]
     if intel_tonemap_fix() and INTEL_TONEMAP not in names:
         names.append(INTEL_TONEMAP)
     if os.environ.get('BB_SFX_WORKAROUND')=='1' and SFX_WORKAROUND not in names:
@@ -629,7 +658,12 @@ def main():
     for name in [n for n in names if breaks_online(compile_patches(a.xml,[n],a.app_version,segments))]:
         skip_for_online(name)
         names.remove(name)
-    writes=compile_patches(a.xml,names,a.app_version,segments)
+    out=output_size(read_settings(a.settings))
+    if a.output_res:
+        out=tuple(int(v) for v in a.output_res.lower().split('x'))
+    if len(out)!=2 or not all(1<=v<=16384 for v in out):
+        raise ValueError(f'Invalid output resolution: {out}')
+    writes=performance_writes(elf,out)+compile_patches(a.xml,names,a.app_version,segments)
     if a.fps in SCALED_FPS and SCALED_BASE in names:
         writes=rate_scaled(writes,SCALED_FPS[a.fps])
         print(f'Patches: {a.fps} FPS: {SCALED_BASE} with its frame-rate values for {a.fps}')
@@ -641,9 +675,6 @@ def main():
         writes+=pools
         print(f'Patches: render pools {RENDER_POOL_SIZE>>10} KiB each (the game\'s 256)')
     size=render_size(read_settings(a.settings),a.render_res) if a.render_res else None
-    out=output_size(read_settings(a.settings))
-    if a.output_res:
-        out=tuple(int(v) for v in a.output_res.lower().split('x'))
     ui=ui_size(read_settings(a.settings),out) if size else OUTPUT_SIZE
     if size:
         writes+=resolution_writes(a.xml,size,a.app_version,segments,ui)

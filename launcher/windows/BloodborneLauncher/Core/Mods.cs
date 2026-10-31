@@ -198,6 +198,7 @@ namespace BloodborneLauncher.Core
         /// <summary>Built-in patches the port sets from its own settings or no longer needs: not
         /// offered (scripts/patches.py managed_builtin, the same list).</summary>
         public static bool ManagedBuiltIn(string name) =>
+            name == "Performance Patch (perf increase)" || name.EndsWith("Light Grid (READ NOTES)", StringComparison.Ordinal) ||
             name.Contains("FPS++", StringComparison.Ordinal) || name.StartsWith("Resolution Patch", StringComparison.Ordinal) ||
             name.StartsWith("Model LOD", StringComparison.Ordinal) || ManagedNames.Contains(name);
 

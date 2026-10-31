@@ -23,13 +23,21 @@ namespace BloodborneLauncher.Core
     /// </summary>
     public static class Updater
     {
+#if BBFSS_DISTRIBUTION
+        public const string Repository = "fromsoftserve/BBFSS";
+#else
         public const string Repository = "Awakenchan/LanternEngine";
+#endif
         public static string ReleasesPage => $"https://github.com/{Repository}/releases";
 
         /// <summary>The engine build this launcher is made for (package.json "engine").</summary>
         public const string EngineId = "lantern-fps94";
 
+#if BBFSS_DISTRIBUTION
+        public const string ExeName = "BBFSS.exe";
+#else
         public const string ExeName = "Lantern Engine.exe";
+#endif
         /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>
         public const string OldExeName = "Bloodborne Launcher.exe";
         private const string PackageFile = "package.json";

@@ -3,6 +3,46 @@
 The map-driven DOF filter and its stock fallback are described in
 [depth-of-field.md](depth-of-field.md). It preserves the current upscaler/DOF ordering.
 
+## Optional higher-quality native motion blur
+
+The overlay's **Game effects > Motion blur quality** dropdown selects **Default**
+(the original filter) or **High** (denser filtering for native shader `29e06868`).
+The choice is saved as `graphics_motion_blur_quality` (0/1, default 0) and applies
+after restarting Bloodborne. Module selection uses the startup snapshot, so
+changing the dropdown cannot partially switch pipelines mid-session.
+The existing Motion blur setting still controls whether the effect runs.
+
+Both native blur passes retain their original velocity decoding, maximum sampling
+extent, activity threshold, depth/velocity rejection, screen bounds, per-pass gain,
+and RGBA processing. Long trails use up to 33 samples rather than five; trails
+with a radius of two working-image pixels or less keep the original five positions.
+The sample budget follows the native UV offsets and bound color-image size rather
+than assuming 1080p. No temporal color accumulation, random jitter, brightness
+clamp, alpha-derived color normalization, or extra blur strength is added.
+
+The replacement is selected for fresh compilation and cached module restoration.
+Original translated shader binaries remain in the cache, so opting out does not
+require deleting it. Unsupported resource layouts are logged and retain the
+original shader. `motion-blur-shader-test` exercises the shared filtering code on
+Vulkan, including HDR/native gains, stationary pixels, short-trail equivalence,
+depth/velocity rejection, bounds and long-trail sampling.
+
+This changes sampling only, not the native half-resolution velocity preparation
+or packed object-velocity format. It does not relocate blur after temporal
+reconstruction or change shutter/frame-rate scaling. On scaled-output paths,
+DLSS/FSR can still reconstruct already-blurred imagery. More samples add GPU work;
+this is an opt-in quality tradeoff, not a performance optimization.
+
+Same-frame constant captures with the launcher set to 30 FPS and 60 FPS showed
+identical native preparation gains (dwords 616/617: 2.21698/-1.25), packed-vector
+decoding, both blur kernels, activity threshold and rejection settings. The
+preparation shader combines camera reprojection with packed object displacement;
+these captured stages did not increase their gain at the higher cap. This does
+not establish an exact shutter angle, rule out earlier history compensation, or
+measure the exposure of animated objects. Frame-relative blur can legitimately
+shorten at higher frame rates; a fixed-duration shutter is a different behavior.
+No speculative FPS multiplier is applied by either quality mode.
+
 ## Native TAA and missing FSR 4 assets (2026-10-01)
 
 `upscaler=taa` / `BB_UPSCALER=taa` is a separate native-resolution temporal AA

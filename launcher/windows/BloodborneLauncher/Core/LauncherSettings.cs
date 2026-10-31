@@ -47,7 +47,11 @@ namespace BloodborneLauncher.Core
             ["custom_command"] = "",
             ["custom_args"] = "",
             ["switch_to_output"] = true,
+#if BBFSS_DISTRIBUTION
+            ["check_updates"] = false,
+#else
             ["check_updates"] = true,
+#endif
             ["save_backups"] = true,
             ["discord_status"] = "off",
             ["discord_timer"] = true,

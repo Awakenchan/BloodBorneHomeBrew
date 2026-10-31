@@ -2329,14 +2329,60 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             }
         }();
         if (count != 0) {
-            volumetric_light->PointLights(
-                {.constants = buffer_infos[0].buffer,
-                 .constants_offset = buffer_infos[0].offset,
-                 .constants_range = buffer_infos[0].range,
-                 .lights = buffer_infos[1].buffer,
-                 .lights_offset = buffer_infos[1].offset,
-                 .lights_range = buffer_infos[1].range,
-                 .offsets = push_data.buf_offsets[0]}, count);
+            const auto& v = vertex_binds;
+            const auto position = std::ranges::find(
+                v.attributes, 0u, &vk::VertexInputAttributeDescription2EXT::location);
+            const bool valid_position = position != v.attributes.end() &&
+                position->format == vk::Format::eR32G32B32A32Sfloat &&
+                position->binding < v.num_buffers &&
+                v.host_buffers[position->binding] && v.host_strides[position->binding] >= 16;
+            if (vs_info.pgm_hash != 0x8747a367 || num_indices != 4 || num_instances != 1 ||
+                !valid_position ||
+                (is_indexed && index_bind.type != vk::IndexType::eUint16 &&
+                 index_bind.type != vk::IndexType::eUint32)) {
+                static bool reported = false;
+                if (!reported) {
+                    std::printf("Point volumetric lighting: unsupported light-grid "
+                                "quad; draw omitted\n");
+                    reported = true;
+                }
+            } else {
+                const u32 pi = position->binding;
+                const u64 alignment = instance.StorageMinAlignment();
+                const u64 vertex_aligned = v.host_offsets[pi] & ~(alignment - 1);
+                const u32 vertex_adjustment = u32(v.host_offsets[pi] - vertex_aligned);
+                const vk::DescriptorBufferInfo vertices{v.host_buffers[pi], vertex_aligned,
+                                                        v.host_sizes[pi] + vertex_adjustment};
+                const u32 index_size = !is_indexed ? 0u :
+                    index_bind.type == vk::IndexType::eUint16 ? 2u : 4u;
+                const u64 index_aligned = index_bind.offset & ~(alignment - 1);
+                const u32 index_adjustment = u32(index_bind.offset - index_aligned);
+                const vk::DescriptorBufferInfo indices =
+                    is_indexed ? vk::DescriptorBufferInfo{index_bind.handle, index_aligned,
+                                                          index_adjustment + 4u * index_size}
+                               : vertices;
+                const auto& vp = regs.viewports[0];
+                volumetric_light->PointLights(
+                    {.constants = buffer_infos[0].buffer,
+                     .constants_offset = buffer_infos[0].offset,
+                     .constants_range = buffer_infos[0].range,
+                     .lights = buffer_infos[1].buffer,
+                     .lights_offset = buffer_infos[1].offset,
+                     .lights_range = buffer_infos[1].range,
+                     .offsets = push_data.buf_offsets[0]},
+                    count,
+                    {vertices,
+                     indices,
+                     vertex_adjustment + position->offset,
+                     u32(v.host_strides[pi]),
+                     index_adjustment,
+                     index_size,
+                     s32(first_vertex),
+                     {vp.xscale * target_scale[0], vp.yscale * target_scale[1],
+                      vp.xoffset * target_scale[0] + target_offset[0],
+                      vp.yoffset * target_scale[1] + target_offset[1]},
+                     DrawScissor(0)});
+            }
         }
     }
     if (ps_info && ps_info->pgm_hash == 0xdda49e89 && vs_info.pgm_hash == 0xb28f5a56 &&
@@ -5602,7 +5648,7 @@ void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool
                              [&](auto&& command) { scheduler.Record(std::move(command)); });
 }
 
-void Rasterizer::UpdateViewportScissorState() const {
+vk::Rect2D Rasterizer::DrawScissor(u32 i) const {
     const auto& regs = Regs();
 
     const auto combined_scissor_value_tl = [](s16 scr, s16 win, s16 gen, s16 win_offset) {
@@ -5631,6 +5677,34 @@ void Rasterizer::UpdateViewportScissorState() const {
         regs.generic_scissor.bottom_right_y,
         enable_offset ? regs.window_offset.window_y_offset : 0);
 
+    if (regs.mode_control.vport_scissor_enable) {
+        scsr.top_left_x = std::max(scsr.top_left_x, s16(regs.viewport_scissors[i].top_left_x));
+        scsr.top_left_y = std::max(scsr.top_left_y, s16(regs.viewport_scissors[i].top_left_y));
+        scsr.bottom_right_x = std::min(AmdGpu::Scissor::Clamp(scsr.bottom_right_x),
+                                      regs.viewport_scissors[i].bottom_right_x);
+        scsr.bottom_right_y = std::min(AmdGpu::Scissor::Clamp(scsr.bottom_right_y),
+                                      regs.viewport_scissors[i].bottom_right_y);
+    }
+    if (ui_full_scissor[0] && scsr.top_left_x <= 0 && scsr.top_left_y <= 0 &&
+        scsr.top_left_x + s32(scsr.GetWidth()) >= s32(ui_full_scissor[0]) &&
+        scsr.top_left_y + s32(scsr.GetHeight()) >= s32(ui_full_scissor[1])) {
+        return {.offset = {0, 0}, .extent = {16384, 16384}};
+    }
+    if (target_scale[0] != 1.0f || target_scale[1] != 1.0f || target_offset[0] || target_offset[1]) {
+        const auto scale = [](s32 v, float f) { return s32(std::lround(float(v) * f)); };
+        const s32 x0 = std::max(0, scale(scsr.top_left_x, target_scale[0]) + s32(target_offset[0]));
+        const s32 y0 = std::max(0, scale(scsr.top_left_y, target_scale[1]) + s32(target_offset[1]));
+        const s32 x1 = scale(scsr.top_left_x + s32(scsr.GetWidth()), target_scale[0]) + s32(target_offset[0]);
+        const s32 y1 = scale(scsr.top_left_y + s32(scsr.GetHeight()), target_scale[1]) + s32(target_offset[1]);
+        return {.offset = {x0, y0},
+                .extent = {u32(std::max(x1 - x0, 0)), u32(std::max(y1 - y0, 0))}};
+    }
+    return {.offset = {scsr.top_left_x, scsr.top_left_y},
+            .extent = {scsr.GetWidth(), scsr.GetHeight()}};
+}
+
+void Rasterizer::UpdateViewportScissorState() const {
+    const auto& regs = Regs();
     boost::container::static_vector<vk::Viewport, AmdGpu::NUM_VIEWPORTS> viewports;
     boost::container::static_vector<vk::Rect2D, AmdGpu::NUM_VIEWPORTS> scissors;
 
@@ -5695,37 +5769,7 @@ void Rasterizer::UpdateViewportScissorState() const {
 
         viewports.push_back(viewport);
 
-        auto vp_scsr = scsr;
-        if (regs.mode_control.vport_scissor_enable) {
-            vp_scsr.top_left_x =
-                std::max(vp_scsr.top_left_x, s16(regs.viewport_scissors[i].top_left_x));
-            vp_scsr.top_left_y =
-                std::max(vp_scsr.top_left_y, s16(regs.viewport_scissors[i].top_left_y));
-            vp_scsr.bottom_right_x = std::min(AmdGpu::Scissor::Clamp(vp_scsr.bottom_right_x),
-                                              regs.viewport_scissors[i].bottom_right_x);
-            vp_scsr.bottom_right_y = std::min(AmdGpu::Scissor::Clamp(vp_scsr.bottom_right_y),
-                                              regs.viewport_scissors[i].bottom_right_y);
-        }
-        if (ui_full_scissor[0] && vp_scsr.top_left_x <= 0 && vp_scsr.top_left_y <= 0 &&
-            vp_scsr.top_left_x + s32(vp_scsr.GetWidth()) >= s32(ui_full_scissor[0]) &&
-            vp_scsr.top_left_y + s32(vp_scsr.GetHeight()) >= s32(ui_full_scissor[1])) {
-            scissors.push_back({.offset = {0, 0}, .extent = {16384, 16384}}); // the render area clips it
-        } else if (target_scale[0] != 1.0f || target_scale[1] != 1.0f || target_offset[0] || target_offset[1]) {
-            const auto scale = [](s32 v, float f) { return s32(std::lround(float(v) * f)); };
-            const s32 x0 = std::max(0,scale(vp_scsr.top_left_x, target_scale[0])+s32(target_offset[0]));
-            const s32 y0 = std::max(0,scale(vp_scsr.top_left_y, target_scale[1])+s32(target_offset[1]));
-            const s32 x1 = scale(vp_scsr.top_left_x + s32(vp_scsr.GetWidth()), target_scale[0])+s32(target_offset[0]);
-            const s32 y1 = scale(vp_scsr.top_left_y + s32(vp_scsr.GetHeight()), target_scale[1])+s32(target_offset[1]);
-            scissors.push_back({
-                .offset = {x0, y0},
-                .extent = {u32(std::max(x1 - x0, 0)), u32(std::max(y1 - y0, 0))},
-            });
-        } else {
-            scissors.push_back({
-                .offset = {vp_scsr.top_left_x, vp_scsr.top_left_y},
-                .extent = {vp_scsr.GetWidth(), vp_scsr.GetHeight()},
-            });
-        }
+        scissors.push_back(DrawScissor(i));
     }
 
     if (viewports.empty()) {

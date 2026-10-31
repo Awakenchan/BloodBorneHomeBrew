@@ -7,21 +7,64 @@ layout(scalar, binding = 0) readonly buffer Constants { uint d[]; } cb;
 layout(scalar, binding = 1) readonly buffer Lights { uint d[]; } lights;
 layout(binding = 2) uniform sampler2D depth_tex;
 layout(binding = 3, rgba16f) uniform image2D fog_out;
+layout(scalar, binding = 4) readonly buffer Vertices { uint d[]; } vertices;
+layout(scalar, binding = 5) readonly buffer Indices { uint d[]; } indices;
 layout(push_constant) uniform Params {
     uint offsets;
     uint count;
     float intensity;
+    uint vertex_offset;
+    uint vertex_stride;
+    uint index_offset;
+    uint index_size;
+    int first_vertex;
+    vec4 viewport;
+    ivec4 scissor;
 };
 
 uint base;
+shared vec4 tile_bounds;
 float c(uint i) { return uintBitsToFloat(cb.d[base + i]); }
 vec4 row(uint i) { return vec4(c(i), c(i + 1u), c(i + 2u), c(i + 3u)); }
 bool finite3(vec3 v) { return !any(isnan(v)) && !any(isinf(v)); }
 
+vec4 bounds() {
+    vec2 lo = vec2(1e30), hi = vec2(-1e30);
+    for (uint i = 0u; i < 4u; ++i) {
+        uint index = i;
+        if (index_size != 0u) {
+            uint byte_offset = index_offset + i * index_size;
+            if (byte_offset / 4u >= indices.d.length()) return vec4(0.0);
+            uint packed = indices.d[byte_offset / 4u];
+            index = index_size == 2u ? (packed >> ((byte_offset & 2u) * 8u)) & 65535u : packed;
+        }
+        int vertex = int(index) + first_vertex;
+        if (vertex < 0) return vec4(0.0);
+        uint word = vertex_offset / 4u, stride = vertex_stride / 4u;
+        uint words = vertices.d.length();
+        if (stride == 0u || words < 4u || word > words - 4u ||
+            uint(vertex) > (words - 4u - word) / stride) return vec4(0.0);
+        uint at = word + uint(vertex) * stride;
+        vec3 p = uintBitsToFloat(uvec3(vertices.d[at], vertices.d[at + 1u], vertices.d[at + 3u]));
+        if (!finite3(p) || abs(p.z) < 1e-8) return vec4(0.0);
+        vec2 screen = p.xy / p.z * viewport.xy + viewport.zw;
+        lo = min(lo, screen);
+        hi = max(hi, screen);
+    }
+    return vec4(max(lo, vec2(scissor.xy)), min(hi, vec2(scissor.zw)));
+}
+
 void main() {
+    // The native light grid repeats each light in every tile it affects.
+    // Integrate only that draw's quad, not the entire screen again for each tile.
+    if (gl_LocalInvocationIndex == 0u) tile_bounds = bounds();
+    barrier();
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(fog_out);
     if (any(greaterThanEqual(px, size))) return;
+    vec2 centre = vec2(px) + 0.5;
+    if (any(lessThan(centre, tile_bounds.xy)) ||
+        any(greaterThanEqual(centre, tile_bounds.zw))) return;
     vec2 uv = (vec2(px) + 0.5) / vec2(size);
     float depth = texelFetch(depth_tex, px, 0).r;
     if (!(depth > 0.0 && depth <= 1.0)) return;

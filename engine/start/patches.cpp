@@ -30,6 +30,37 @@ constexpr unsigned kGxRegionGame = 160, kGxRegionDefault = 288, kGxRegionMax = 4
 using Write = std::pair<std::uint64_t, Bytes>;
 using Writes = std::vector<Write>;
 
+bool EnginePerformance(const std::string& name) {
+    return name == "Performance Patch (perf increase)" ||
+           name.ends_with("Light Grid (READ NOTES)");
+}
+
+Writes PerformanceWrites(const Bytes& elf, Size output) {
+    struct Operation { std::uint64_t offset; std::uint32_t original_crc; const char* value; };
+    static constexpr Operation operations[]{
+#include "performance.inc"
+    };
+    Writes writes;
+    for (const auto& operation : operations) {
+        Bytes data = FromHex(operation.value);
+        const auto original = OriginalBytes(elf, operation.offset, data.size());
+        if (!original || Crc32(original->data(), original->size()) != operation.original_crc) {
+            Log("Engine performance: not applied: executable differs from 1.09 at image offset %s",
+                Hex(operation.offset).c_str());
+            return {};
+        }
+        // The native light-grid tile covers the selected output, never a fixed 1080p/1440p.
+        if (operation.offset == 0x2295cb6 || operation.offset == 0x2295cc0) {
+            Store<std::uint32_t>(data.data() + 6,
+                std::uint32_t(operation.offset == 0x2295cb6 ? output.w : output.h));
+        }
+        writes.emplace_back(operation.offset, std::move(data));
+    }
+    Log("Engine performance: built-in renderer defaults, profiling bypasses and worker waits; "
+        "light grid %dx%d (no optional patch required)", output.w, output.h);
+    return writes;
+}
+
 const std::map<std::string, std::vector<std::string>>& FpsPresets() {
     static const std::map<std::string, std::vector<std::string>> presets{
         {"30", {}}, {"60", {"60 FPS++"}}, {"90", {"90 FPS++", kSprint}}, {"uncap", {"Uncap FPS++", kSprint}}};
@@ -416,6 +447,7 @@ std::vector<std::string> EffectPatches(const std::map<std::string, std::string>&
 }
 
 bool ManagedBuiltIn(const std::string& name) {
+    if (EnginePerformance(name)) return true;
     for (const auto& [_, names] : FpsPresets())
         if (std::find(names.begin(), names.end(), name) != names.end()) return true;
     for (const char* n : {kScaledBase, "30 FPS++", "60FPS (no deltatime)", kIntelTonemap, kSfxWorkaround, kHeapPatch})
@@ -689,6 +721,7 @@ PatchResult CompilePatches(const PatchRequest& request) {
     for (const std::string& n : BuiltinSelection(xml, request.patches_config))
         if (!has(n)) selected.push_back(n);
     names.insert(names.end(), selected.begin(), selected.end());
+    std::erase_if(names, EnginePerformance);
     if (Env("BB_INTEL_TONEMAP_FIX", "") == "1" && !has(kIntelTonemap)) names.push_back(kIntelTonemap);
     if (Env("BB_SFX_WORKAROUND", "") == "1" && !has(kSfxWorkaround)) names.push_back(kSfxWorkaround);
 
@@ -744,16 +777,19 @@ PatchResult CompilePatches(const PatchRequest& request) {
         }
         names = kept;
     }
-    // The Performance Patch zeroes the byte the SSR patch sets (0x26c4fd7); the later write wins, so SSR goes last.
-    {
-        const std::string ssr = "Enable Screen Space Reflections (READ NOTE)";
-        const auto it = std::find(names.begin(), names.end(), ssr);
-        if (it != names.end() && it + 1 != names.end()) {
-            names.erase(it);
-            names.push_back(ssr);
-        }
+    Size out = OutputSize(settings);
+    if (!request.output_res.empty()) {
+        const auto parsed = ParseSize(request.output_res);
+        if (!parsed || parsed->w < 1 || parsed->h < 1 || parsed->w > 16384 || parsed->h > 16384)
+            throw Error("invalid output resolution " + request.output_res);
+        out = *parsed;
     }
-    Writes writes = xml.Compile(names, app_version, segments);
+    if (out.w < 1 || out.h < 1 || out.w > 16384 || out.h > 16384)
+        throw Error("invalid output resolution " + std::to_string(out.w) + "x" + std::to_string(out.h));
+    Writes writes = PerformanceWrites(elf, out);
+    // Explicit effect settings must win over the built-in renderer defaults (notably SSR).
+    const Writes selected_writes = xml.Compile(names, app_version, segments);
+    writes.insert(writes.end(), selected_writes.begin(), selected_writes.end());
     if (scaled_fps.count(request.fps) && has(kScaledBase)) {
         writes = RateScaled(writes, scaled_fps.at(request.fps));
         Log("Patches: %s FPS: %s with its frame-rate values for %s", request.fps.c_str(), kScaledBase, request.fps.c_str());
@@ -783,12 +819,6 @@ PatchResult CompilePatches(const PatchRequest& request) {
         }
     }
     const std::optional<Size> size = request.render_res.empty() ? std::nullopt : RenderSize(settings, request.render_res);
-    Size out = OutputSize(settings);
-    if (!request.output_res.empty()) {
-        const auto parsed = ParseSize(request.output_res);
-        if (!parsed) throw Error("invalid output resolution " + request.output_res);
-        out = *parsed;
-    }
     const Size ui = size ? UiSize(settings, out) : kOutput;
     if (size) {
         const Writes resolution = ResolutionWrites(xml, *size, app_version, segments, ui);

@@ -49,6 +49,15 @@ Directional volumetrics integrate scattering along camera rays through a three-d
 Point lights also contribute genuine volumetric scattering: camera rays are intersected with each light's spherical influence and scattering is integrated within that volume. These are not screen-space glow sprites. Point-light fog is deliberately unshadowed; scene depth stops the viewing ray, but walls do not block light traveling into the volume, so light leakage remains possible.
 
 Separate saved sliders control directional and point-light volumetric intensity.
+Point-light integration respects each native light-grid quad and scissor, so a light
+listed in multiple tiles is not added repeatedly across the whole screen.
+
+The native Windows start includes the previously optional Performance Patch behavior
+(renderer defaults, profiling bypasses and shorter worker waits). Its light-grid tile
+size follows the selected output resolution automatically; old Performance Patch and
+resolution-specific Light Grid selections are ignored. This preserves that patch's
+native visual changes, not just its scheduling changes. Explicit effect settings,
+including SSR, and the directional/local shadow quality controls remain authoritative.
 
 Implementation: [`volumetric_light.comp`](engine/gpu/shadps4/video_core/host_shaders/volumetric_light.comp) and [`point_volumetric.comp`](engine/gpu/shadps4/video_core/host_shaders/point_volumetric.comp).
 
@@ -64,8 +73,8 @@ Implementation: the PCSS path in [`contact_shadow.comp`](engine/gpu/shadps4/vide
 
 The native four-cascade layout and each map's authored split distances are retained.
 The in-game **Game effects (restart required) > Shadow resolution** dropdown selects
-**High** (2048 atlas, 1024 per cascade), **Very high** (4096 atlas, 2048 per cascade)
-or **Ultra** (8192 atlas, 4096 per cascade; default). The selection is saved as
+**High** (2048 atlas, 1024 per cascade), **Very high** (4096 atlas, 2048 per cascade; default)
+or **Ultra** (8192 atlas, 4096 per cascade). The selection is saved as
 `graphics_shadow_resolution=0/1/2` and applies when Bloodborne restarts, independently
 of Picture tuning. It overrides map-specific atlas quality without changing cascade
 distances. Ultra uses approximately 256 MiB per D32 atlas versus 64 MiB for Very high,
@@ -116,7 +125,7 @@ cascade blends, sloped surfaces, sky and invalid coordinates.
 
 ### Higher-resolution native local-light shadows
 
-The game's original shadowcasting point lights use variance shadow maps, storing depth and squared-depth moments on six cube faces. BBFSS raises their native pool's base face size to 2048 pixels, producing **2048/1024/512/256** distance-quality tiers. The native allocator creates the larger faces and shared working targets, and the rendering and filtering passes consume their dimensions. This adds actual shadow silhouette detail rather than upscaling an existing low-resolution map.
+The game's original shadowcasting point lights use variance shadow maps, storing depth and squared-depth moments on six cube faces. At Very high local shadow resolution, BBFSS raises their native pool's base face size to 2048 pixels, producing **2048/1024/512/256** distance-quality tiers. The native allocator creates the larger faces and shared working targets, and the rendering and filtering passes consume their dimensions. This adds actual shadow silhouette detail rather than upscaling an existing low-resolution map.
 
 The separate **Game effects (restart required) > Local shadow resolution** dropdown
 controls point lights and spotlights together. It is saved as
@@ -124,9 +133,9 @@ controls point lights and spotlights together. It is saved as
 
 | Quality | Point-light face tiers | Spotlight tiers |
 |---|---|---|
-| Default | Native allocations, normally 256/128/64/32 | Native allocations, normally 512/256/128/64 |
+| Default (selected by default) | Native allocations, normally 256/128/64/32 | Native allocations, normally 512/256/128/64 |
 | High (4x dimensions) | 1024/512/256/128 | 2048/1024/512/256 |
-| Very high (8x dimensions; selected by default) | 2048/1024/512/256 | 4096/2048/1024/512 |
+| Very high (8x dimensions) | 2048/1024/512/256 | 4096/2048/1024/512 |
 
 Default leaves the original allocation instructions and filter constants untouched,
 including any native profile-dependent sizing. High uses the original 3.2-texel

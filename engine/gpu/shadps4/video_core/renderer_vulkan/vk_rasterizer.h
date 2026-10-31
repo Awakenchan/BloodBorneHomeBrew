@@ -388,6 +388,7 @@ private:
 
     void UpdateDynamicState(const GraphicsPipeline* pipeline, bool is_indexed) const;
     void UpdateViewportScissorState() const;
+    vk::Rect2D DrawScissor(u32 viewport) const;
     void UpdateDepthStencilState() const;
     void UpdatePrimitiveState(bool is_indexed) const;
     void UpdateRasterizationState() const;

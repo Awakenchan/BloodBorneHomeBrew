@@ -30,7 +30,14 @@ public:
         u32 model_offset, transform_offset, scene_offset;
     };
     void Celestial(const CelestialInputs& inputs);
-    void PointLights(const PointShadow::Inputs& inputs, u32 count);
+    struct PointRegion {
+        vk::DescriptorBufferInfo vertices, indices;
+        u32 vertex_offset, vertex_stride, index_offset, index_size;
+        s32 first_vertex;
+        std::array<float, 4> viewport;
+        vk::Rect2D scissor;
+    };
+    void PointLights(const PointShadow::Inputs& inputs, u32 count, const PointRegion& region);
     void Composite();
 
 private:

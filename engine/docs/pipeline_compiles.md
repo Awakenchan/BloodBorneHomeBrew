@@ -5,6 +5,14 @@ default on). With a cold NVIDIA cache a compile takes 100-300 ms; entering an ar
 20-90 at once. Pipelines known from the shader database are created at start (preload) and
 come out of the driver cache (`<serial>.vkcache`) quickly.
 
+The start also restores cached shader modules that no saved pipeline references.
+Object-motion selection first inspects ordinary shader variants, then selects the
+motion-enabled variants for the final pipeline. Warming only saved pipelines left
+those ordinary modules out, translating the same shaders again on every launch
+despite their `.meta` and `.spv` files already being on disk. Standalone restoration
+uses the same profile, specialization, binary-version and SPIR-V validation as the
+pipeline warm-up; incompatible records are reported and rebuilt on demand.
+
 ## What a draw does with a pipeline still compiling
 
 Before (0.9.10 beta 1) the draw recording thread (stage B of the draw pipe) waited for it when

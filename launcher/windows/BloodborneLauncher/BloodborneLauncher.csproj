@@ -12,6 +12,10 @@
     <Version>0.9.9</Version>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(BBFSSDistribution)' == 'true'">
+    <AssemblyName>BBFSS</AssemblyName>
+    <DefineConstants>$(DefineConstants);BBFSS_DISTRIBUTION</DefineConstants>
+  </PropertyGroup>
 
   <ItemGroup>
     <!-- The source fingerprint the builder writes beside the exe; shared so both agree on it. -->

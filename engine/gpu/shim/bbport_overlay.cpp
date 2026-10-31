@@ -646,6 +646,21 @@ void PictureSection() {
 void EffectsSection() {
     auto& s = BbSettings::Get();
     Section("Game effects (restart required)", "Эффекты игры (после перезапуска)");
+    if (const char* label = Item("Motion blur quality", "Качество размытия в движении")) {
+        const char* levels[] = {BbSettings::MenuText("Default", "По умолчанию"),
+                                BbSettings::MenuText("High", "Высокое")};
+        int quality = std::clamp(s.graphics_motion_blur_quality.load(), 0, 1);
+        if (ImGui::Combo(label, &quality, levels, 2))
+            Store(s.graphics_motion_blur_quality, quality, true);
+        Hint(BbSettings::MenuText(
+            "Default uses the game's original filter. High samples long motion trails more densely, "
+            "without extending blur distance. Higher GPU cost; Motion blur must also be enabled. "
+            "Requires restarting Bloodborne. Does not change shutter or frame-rate scaling.",
+            "По умолчанию используется исходный фильтр игры. Высокое качество увеличивает число "
+            "выборок для длинных следов без увеличения дальности размытия. Повышает нагрузку на GPU; "
+            "размытие в движении должно быть включено. Требуется перезапуск Bloodborne. "
+            "Не меняет выдержку или масштабирование по частоте кадров."));
+    }
     if (const char* label = Item("Shadow resolution", "Разрешение теней")) {
         const char* levels[] = {BbSettings::MenuText("High", "Высокое"),
                                 BbSettings::MenuText("Very high", "Очень высокое"),
@@ -1773,6 +1788,7 @@ void Menu() {
     bool restart =
         s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
         s.live_resolution != s.startup_live_resolution || s.hdr != s.startup_hdr ||
+        s.graphics_motion_blur_quality != s.startup_motion_blur_quality ||
         BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         restart |= e != BbSettings::EffectGi && e != BbSettings::EffectContactShadows &&
