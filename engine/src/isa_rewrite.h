@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only
+ * Adapted from SpartanPort (https://github.com/FelipePrado0/SpartanPort).
+ * Modified for Lantern Engine on 2026-10-31: loader interface restricted to MOVBE/BMI1/LZCNT. */
  * Loader side of the MOVBE/BMI1/LZCNT rewrite, derived from SpartanPort.
  * Reads a G3ISA1 table, builds one stub per site and patches the image before
  * its executable segments are protected. */
