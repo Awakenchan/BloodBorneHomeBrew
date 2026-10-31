@@ -342,7 +342,38 @@ fn encode_table(image: &[u8], sites: &[Site]) -> Result<Vec<u8>, String> {
     Ok(table)
 }
 
+#[cfg(target_arch = "x86_64")]
+fn missing_cpu_sets() -> Vec<&'static str> {
+    use std::arch::x86_64::{__cpuid, __cpuid_count};
+    // Use CPUID directly so this check is available in both GNU and MSVC Windows builds.
+    unsafe {
+        let basic_max = __cpuid(0).eax;
+        let leaf1_ecx = if basic_max >= 1 { __cpuid(1).ecx } else { 0 };
+        let leaf7_ebx = if basic_max >= 7 { __cpuid_count(7, 0).ebx } else { 0 };
+        let extended_max = __cpuid(0x8000_0000).eax;
+        let extended_ecx = if extended_max >= 0x8000_0001 {
+            __cpuid(0x8000_0001).ecx
+        } else {
+            0
+        };
+        let mut missing = Vec::new();
+        if leaf1_ecx & (1 << 22) == 0 { missing.push("MOVBE"); }
+        if leaf7_ebx & (1 << 3) == 0 { missing.push("BMI1"); }
+        if extended_ecx & (1 << 5) == 0 { missing.push("LZCNT"); }
+        missing
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn missing_cpu_sets() -> Vec<&'static str> {
+    vec!["x86-64 host required"]
+}
+
 fn scan(boot: &Path, out: &Path) -> Result<String, String> {
+    let missing = missing_cpu_sets();
+    if missing.is_empty() {
+        return Ok("CPU: native MOVBE, BMI1 and LZCNT; scanner skipped, original code will execute natively".into());
+    }
     let data = fs::read(boot).map_err(|e| format!("{}: {e}", boot.display()))?;
     let (segments, image) = read_boot_linked(&data)?;
     let mut sites = Vec::new();
@@ -370,8 +401,8 @@ fn scan(boot: &Path, out: &Path) -> Result<String, String> {
     let int3 = sites.iter().filter(|s| s.mode == Mode::Int3).count();
     let unsupported = sites.iter().filter(|s| s.mode == Mode::Unsupported).count();
     Ok(format!(
-        "ISA: {} sites (MOVBE {}, BMI1 {}, LZCNT {}); {} relocated, {} int3, {} unsupported",
-        sites.len(), count_set("MOVBE"), count_set("BMI1"), count_set("LZCNT"),
+        "CPU missing {}; ISA: {} sites (MOVBE {}, BMI1 {}, LZCNT {}); {} relocated, {} int3, {} unsupported",
+        missing.join(", "), sites.len(), count_set("MOVBE"), count_set("BMI1"), count_set("LZCNT"),
         relocated, int3, unsupported
     ))
 }
