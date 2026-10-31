@@ -271,12 +271,14 @@ IsaReport isa_rewrite_apply(IsaTable *t, unsigned char *image, unsigned char *st
         if (!rel32_to(site + JMP_BYTES, stub, &rel) || (size = emit_stub(code, stub, s, &t->hits[i], image)) == 0) {
             fprintf(stderr, "ISA: site 0x%llx out of rel32 range\n", (unsigned long long)s->offset);
             report.skipped++;
+            report.unsupported_needed++;
             continue;
         }
         if (size > ISA_STUB_BYTES) {
             fprintf(stderr, "ISA: stub for site 0x%llx exceeds 256 bytes, site skipped\n",
                     (unsigned long long)s->offset);
             report.skipped++;
+            report.unsupported_needed++;
             continue;
         }
         memcpy(stub, code, size);
