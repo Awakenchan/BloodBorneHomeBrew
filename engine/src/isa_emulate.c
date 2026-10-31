@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * Adapted from SpartanPort (https://github.com/FelipePrado0/SpartanPort).
  * Modified for Lantern Engine on 2026-10-31: MOVBE/BMI1/LZCNT only; F16C excluded. */
- * Derived from SpartanPort's MOVBE/BMI1/LZCNT emulator. */
 #include "isa_emulate.h"
 
 static unsigned char *isa_image;
