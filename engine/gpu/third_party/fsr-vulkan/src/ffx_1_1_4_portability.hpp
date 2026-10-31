@@ -9,6 +9,8 @@
 
 #pragma once
 
+// MSVC's CRT provides this macro, but MinGW/Clang does not, including on Windows.
+
 #if !defined(_WIN32)
 
 #include <cerrno>
