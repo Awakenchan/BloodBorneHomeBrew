@@ -3,9 +3,6 @@
  * Modified for Lantern Engine on 2026-10-31: MOVBE/BMI1/LZCNT only; F16C excluded.
  * The helper must be built with -mgeneral-regs-only: it runs inside guest code and
  * must preserve the guest's XMM/YMM register state. */
- * Derived from SpartanPort's MOVBE/BMI1/LZCNT emulator (GPL-2.0-only).
- * The helper must be built with -mgeneral-regs-only: it runs inside guest code and
- * must preserve the guest's XMM/YMM register state. */
 #ifndef SPARTAN_ISA_EMULATE_H
 #define SPARTAN_ISA_EMULATE_H
 #include <stdint.h>
