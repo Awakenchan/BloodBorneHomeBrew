@@ -121,7 +121,6 @@ void ABI isa_emulate(const IsaSite *site, IsaRegs *regs) {
         flags = zf_sf(site, result) | (source == 0 ? ISA_CF : 0);
         break;
     default: return; /* Unknown kinds are never emulated. */
-        return;
     }
     write_dst(site, regs, result);
     set_flags(regs, defined, flags);
