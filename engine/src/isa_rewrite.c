@@ -252,6 +252,7 @@ IsaReport isa_rewrite_apply(IsaTable *t, unsigned char *image, unsigned char *st
             fprintf(stderr, "ISA: site 0x%llx %s skipped: bytes changed\n", (unsigned long long)s->offset,
                     isa_kind_name(s->kind));
             report.skipped++;
+            report.unsupported_needed++;
             continue;
         }
         if (s->mode == ISA_MODE_JMP_RELOCATE && memcmp(site + 4, s->relocated, s->relocated_length) != 0) {
