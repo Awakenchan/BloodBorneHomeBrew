@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
+// Adapted from SpartanPort's iced-x86 scanner:
+// https://github.com/FelipePrado0/SpartanPort/blob/main/launcher-rust/src/runner/isa_rewrite.rs
+// Modified for Lantern Engine on 2026-10-31: read BBPROBE5, emit MOVBE/BMI1/LZCNT only,
+// and skip scanning entirely when the host supports all three sets.
 //
 // MOVBE/BMI1/LZCNT scanner for Lantern Engine's BBPROBE5 linked image.
 // The decoder and rewrite-table design are derived from SpartanPort's GPL-2.0
