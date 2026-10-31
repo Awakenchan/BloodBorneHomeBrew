@@ -1,4 +1,7 @@
-/* isa_emulate (src/isa_emulate.c) against the host's own MOVBE, BMI1 and LZCNT instructions. */
+/* SPDX-License-Identifier: GPL-2.0-only
+ * Adapted from SpartanPort's differential tests:
+ * https://github.com/FelipePrado0/SpartanPort/blob/main/tests/test_isa_emulate.c
+ * Modified for Lantern Engine on 2026-10-31 to use its local emulator header and CPUID check. */
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
