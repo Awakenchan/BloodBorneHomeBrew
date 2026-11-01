@@ -36,21 +36,31 @@ int main() {
     Check((mask[2] & (0x80 >> 4)) == 0, "mask drops 9020");
 
     {
-        Group everything{};
-        everything.fill(0xff);
-        Group seen{}, from_host{}, overlay{};
-        seen[3] = 0x41;
-        from_host[3] = 0x01;
-        OwnPickups kept;
-        kept.Note(52400, seen.data(), from_host, everything);
-        kept.Note(12400, seen.data(), from_host, everything);
-        Check(kept.Apply(52400, overlay.data()) == 1 && overlay[3] == 0x40, "a guest's own pickup comes back in a new overlay, without the host's bit");
-        Group other{};
-        Check(kept.Apply(12400, other.data()) == 0 && IsZero(other), "only pickup flags are kept");
-        Group masked{};
-        OwnPickups none;
-        none.Note(52400, seen.data(), from_host, masked);
-        Check(none.Apply(52400, other.data()) == 0, "flags outside the shared set are not kept");
+        const Group bits = RangeBits(72400, 72400096, 72400115);
+        Check(bits[12] == 0xff && bits[13] == 0xff && bits[14] == 0xf0 && bits[11] == 0, "a quest block's bits in its group");
+        Check(IsZero(RangeBits(72400, 1000, 1019)) && IsZero(RangeBits(72400, 72401000, 72401019)), "a block of another group has no bits here");
+        Check(RangeBits(72400, 72399990, 72400001)[0] == 0xc0, "a block that starts before the group");
+        Group own{}, overlay{};
+        own[12] = 0xa0;
+        overlay[12] = 0x5f;
+        overlay[20] = 0x33;
+        Check(CopyMasked(overlay.data(), own.data(), bits) == 1 && overlay[12] == 0xa0 && overlay[20] == 0x33, "a guest's own step goes in the overlay, the host's flags beside it stay");
+        overlay[13] = 0x80;
+        own[20] = 0x11;
+        Check(CopyMasked(own.data(), overlay.data(), bits) == 1 && own[13] == 0x80 && own[20] == 0x11, "a guest's own step goes back to its save, nothing else does");
+        Check(CopyMasked(own.data(), overlay.data(), bits) == 0, "nothing new, nothing written");
+        overlay[13] = 0;
+        CopyMasked(own.data(), overlay.data(), bits);
+        Check(own[13] == 0, "a quest step that clears a flag goes back too");
+        Group shared{};
+        shared.fill(0xff);
+        Remove(shared, bits);
+        Check(shared[12] == 0 && shared[14] == 0x0f && shared[11] == 0xff, "the host's copy leaves a guest's own bits out");
+        Group both = bits;
+        Group more{};
+        more[0] = 0x01;
+        Add(both, more);
+        Check(both[0] == 0x01 && both[12] == 0xff, "own bits add up");
         Check(IsPickupGroup(52400) && IsPickupGroup(50000) && !IsPickupGroup(12400), "pickup flags are type 5");
     }
 

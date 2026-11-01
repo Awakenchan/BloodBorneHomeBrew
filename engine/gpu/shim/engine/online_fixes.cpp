@@ -440,6 +440,24 @@ constexpr std::size_t kTalkTest = 0x203ad60;
 constexpr std::uint8_t kTalkTestEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
                                            0x41, 0x54, 0x53, 0x48, 0x81, 0xec, 0x68, 0x03, 0x00, 0x00};
 constexpr int kTestIsClient = 19, kTestMultiplayer = 52;
+constexpr std::size_t kSendItemTo = 0x17894e0;
+constexpr std::uint8_t kSendItemToEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
+                                             0x41, 0x54, 0x53, 0x48, 0x81, 0xec, 0x88, 0x00, 0x00, 0x00};
+constexpr std::size_t kSendItemAll = 0x1789a40;
+constexpr std::uint8_t kSendItemAllEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x50};
+constexpr std::uint64_t kItemPacket = 0x2c;
+constexpr std::uint32_t kDreamTalks = 21;
+std::atomic<bool> g_personal_world{false};
+const Site kPersonalWorldSites[] = {
+    {0x17d83d2, {0x0f, 0x85, 0x39, 0x01, 0x00, 0x00}, {0x90, 0xe9, 0x39, 0x01, 0x00, 0x00}},
+    {0x17de8d2, {0x0f, 0x84, 0x5c, 0x02, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
+    {0x17d9ee7, {0x0f, 0x84, 0xb6, 0x00, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
+    {0x17d9ef5, {0x0f, 0x85, 0xa8, 0x00, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}},
+    {0x17d85fb, {0x0f, 0x85, 0x67, 0x01, 0x00, 0x00}, {0x90, 0xe9, 0x67, 0x01, 0x00, 0x00}},
+    {0x17d88c2, {0x74, 0x0f}, {0x66, 0x90}},
+    {0x17d6adc, {0x74, 0x0a}, {0xeb, 0x1e}},
+    {0x18e4fbf, {0x74, 0x1b}, {0xeb, 0x1b}},
+};
 constexpr std::size_t kEmevdDispatch = 0x17b93a0;
 constexpr std::uint8_t kEmevdDispatchEntry[] = {0x55, 0x48, 0x89, 0xe5, 0x53, 0x50, 0x48, 0x8b,
                                                 0x86, 0xb0, 0x00, 0x00, 0x00, 0x8b, 0x08};
@@ -1721,14 +1739,18 @@ std::int64_t __attribute__((sysv_abi)) OnTalkTest(std::uint64_t, const std::uint
     const int role = g_role.load(std::memory_order_relaxed);
     if (!env || !call || !result || (role != kRoleHost && role != kRoleClient)) return 0;
     const std::uint32_t talk = *reinterpret_cast<const std::uint32_t*>(env + 0x10);
-    if (!LampTalk(talk) || (role == kRoleClient && HeadstoneTalk(talk))) return 0;
+    const bool lamp = LampTalk(talk);
+    if (lamp && role == kRoleClient && HeadstoneTalk(talk)) return 0;
+    if (!lamp && (!g_personal_world.load(std::memory_order_relaxed) || (role == kRoleClient && talk / 10000 == kDreamTalks))) return 0;
     const std::uint64_t table = *reinterpret_cast<const std::uint64_t*>(call);
     const int test = static_cast<int>(Call(*reinterpret_cast<const std::uint64_t*>(table + 0x10), call));
     if (test != kTestMultiplayer && !(test == kTestIsClient && role == kRoleClient)) return 0;
     *reinterpret_cast<std::int32_t*>(result) = 0;
     *reinterpret_cast<std::int32_t*>(result + 8) = 2;
-    g_lamp_talk.store(talk, std::memory_order_relaxed);
-    if (role == kRoleHost) g_own_lamp_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+    if (lamp) {
+        g_lamp_talk.store(talk, std::memory_order_relaxed);
+        if (role == kRoleHost) g_own_lamp_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+    }
     const_cast<std::uint64_t*>(saved)[-1] = result;
     return 1;
 }
@@ -2233,6 +2255,42 @@ void OwnWorldRepair(std::uint8_t* image, std::size_t size) {
 
 void WorldCopyInstall(const std::uint8_t* image, std::size_t size);
 
+bool ItemPacketInRoom(std::uint64_t kind) {
+    if (kind != kItemPacket || !g_personal_world.load(std::memory_order_relaxed)) return false;
+    const int role = g_role.load(std::memory_order_relaxed);
+    return role == kRoleHost || role == kRoleClient;
+}
+
+std::int64_t __attribute__((sysv_abi)) OnSendItemTo(std::uint64_t, const std::uint64_t* saved) {
+    if (!ItemPacketInRoom(saved[3])) return 0;
+    const_cast<std::uint64_t*>(saved)[-1] = 1;
+    return 1;
+}
+
+std::int64_t __attribute__((sysv_abi)) OnSendItemAll(std::uint64_t, const std::uint64_t* saved) {
+    if (!ItemPacketInRoom(saved[4])) return 0;
+    const_cast<std::uint64_t*>(saved)[-1] = 1;
+    return 1;
+}
+
+bool PersonalWorld(std::uint8_t* image, std::size_t size) {
+    if (const char* off = std::getenv("BB_PERSONAL_WORLD"); off && std::strcmp(off, "0") == 0) return false;
+    const bool sites = std::all_of(std::begin(kPersonalWorldSites), std::end(kPersonalWorldSites), [&](const Site& site) {
+        return Matches(image, size, site.at, site.original.begin(), site.original.size());
+    });
+    Hook hooks[2];
+    if (!sites || !Prepare(hooks[0], image, size, kSendItemTo, kSendItemToEntry, OnSendItemTo) ||
+        !Prepare(hooks[1], image, size, kSendItemAll, kSendItemAllEntry, OnSendItemAll)) {
+        Say("seamless: loot and NPC progress stay the game's: its item code is not 1.09's");
+        return false;
+    }
+    Commit(std::span(hooks, 2));
+    for (const Site& site : kPersonalWorldSites) WriteCode(image + site.at, site.patched.begin(), site.patched.size());
+    g_personal_world = true;
+    Say("seamless: each hunter has its own loot, drops and NPC progress in the host's world");
+    return true;
+}
+
 bool Install(std::uint8_t* image, std::size_t size) {
     OwnWorldRepair(image, size);
     const char* online = std::getenv("BB_ONLINE");
@@ -2249,6 +2307,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
         any = ChaliceParty(image, size) || any;
         any = GuestRewards(image, size) || any;
         any = QuietMessages(image, size) || any;
+        any = PersonalWorld(image, size) || any;
         WorldCopyInstall(image, size);
         BbVoice::Start();
     }
@@ -2428,8 +2487,10 @@ void HostProgressTick(int role) {
     PoolReader pool;
     std::vector<std::uint32_t> fresh;
     int flags = 0, steps = 0;
+    const bool own_steps = g_personal_world.load(std::memory_order_relaxed);
     for (const FlagRange& r : kProgressFlags) {
         if (r.kind == kDungeonFlag) continue;
+        if (own_steps && r.kind != kKeepSet) continue;
         if (r.kind == kKeepSet) {
             for (std::uint32_t id = r.first; id <= r.last; ++id) {
                 bool known = false;
@@ -2482,6 +2543,12 @@ void HostProgressTick(int role) {
     }
 }
 
+bool NpcStepFlag(std::uint32_t id) {
+    for (const FlagRange& r : kProgressFlags)
+        if (r.kind != kKeepSet && r.kind != kDungeonFlag && id >= r.first && id <= r.last) return true;
+    return false;
+}
+
 void GuestProgressTick(int role) {
     struct Pending {
         std::uint32_t flag;
@@ -2492,8 +2559,11 @@ void GuestProgressTick(int role) {
     const auto now = std::chrono::steady_clock::now();
     if (role == kRoleClient) in_party = now;
     const std::vector<std::uint32_t> got = BbRoom::TakeProgress();
-    if (!got.empty() && in_party != std::chrono::steady_clock::time_point{} && now - in_party < kPartyRecent)
-        for (const std::uint32_t flag : got) pending.push_back({flag, now});
+    if (!got.empty() && in_party != std::chrono::steady_clock::time_point{} && now - in_party < kPartyRecent) {
+        const bool own_steps = g_personal_world.load(std::memory_order_relaxed);
+        for (const std::uint32_t flag : got)
+            if (!own_steps || !NpcStepFlag(flag & ~kFlagClear)) pending.push_back({flag, now});
+    }
     if (Loading() || !LocalPlayer()) return;
     if (!pending.empty()) {
         PoolReader own;
@@ -2548,8 +2618,18 @@ bool OwnSaveHasFlag(std::uint32_t id) {
 
 struct SharedGroup {
     std::uint32_t group = 0, key = 0;
-    WorldCopy::Group mask{};
+    WorldCopy::Group mask{}, own{};
 };
+
+WorldCopy::Group OwnBits(std::uint32_t group, const WorldCopy::Group& shared) {
+    if (!g_personal_world.load(std::memory_order_relaxed)) return {};
+    if (WorldCopy::IsPickupGroup(group)) return shared;
+    WorldCopy::Group own{};
+    for (const FlagRange& r : kProgressFlags)
+        if (r.kind != kKeepSet && r.kind != kDungeonFlag) WorldCopy::Add(own, WorldCopy::RangeBits(group, r.first, r.last));
+    for (std::size_t i = 0; i < own.size(); ++i) own[i] &= shared[i];
+    return own;
+}
 
 const std::vector<SharedGroup>& SharedGroups() {
     static const std::vector<SharedGroup> groups = [] {
@@ -2561,7 +2641,10 @@ const std::vector<SharedGroup>& SharedGroups() {
             if (!WorldCopy::ShareGroup(group)) return;
             const auto key = static_cast<std::uint32_t>(Call(Fn(kGroupKey), group / 10000, group / 100 % 100, group / 10 % 10, group % 10));
             if (key >= count || !keys.insert(key).second) return;
-            out.push_back({group, key, WorldCopy::MaskOf(group)});
+            SharedGroup shared{group, key, WorldCopy::MaskOf(group), {}};
+            shared.own = OwnBits(group, shared.mask);
+            WorldCopy::Remove(shared.mask, shared.own);
+            out.push_back(shared);
         };
         for (std::uint32_t type : {0u, 1u, 5u, 6u, 7u})
             for (std::uint32_t zone = 0; zone < 10; ++zone) add(type * 10000 + zone);
@@ -2635,11 +2718,61 @@ std::uint8_t* OverlayBuffer(std::uint64_t head, std::uint32_t key) {
     return reinterpret_cast<std::uint8_t*>(Field<std::uint64_t>(best, 0x28));
 }
 
+constexpr int kMostOwnBytesAtOnce = 32;
+
+void OwnFlagsTick(const std::map<std::uint32_t, const SharedGroup*>& by_group, std::uint64_t man, std::uint64_t head, std::uint64_t first, int role) {
+    static std::uint64_t own_head = 0, own_first = 0;
+    static bool copied = false;
+    static std::chrono::steady_clock::time_point noted;
+    if (!g_personal_world.load(std::memory_order_relaxed)) return;
+    const std::uint64_t pool = Field<std::uint64_t>(man, 0x28);
+    if (!pool || Field<std::uint32_t>(man, 0x20) != kFlagStride) return;
+    const auto own_at = [&](const SharedGroup& g) { return reinterpret_cast<std::uint8_t*>(pool + std::uint64_t(g.key) * kFlagStride); };
+    const auto from_save = [&] {
+        int bytes = 0;
+        for (const auto& [group, g] : by_group)
+            if (std::uint8_t* to = OverlayBuffer(head, g->key)) bytes += WorldCopy::CopyMasked(to, own_at(*g), g->own);
+        copied = true;
+        own_head = head;
+        own_first = first;
+        noted = std::chrono::steady_clock::now();
+        Say("seamless: this hunter's own loot and NPC steps are in its copy of the host's world: %d byte(s) differed from the host's", bytes);
+    };
+    if (Loading()) {
+        copied = false;
+        return;
+    }
+    if (!copied || head != own_head || first != own_first) {
+        from_save();
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (role != kRoleClient || now - noted < kProgressScan) return;
+    noted = now;
+    int differ = 0;
+    std::vector<std::pair<const SharedGroup*, const std::uint8_t*>> changed;
+    for (const auto& [group, g] : by_group) {
+        const std::uint8_t* at = OverlayBuffer(head, g->key);
+        if (!at) continue;
+        const WorldCopy::Group was = WorldCopy::Masked(own_at(*g), g->own), is = WorldCopy::Masked(at, g->own);
+        if (was == is) continue;
+        for (std::size_t i = 0; i < was.size(); ++i) differ += was[i] != is[i];
+        changed.push_back({g, at});
+    }
+    if (changed.empty()) return;
+    if (differ > kMostOwnBytesAtOnce) {
+        Say("seamless: %d byte(s) of own flags changed at once in the copy of the host's world: the game rebuilt it, this hunter's save wins", differ);
+        from_save();
+        return;
+    }
+    for (const auto& [g, at] : changed) WorldCopy::CopyMasked(own_at(*g), at, g->own);
+    Say("seamless: %d byte(s) of this hunter's own loot and NPC steps kept in its save", differ);
+    RequestSave();
+}
+
 void WorldGuestTick(int role) {
     static WorldCopy::Receiver receiver;
     static std::map<std::uint32_t, const SharedGroup*> by_group;
-    static WorldCopy::OwnPickups pickups;
-    static std::chrono::steady_clock::time_point noted;
     static std::uint64_t applied_head = 0, applied_first = 0;
     static std::uint64_t asked_for = 0;
     static std::chrono::steady_clock::time_point asked;
@@ -2669,7 +2802,9 @@ void WorldGuestTick(int role) {
         applied_head = applied_first = 0;
         return;
     }
-    if (!receiver.Have() || (role != kRoleClient && phase != kPhaseSummoned && Field<std::int32_t>(man, 0x80, -1) != 1)) return;
+    if (role != kRoleClient && phase != kPhaseSummoned && Field<std::int32_t>(man, 0x80, -1) != 1) return;
+    OwnFlagsTick(by_group, man, head, first, role);
+    if (!receiver.Have()) return;
     int groups = 0, bytes = 0;
     if (new_overlay) {
         applied_head = head;
@@ -2677,7 +2812,7 @@ void WorldGuestTick(int role) {
         for (const auto& [group, g] : by_group) {
             std::uint8_t* to = OverlayBuffer(head, g->key);
             if (!to) continue;
-            const int n = WorldCopy::WriteShared(to, receiver.Value(group), g->mask) + pickups.Apply(group, to);
+            const int n = WorldCopy::WriteShared(to, receiver.Value(group), g->mask);
             bytes += n;
             groups += n != 0;
         }
@@ -2691,12 +2826,6 @@ void WorldGuestTick(int role) {
         if (!to) continue;
         const auto old = was.find(group);
         bytes += WorldCopy::WriteChanged(to, old == was.end() ? WorldCopy::Group{} : old->second, value, it->second->mask);
-    }
-    if (role != kRoleClient || now - noted < kProgressScan) return;
-    noted = now;
-    for (const auto& [group, g] : by_group) {
-        if (!WorldCopy::IsPickupGroup(group)) continue;
-        if (const std::uint8_t* at = OverlayBuffer(head, g->key)) pickups.Note(group, at, receiver.Value(group), g->mask);
     }
 }
 

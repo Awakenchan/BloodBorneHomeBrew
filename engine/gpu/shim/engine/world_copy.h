@@ -111,31 +111,25 @@ constexpr bool IsPickupGroup(std::uint32_t group) {
     return group / 10000 == 5;
 }
 
-class OwnPickups {
-public:
-    void Note(std::uint32_t group, const std::uint8_t* overlay, const Group& host, const Group& mask) {
-        if (!IsPickupGroup(group)) return;
-        const auto found = own_.find(group);
-        Group next = found == own_.end() ? Group{} : found->second;
-        for (std::size_t i = 0; i < kGroupBytes; ++i) next[i] |= overlay[i] & mask[i] & std::uint8_t(~host[i]);
-        if (found != own_.end()) found->second = next;
-        else if (!IsZero(next)) own_[group] = next;
-    }
-    int Apply(std::uint32_t group, std::uint8_t* to) const {
-        const auto found = own_.find(group);
-        if (found == own_.end()) return 0;
-        int changed = 0;
-        for (std::size_t i = 0; i < kGroupBytes; ++i) {
-            const std::uint8_t next = to[i] | found->second[i];
-            if (next != to[i]) ++changed;
-            to[i] = next;
-        }
-        return changed;
-    }
+inline Group RangeBits(std::uint32_t group, std::uint32_t first, std::uint32_t last) {
+    Group bits{};
+    const std::uint32_t from = group * 1000, to = from + kGroupBytes * 8 - 1;
+    for (std::uint32_t id = first < from ? from : first; id <= last && id <= to; ++id)
+        bits[(id - from) >> 3] |= std::uint8_t(0x80u >> ((id - from) & 7));
+    return bits;
+}
 
-private:
-    Image own_;
-};
+inline void Remove(Group& from, const Group& bits) {
+    for (std::size_t i = 0; i < kGroupBytes; ++i) from[i] &= std::uint8_t(~bits[i]);
+}
+
+inline void Add(Group& to, const Group& bits) {
+    for (std::size_t i = 0; i < kGroupBytes; ++i) to[i] |= bits[i];
+}
+
+inline int CopyMasked(std::uint8_t* to, const std::uint8_t* from, const Group& mask) {
+    return WriteShared(to, Masked(from, mask), mask);
+}
 
 class Receiver {
 public:
