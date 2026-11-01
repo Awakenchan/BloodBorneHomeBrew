@@ -564,12 +564,14 @@ void Load() {
                             v.optiscaler_sync_submit};
 }
 
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk, bool fsr4_to_sdk) {
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk, bool fsr4_to_sdk,
+                              bool xess) {
     auto& v = Get();
     v.fsr4_supported = fsr4 && !(fsr4_to_sdk && fsr_sdk);
     v.fsr411_supported = fsr4 && fsr411;
     v.dlss_supported = dlss;
     v.fsr_sdk_supported = fsr_sdk;
+    v.xess_supported = xess;
     const int requested = v.upscaler;
     if (requested == UpscalerFsr4 && fsr4_to_sdk && fsr_sdk) {
         std::printf("Upscaler: fsr4 runs through AMD's FSR SDK on this GPU: the built-in FSR 4 model is "
@@ -582,6 +584,10 @@ void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss, bool fsr_sdk, b
     } else if (requested == UpscalerDlss && !dlss) {
         v.fsr4_problem = "DLSS needs an NVIDIA RTX GPU, its driver's NGX and nvngx_dlss; using FSR 3.1";
         std::printf("Upscaler: dlss unavailable; falling back to FSR 3.1 before the first frame\n");
+        v.upscaler = UpscalerFsr3;
+    } else if (requested == UpscalerXess && !xess) {
+        v.fsr4_problem = "XeSS needs Windows, Intel's libxess.dll (engine/xess) and a GPU it supports; using FSR 3.1";
+        std::printf("Upscaler: xess unavailable; falling back to FSR 3.1 before the first frame\n");
         v.upscaler = UpscalerFsr3;
     } else if (requested == UpscalerFsr411 && !v.fsr411_supported && v.fsr4_supported) {
         v.fsr4_problem = "FSR 4.1.1 needs its fsr4_411 files and a GPU that runs its shaders; using FSR 4";
@@ -873,7 +879,7 @@ const char* DlssPresetText(int preset) {
 
 const char* UpscalerName(int upscaler) {
     static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa",
-                                                                  "dlss", "fsr"};
+                                                                  "dlss", "fsr", "xess"};
     return names[std::clamp(upscaler, 0, UpscalerCount - 1)];
 }
 

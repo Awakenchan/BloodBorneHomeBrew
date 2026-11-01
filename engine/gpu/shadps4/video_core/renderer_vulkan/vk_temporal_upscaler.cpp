@@ -238,6 +238,9 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     if (instance.IsDlssCapable()) {
         dlss = std::make_unique<DlssUpscaler>(instance, scheduler);
     }
+    if (instance.IsXessCapable()) {
+        xess = std::make_unique<XessUpscaler>(instance, scheduler);
+    }
     // bbport: FSR 4.1.1 runs through fsr4vk (shipped in the package, vk_fsr4vk.cpp), or by the
     // replay of an fsr4_411 set built from the player's own AMD DLL: with neither, as on a GPU
     // without its shaders, FSR 4 instead (#22).
@@ -251,7 +254,8 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
                                              instance.IsFsr4VkSupported(),
                                          dlss && dlss->Available(), instance.IsFsrSdkAvailable(),
                                          instance.GetVendorID() == 0x1002 &&
-                                             !(fsr4_builtin_amd && fsr4_builtin_amd[0] == '1'));
+                                             !(fsr4_builtin_amd && fsr4_builtin_amd[0] == '1'),
+                                         xess && xess->Available());
     fsr4 = std::make_unique<Fsr4Upscaler>(instance, scheduler);
     // Available unless BB_UPSCALER=none; on/off and the parameters are the menu's settings.
     const char* env = std::getenv("BB_UPSCALER");
@@ -1041,8 +1045,11 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
 void TemporalUpscaler::ExtraSharpen(vk::Image target, bool ldr, u32 w, u32 h) {
     const auto& settings = BbSettings::Get();
     // FSR 3 and 4 sharpen up to 1 themselves (RCAS). DLSS has no sharpening of its own (NVIDIA
-    // retired its Sharpness parameter), so for DLSS this pass applies the whole 0..2.
-    const float own = settings.upscaler == BbSettings::UpscalerDlss ? 0.0f : 1.0f;
+    // retired its Sharpness parameter), nor has XeSS-SR, so for them this pass applies the whole 0..2.
+    const float own = settings.upscaler == BbSettings::UpscalerDlss ||
+                              settings.upscaler == BbSettings::UpscalerXess
+                          ? 0.0f
+                          : 1.0f;
     const float extra = std::clamp(settings.sharpness.load(), 0.0f, 2.0f) - own;
     if (!settings.sharpen || extra <= 0.0f) {
         return;
@@ -2256,7 +2263,9 @@ void TemporalUpscaler::RunScaled() {
         if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
             RecordTaa(cmdbuf, color_view, depth_view);
         } else {
-            if (BbSettings::Get().upscaler == BbSettings::UpscalerDlss) {
+            // bbport: DLSS and XeSS take the frame as it is (XeSS with its LDR input flag).
+            if (BbSettings::Get().upscaler == BbSettings::UpscalerDlss ||
+                BbSettings::Get().upscaler == BbSettings::UpscalerXess) {
             ok4 = RecordFsr4(cmdbuf,
                              {color_image, color_view, source_width, source_height,
                               color.info.pixel_format},
@@ -2694,6 +2703,9 @@ bool TemporalUpscaler::UseFsr4() const {
     if (selected == BbSettings::UpscalerDlss) {
         return dlss && dlss->Available() && !fsr4_failed;
     }
+    if (selected == BbSettings::UpscalerXess) {
+        return xess && xess->Available() && !fsr4_failed;
+    }
     const bool supported = selected == BbSettings::UpscalerFsr      ? instance.IsFsrSdkAvailable()
                            : selected == BbSettings::UpscalerFsr411 ? instance.IsFsr411Available() // the replay or fsr4vk
                                                                     : instance.IsFsr4Int8Supported();
@@ -2732,6 +2744,8 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
     const float sign =
         BbToggle::Disabled(1u << 26) != settings.fsr4_invert_jitter.load() ? -1.0f : 1.0f;
     const bool use_dlss = settings.upscaler == BbSettings::UpscalerDlss && dlss;
+    const bool use_xess = settings.upscaler == BbSettings::UpscalerXess && xess;
+    const bool vendor = use_dlss || use_xess; // DLSS or XeSS, not the FSR 4 paths
     if (use_dlss && CameraSpeed() > float(w) * 0.5f) {
         reset = true;
     }
@@ -2754,13 +2768,13 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         .sharpen = settings.sharpen,
         .reset = reset,
         .auto_exposure = settings.fsr4_auto_exposure,
-        .reactive = reactive && use_dlss
+        .reactive = reactive && vendor
                         ? Fsr4Upscaler::Image{vk::Image(reactive_image), *reactive_view, w, h,
                                               vk::Format::eR8Unorm}
                         : Fsr4Upscaler::Image{},
     };
-    const bool ok = use_dlss ? dlss->Record(frame) : fsr4->Record(frame);
-    if (ok && !use_dlss && Fsr4TooSlow(frame_ms)) {
+    const bool ok = use_dlss ? dlss->Record(frame) : use_xess ? xess->Record(frame) : fsr4->Record(frame);
+    if (ok && !vendor && Fsr4TooSlow(frame_ms)) {
         static const std::string slow =
             "too slow on this GPU (under 20 FPS for 5 s); you can select it again to retry";
         BbSettings::Get().fsr4_problem = slow.c_str();
@@ -2774,7 +2788,7 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
     }
     // The menu shows the reason; it outlives this frame (FSR 4 keeps its last message).
     static std::string shown;
-    const char* problem = use_dlss ? dlss->Problem() : fsr4->Problem();
+    const char* problem = use_dlss ? dlss->Problem() : use_xess ? xess->Problem() : fsr4->Problem();
     if (!problem) {
         BbSettings::Get().fsr4_problem = nullptr;
     } else if (shown != problem) {
@@ -2785,18 +2799,18 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         BbSettings::Get().fsr4_problem = kept[next].c_str();
         next = (next + 1) % kept.size();
     }
-    if (!ok && !use_dlss && fsr4->Preparing()) {
+    if (!ok && !vendor && fsr4->Preparing()) {
         // Its model is being built: FSR 3.1 meanwhile (EnsureResources makes its context next
         // frame), and FSR 4 again when the build is done (the per-frame settings above).
         fsr4_building = true;
         reset = true;
-    } else if (!ok && !use_dlss && fsr4->Fatal() &&
+    } else if (!ok && !vendor && fsr4->Fatal() &&
                settings.upscaler == BbSettings::UpscalerFsr411 && instance.IsFsrSdkAvailable()) {
         std::printf("Upscaler: FSR 4.1.1 (fsr4vk) failed; falling back to FSR (AMD FSR SDK)\n");
         BbSettings::Get().upscaler = BbSettings::UpscalerFsr;
         fsr4->ClearFailure();
         reset = true;
-    } else if (!ok && !use_dlss && fsr4->Fatal() &&
+    } else if (!ok && !vendor && fsr4->Fatal() &&
                settings.upscaler == BbSettings::UpscalerFsr411 && instance.IsFsr4Int8Supported()) {
         // bbport: FSR 4.1.1 cannot run here (fsr4vk failed on this driver): the built-in FSR 4
         // model next, which needs only the GPU features this one has; FSR 3.1 if that fails too.
@@ -2804,7 +2818,7 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         BbSettings::Get().upscaler = BbSettings::UpscalerFsr4;
         fsr4->ClearFailure();
         reset = true;
-    } else if (!ok && (use_dlss ? dlss->Fatal() : fsr4->Fatal())) {
+    } else if (!ok && (use_dlss ? dlss->Fatal() : use_xess ? xess->Fatal() : fsr4->Fatal())) {
         std::printf("Upscaler: falling back to FSR 3.1\n");
         BbSettings::Get().upscaler = BbSettings::UpscalerFsr3;
         fsr4_failed = true; // EnsureResources creates the FSR 3 context next frame

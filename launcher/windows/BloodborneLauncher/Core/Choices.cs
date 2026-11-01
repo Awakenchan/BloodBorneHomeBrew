@@ -14,6 +14,7 @@
                 new("FSR", "fsr"),
                 new(L.T("FSR 4.1.1 (fsr4vk, experimental)"), "fsr411"),
                 new("DLSS (NVIDIA RTX)", "dlss"),
+                new("XeSS (Intel)", "xess"),
                 new(L.T("TAA (native anti-aliasing)"), "taa"),
                 new(L.T("Off"), "off"),
             }

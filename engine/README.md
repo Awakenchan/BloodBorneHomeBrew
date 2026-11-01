@@ -6,7 +6,7 @@ one game stands in for the PS4's system libraries, and the game's graphics are t
 The launcher that starts it is in `../launcher`.
 
 > **No game files are included.** You need your own decrypted dump. This project is not affiliated
-> with Sony Interactive Entertainment, FromSoftware, AMD or NVIDIA.
+> with Sony Interactive Entertainment, FromSoftware, AMD, Intel or NVIDIA.
 
 ## Where it comes from
 
@@ -23,7 +23,8 @@ and [shadPS4](https://github.com/shadps4-emu/shadPS4). Since then it has its own
 - **the renderer's performance work**: two-stage draw preparation on worker threads, cached render
   state, pipeline cache warm-up with a crash guard, occlusion culling, frame pacing;
 - **the PC version**: native PC menus and keyboard/mouse controls, high frame rates, widescreen,
-  HDR, DLSS, FSR 3.1/4/4.1.1, frame generation, trophies, online through The Hunter's Dream.
+  HDR, DLSS, FSR 3.1/4/4.1.1, XeSS Super Resolution (Windows, docs/xess.md), frame generation,
+  trophies, online through The Hunter's Dream.
 
 The renderer and shader recompiler are still shadPS4's at their core (`gpu/shadps4`, changes marked
 `bbport:`); the direct path replaces them step by step.

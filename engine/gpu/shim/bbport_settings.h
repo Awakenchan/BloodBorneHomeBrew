@@ -8,12 +8,13 @@
 namespace BbSettings {
 
 enum Upscaler : int { UpscalerOff = 0, UpscalerFsr3 = 1, UpscalerFsr4 = 2, UpscalerFsr411 = 3,
-                      UpscalerTaa = 4, UpscalerDlss = 5, UpscalerFsr = 6, UpscalerCount };
+                      UpscalerTaa = 4, UpscalerDlss = 5, UpscalerFsr = 6, UpscalerXess = 7,
+                      UpscalerCount };
 inline bool IsFsr4(int upscaler) {
     return upscaler == UpscalerFsr4 || upscaler == UpscalerFsr411 || upscaler == UpscalerFsr;
 }
 inline bool IsFrameUpscaler(int upscaler) {
-    return IsFsr4(upscaler) || upscaler == UpscalerDlss;
+    return IsFsr4(upscaler) || upscaler == UpscalerDlss || upscaler == UpscalerXess;
 }
 enum FrameGen : int { FrameGenOff = 0, FrameGenFsr3 = 1, FrameGenDlss = 2, FrameGenCount };
 inline constexpr const char* FrameGenNames[] = {"off", "fsr3", "dlss"};
@@ -202,7 +203,7 @@ struct Values {
     std::atomic<int> live_resolution{0};
     std::atomic<const char*> fsr4_problem{nullptr};
     std::atomic<bool> fsr4_supported{false}, fsr411_supported{false}, dlss_supported{false},
-        fsr_sdk_supported{false};
+        fsr_sdk_supported{false}, xess_supported{false};
     std::atomic<int> dlss_preset{DlssPresetK}, dlss_applied_preset{-1};
     std::atomic<bool> dlss_mip_bias{true};
     std::atomic<bool> dlss_auto_exposure{false};
@@ -247,7 +248,7 @@ inline const char* MenuText(const char* english) { return MenuText(english, engl
 
 void Load();
 void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss = false, bool fsr_sdk = false,
-                              bool fsr4_to_sdk = false);
+                              bool fsr4_to_sdk = false, bool xess = false);
 bool FixedRenderSession();
 int RenderPreset();
 bool ResolutionNeedsRestart();

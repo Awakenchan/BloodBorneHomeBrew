@@ -731,8 +731,8 @@ void UpscalerSection() {
         const char* upscalers[] = {
             BbSettings::MenuText("Off", "Выкл"), "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1 (INT8)",
             BbSettings::MenuText("TAA (native anti-aliasing)", "TAA (нативное сглаживание)"), "DLSS (NVIDIA)",
-            "FSR (AMD FSR SDK)"};
-        static const char* later[] = {"XeSS"};
+            "FSR (AMD FSR SDK)", "XeSS (Intel)"};
+        static_assert(sizeof(upscalers) / sizeof(upscalers[0]) == BbSettings::UpscalerCount);
         const int upscaler = s.upscaler;
         if (ImGui::BeginCombo(label, upscalers[upscaler])) {
             for (int i = 0; i < BbSettings::UpscalerCount; ++i) {
@@ -740,6 +740,7 @@ void UpscalerSection() {
                                        : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load()
                                        : i == BbSettings::UpscalerDlss   ? s.dlss_supported.load()
                                        : i == BbSettings::UpscalerFsr    ? s.fsr_sdk_supported.load()
+                                       : i == BbSettings::UpscalerXess   ? s.xess_supported.load()
                                                                          : true;
                 ImGui::BeginDisabled(!supported);
                 if (ImGui::Selectable(upscalers[i], i == upscaler)) {
@@ -755,16 +756,17 @@ void UpscalerSection() {
                                                                              "— не поддерживается видеокартой"));
                 }
             }
-            for (const char* name : later) {
-                ImGui::BeginDisabled();
-                ImGui::Selectable(name, false);
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", BbSettings::MenuText("— in development", "— в работе"));
-            }
             ImGui::EndCombo();
         }
-        if (s.upscaler == BbSettings::UpscalerFsr) {
+        if (s.upscaler == BbSettings::UpscalerXess) {
+            Hint(BbSettings::MenuText(
+                "Intel XeSS Super Resolution (XeSS SDK 3.0.2): the XMX model on Intel Arc, the DP4a "
+                "model on other GPUs. The preset picks the render size; XeSS takes the quality mode "
+                "nearest to it. Windows only; needs libxess.dll in engine/xess.",
+                "Intel XeSS Super Resolution (XeSS SDK 3.0.2): модель XMX на Intel Arc, модель DP4a "
+                "на остальных видеокартах. Пресет задаёт разрешение рендера; XeSS берёт ближайший к "
+                "нему режим качества. Только Windows; нужен libxess.dll в engine/xess."));
+        } else if (s.upscaler == BbSettings::UpscalerFsr) {
             Hint(BbSettings::MenuText(
                 "AMD's own FSR from the FSR SDK 2.4: FSR 4.1.2 on Radeon RX 6000 and newer and on "
                 "Ryzen APUs that AMD supports (FP8 on RX 9000, INT8 on RX 6000/7000, a lighter INT8 "
@@ -1243,6 +1245,9 @@ void MaskSection() {
         const char* use = s.upscaler == BbSettings::UpscalerFsr3
                               ? BbSettings::MenuText("FSR 3.1 uses it as its reactive mask.",
                                                      "FSR 3.1 берёт её как свою реактивную маску.")
+                          : s.upscaler == BbSettings::UpscalerXess
+                              ? BbSettings::MenuText("XeSS uses it as its responsive pixel mask.",
+                                                     "XeSS берёт её как маску отзывчивых пикселей.")
                           : s.upscaler == BbSettings::UpscalerDlss
                               ? BbSettings::MenuText("Current DLSS models do not use it, only the deprecated preset F.",
                                                      "Текущие модели DLSS её не используют, только устаревший пресет F.")

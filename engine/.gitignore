@@ -32,3 +32,5 @@ patches.json
 /docs/ISSUE_ACTION_PLAN_*.md
 # AMD FidelityFX DLLs (FSR 4.1.1 is built from the user's own): never in the repository
 *.dll
+# Intel XeSS SDK files (tools/fetch_xess.sh): downloaded, never in the repository
+/xess/

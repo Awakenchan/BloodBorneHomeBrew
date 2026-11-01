@@ -28,6 +28,7 @@
 #include "video_core/renderer_vulkan/vk_occlusion.h"
 #include "video_core/renderer_vulkan/vk_optiscaler.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_xess.h"
 
 #include <vk_mem_alloc.h>
 
@@ -650,6 +651,29 @@ bool Instance::CreateDevice() {
     } else if (FsrSdk::FilesPresent()) {
         std::printf("Upscaler: AMD FSR SDK found, but this GPU lacks a Vulkan feature it needs\n");
     }
+    // bbport: Intel XeSS-SR (vk_xess.cpp): the device extensions libxess.dll asks for and the
+    // features its guide names (shaderStorageImageWriteWithoutFormat, mutableDescriptorType; shaderInt8
+    // and shaderIntegerDotProduct are on already where the GPU has them), requested only when the
+    // library is installed, so nothing changes for other paths.
+    if (Xess::FilesPresent() && features.shaderStorageImageWriteWithoutFormat &&
+        feature_chain.get<vk::PhysicalDeviceMutableDescriptorTypeFeaturesEXT>().mutableDescriptorType &&
+        extension_available(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)) {
+        std::vector<const char*> xess_extensions{VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME};
+        std::vector<const char*> required;
+        xess = Xess::RequiredDeviceExtensions(*instance, physical_device, required);
+        xess_extensions.insert(xess_extensions.end(), required.begin(), required.end());
+        for (const char* extension : xess ? xess_extensions : std::vector<const char*>{}) {
+            const bool enabled = std::ranges::any_of(enabled_extensions, [&](const char* name) {
+                return std::strcmp(name, extension) == 0;
+            });
+            xess = (enabled || add_extension(extension)) && xess;
+        }
+        std::printf(xess ? "Upscaler: Intel XeSS found (%s): XeSS-SR available\n"
+                         : "Upscaler: Intel XeSS found (%s), but this GPU or driver lacks what it needs\n",
+                    Xess::DirectoryUtf8().c_str());
+    } else if (Xess::FilesPresent()) {
+        std::printf("Upscaler: Intel XeSS found, but this GPU lacks a Vulkan feature it needs\n");
+    }
     const bool fsr_shared = fsr4vk || fsr_sdk;
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
@@ -910,8 +934,10 @@ bool Instance::CreateDevice() {
     if (!shader_float8) {
         device_chain.unlink<vk::PhysicalDeviceShaderFloat8FeaturesEXT>();
     }
-    if (!fsr4vk) {
+    if (!fsr4vk && !xess) {
         device_chain.unlink<vk::PhysicalDeviceMutableDescriptorTypeFeaturesEXT>();
+    }
+    if (!fsr4vk) {
         device_chain.unlink<vk::PhysicalDeviceDescriptorBufferFeaturesEXT>();
     }
 

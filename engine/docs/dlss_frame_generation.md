@@ -146,7 +146,7 @@ guest flip ─► GPU command thread ──────────────�
 | HUD handling (HUDFix) | HUD-less frame captured by the engine | same; DLSS-G also gets UI alpha |
 | Init flags (HDR, inverted depth, jitter cancellation, MV resolution) | set by the engine from what it knows | not exposed: the engine's values are right by construction |
 | FSR 3.1 velocity / shading / accumulation factors | - | not exposed: the vendored FSR 3.1.6 Vulkan API has no such inputs |
-| XeSS | - | not available on Vulkan without Intel's Windows DLL (docs/history/ROADMAP_2026-09.md) |
+| XeSS | - | XeSS-SR through Intel's libxess.dll on Windows (`upscaler=xess`, docs/xess.md); XeSS-FG is D3D12 only |
 
 ## Player reports
 
