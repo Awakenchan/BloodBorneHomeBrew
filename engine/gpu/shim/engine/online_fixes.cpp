@@ -525,6 +525,8 @@ constexpr std::size_t kEventAwardCall = 0x17c1806;
 constexpr std::uint8_t kEventAwardCallBytes[] = {0xe8, 0x45, 0xc4, 0x01, 0x00};
 constexpr std::int64_t kRewardWindowMs = 60000;
 constexpr std::size_t kItemMan = 0x553d6e0;
+constexpr std::size_t kItemGetList = 0x553b1c0;
+constexpr auto kDropWaitMax = std::chrono::seconds(30);
 constexpr auto kBossLotKeep = std::chrono::minutes(10);
 std::mutex g_boss_lots_mu;
 std::vector<std::int32_t> g_boss_lots_out;
@@ -2420,8 +2422,16 @@ std::set<std::string> PresentGuests(int role) {
     return g_present.Here(now);
 }
 
+constexpr std::size_t kPromptsOff = 0x8d;
+
+bool PromptsOff() {
+    const std::uint64_t holder = Global(kLuaEventMan);
+    const std::uint64_t lua = holder ? Field<std::uint64_t>(holder, 8) : 0;
+    return lua && Field<std::uint8_t>(lua, kPromptsOff);
+}
+
 void PromptLockTick(int role) {
-    constexpr std::size_t kPromptsOff = 0x8d, kHostDeadMark = 0x70, kGameMan = 0x5556678;
+    constexpr std::size_t kHostDeadMark = 0x70, kGameMan = 0x5556678;
     constexpr std::uint32_t kClearFlags[] = {4047, 4000, 4092};
     constexpr auto kHold = std::chrono::seconds(10);
     static std::chrono::steady_clock::time_point since{};
@@ -2481,6 +2491,12 @@ void BossDropsTick(int role) {
         Say("seamless: boss trophy %d unlocked on this guest", trophy);
     }
     waiting_trophies.clear();
+    if (waiting.empty()) return;
+    static std::chrono::steady_clock::time_point drop_since{};
+    const auto now = std::chrono::steady_clock::now();
+    if (drop_since == std::chrono::steady_clock::time_point{}) drop_since = now;
+    if ((PromptsOff() || Hp(LocalPlayer()) <= 0) && now - drop_since < kDropWaitMax) return;
+    drop_since = {};
     for (const std::int32_t lot : waiting) {
         if (!BossRewards::IsBossLot(lot)) continue;
         bool first = false;
@@ -2491,6 +2507,9 @@ void BossDropsTick(int role) {
         if (!first) continue;
         Say("seamless: boss drop %d given to this guest: the host's world beat the boss with it there", lot);
         Call(Fn(kAwardLot), Global(kItemMan), lot, 0);
+        const std::uint64_t list = Global(kItemGetList);
+        Say("seamless: boss drop %d: the game's item pop-up %s", lot,
+            list && Field<std::uint64_t>(list, 8) ? "is queued" : "did not queue (the item did not fit or the lot was empty)");
     }
     waiting.clear();
 }

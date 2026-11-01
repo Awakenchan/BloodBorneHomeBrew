@@ -109,6 +109,7 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
         return;
     }
     const Shader::MotionVectors::Addresses addresses{params_address, positions_address};
+    address_table = addresses;
     std::memcpy(mapped, &addresses, sizeof(addresses));
     const auto device = instance.GetDevice();
     try {

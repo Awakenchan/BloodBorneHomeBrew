@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(scalar, set = 0, binding = 0) readonly buffer Data { uint d[]; } data;
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+layout(set = 0, binding = 2, r11f_g11f_b10f) uniform image2D cur0;
+layout(set = 0, binding = 3, r11f_g11f_b10f) uniform readonly image2D snap0;
+layout(set = 0, binding = 4, r11f_g11f_b10f) uniform image2D cur1;
+layout(set = 0, binding = 5, r11f_g11f_b10f) uniform readonly image2D snap1;
+layout(set = 0, binding = 6) uniform accelerationStructureEXT scene;
+
+layout(push_constant) uniform Constants {
+    uint first_light;
+    uint frame_index;
+    vec2 size;
+    float length_m;
+    float thickness_m;
+    float strength;
+    float fade_start_m;
+    float fade_end_m;
+    uint light_count;
+    uint steps;
+    float bias_m;
+    ivec4 rect;
+};
+
+const float LAMP_CLEARANCE = 0.35;
+
+shared mat4 shared_inverse;
+
+float word(uint i) { return uintBitsToFloat(data.d[i]); }
+vec4 row(uint i) { return vec4(word(i), word(i + 1u), word(i + 2u), word(i + 3u)); }
+float lb(uint k, uint i) { return word(first_light + k * 16u + i); }
+
+vec3 viewPosAt(vec2 uv, float depth) {
+    vec4 v = shared_inverse * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    return v.xyz / v.w;
+}
+
+vec3 surfaceNormal(vec2 uv, vec3 P) {
+    const vec2 px = 1.0 / size;
+    vec3 best[2];
+    for (int axis = 0; axis < 2; ++axis) {
+        const vec2 step_uv = axis == 0 ? vec2(px.x, 0.0) : vec2(0.0, px.y);
+        const vec3 a = viewPosAt(uv + step_uv, textureLod(depth_tex, uv + step_uv, 0.0).x) - P;
+        const vec3 b = P - viewPosAt(uv - step_uv, textureLod(depth_tex, uv - step_uv, 0.0).x);
+        best[axis] = abs(a.z) < abs(b.z) ? a : b;
+    }
+    vec3 n = cross(best[1], best[0]);
+    const float len = length(n);
+    if (!(len > 1e-12)) {
+        return vec3(0.0);
+    }
+    n /= len;
+    return dot(n, P) > 0.0 ? -n : n;
+}
+
+float visibility(vec3 origin, float reach, vec3 L) {
+    const vec3 ray_to = L - origin;
+    const float ray_len = length(ray_to);
+    const float tmax = ray_len - LAMP_CLEARANCE;
+    if (!(tmax > reach)) {
+        return 1.0;
+    }
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xffu,
+                          origin, reach * 0.5, ray_to / ray_len, tmax);
+    rayQueryProceedEXT(query);
+    return rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0
+                                                                                                  : 0.0;
+}
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) {
+        shared_inverse = transpose(mat4(row(0u), row(4u), row(8u), row(12u)));
+    }
+    barrier();
+
+    const ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x < rect.x || px.y < rect.y || px.x >= rect.z || px.y >= rect.w) {
+        return;
+    }
+    const vec3 s0 = imageLoad(snap0, px).rgb;
+    const vec3 c0 = imageLoad(cur0, px).rgb;
+    const vec3 s1 = imageLoad(snap1, px).rgb;
+    const vec3 c1 = imageLoad(cur1, px).rgb;
+    if (all(lessThanEqual(c0, s0)) && all(lessThanEqual(c1, s1))) {
+        return;
+    }
+    const vec2 uv = (vec2(px) + 0.5) / size;
+    const float d0 = textureLod(depth_tex, uv, 0.0).x;
+    if (!(d0 < 1.0) || !(d0 > 0.0)) {
+        return;
+    }
+    const vec3 P = viewPosAt(uv, d0);
+    if (!(P.z > 0.0)) {
+        return;
+    }
+    const float fade = 1.0 - smoothstep(fade_start_m, fade_end_m, P.z);
+    if (fade <= 0.0) {
+        return;
+    }
+    const vec3 n = surfaceNormal(uv, P);
+    const float reach = bias_m + 0.0015 * P.z;
+    const vec3 origin = P + n * reach;
+    float wsum = 0.0;
+    float vsum = 0.0;
+    for (uint k = 0u; k < light_count; ++k) {
+        const float inv_r2 = lb(k, 3u);
+        if (!(inv_r2 > 0.0)) {
+            continue;
+        }
+        const vec3 L = vec3(lb(k, 0u), lb(k, 1u), lb(k, 2u));
+        const float t = length(L - P) * sqrt(inv_r2);
+        if (t >= 1.0) {
+            continue;
+        }
+        const vec3 col = vec3(lb(k, 4u), lb(k, 5u), lb(k, 6u));
+        float w = 1.0 - t * t;
+        w *= w * dot(col, vec3(0.299, 0.587, 0.114));
+        if (!(w > 1e-5)) {
+            continue;
+        }
+        wsum += w;
+        vsum += w * visibility(origin, reach, L);
+    }
+    if (!(wsum > 0.0)) {
+        return;
+    }
+    const float scale = mix(1.0, vsum / wsum, strength * fade);
+    imageStore(cur0, px, vec4(s0 + max(c0 - s0, vec3(0.0)) * scale, 1.0));
+    imageStore(cur1, px, vec4(s1 + max(c1 - s1, vec3(0.0)) * scale, 1.0));
+}

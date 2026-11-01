@@ -13,6 +13,7 @@ class TextureCache;
 namespace Vulkan {
 class CameraMotion;
 class Instance;
+class RtShadow;
 class Runtime;
 class SceneTargets;
 class Scheduler;
@@ -21,7 +22,7 @@ class ContactShadow {
 public:
     ContactShadow(const Instance& instance, Scheduler& scheduler,
                   VideoCore::TextureCache& texture_cache, Runtime& runtime,
-                  SceneTargets& scene_targets, CameraMotion& camera_motion);
+                  SceneTargets& scene_targets, CameraMotion& camera_motion, RtShadow& rt_shadow);
     ~ContactShadow();
 
     struct Inputs {
@@ -51,6 +52,7 @@ private:
     Runtime& runtime;
     SceneTargets& scene_targets;
     CameraMotion& camera_motion;
+    RtShadow& rt_shadow;
 
     vk::UniqueDescriptorSetLayout set_layout;
     vk::UniquePipelineLayout layout;
@@ -61,6 +63,7 @@ private:
     bool use_contact = false;
     bool use_pcss = false;
     bool use_filter = false;
+    bool use_rt = false;
     float length_m = 0.6f;
     float thickness_m = 0.35f;
     float strength = 0.75f;

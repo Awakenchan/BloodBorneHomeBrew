@@ -8,12 +8,13 @@
 namespace BbSettings {
 
 enum Upscaler : int { UpscalerOff = 0, UpscalerFsr3 = 1, UpscalerFsr4 = 2, UpscalerFsr411 = 3,
-                      UpscalerTaa = 4, UpscalerDlss = 5, UpscalerFsr = 6, UpscalerCount };
+                      UpscalerTaa = 4, UpscalerDlss = 5, UpscalerFsr = 6, UpscalerXess = 7,
+                      UpscalerCount };
 inline bool IsFsr4(int upscaler) {
     return upscaler == UpscalerFsr4 || upscaler == UpscalerFsr411 || upscaler == UpscalerFsr;
 }
 inline bool IsFrameUpscaler(int upscaler) {
-    return IsFsr4(upscaler) || upscaler == UpscalerDlss;
+    return IsFsr4(upscaler) || upscaler == UpscalerDlss || upscaler == UpscalerXess;
 }
 enum FrameGen : int { FrameGenOff = 0, FrameGenFsr3 = 1, FrameGenDlss = 2, FrameGenCount };
 inline constexpr const char* FrameGenNames[] = {"off", "fsr3", "dlss"};
@@ -60,6 +61,7 @@ inline constexpr Effect Effects[] = {
     {"effect_volumetric_light", "Volumetric sunlight", "Объёмный солнечный свет", false},
     {"effect_point_fog", "Fog around lamps", "Туман вокруг ламп", false},
     {"effect_point_shadows", "Point light shadows (experimental)", "Тени от точечных источников (эксперимент)", false},
+    {"effect_ray_tracing", "Ray traced lighting (experimental)", "Трассированное освещение (эксперимент)", false},
 };
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
 inline constexpr int EffectFirstLighting = 10;
@@ -73,6 +75,7 @@ inline constexpr int EffectGi = 15;
 inline constexpr int EffectVolumetricLight = 16;
 inline constexpr int EffectPointFog = 17;
 inline constexpr int EffectPointShadows = 18;
+inline constexpr int EffectRayTracing = 19;
 inline constexpr bool EffectIsLive(int effect) { return effect >= EffectContactShadows; }
 inline constexpr int OutputWidths[] = {1280,1600,1920,2560,3840,2560,3440,3840,3840,5120,5120,7680,0,0};
 inline constexpr int OutputHeights[] = {720,900,1080,1440,2160,1080,1440,1600,1080,1440,2160,2160,0,0};
@@ -202,7 +205,7 @@ struct Values {
     std::atomic<int> live_resolution{0};
     std::atomic<const char*> fsr4_problem{nullptr};
     std::atomic<bool> fsr4_supported{false}, fsr411_supported{false}, dlss_supported{false},
-        fsr_sdk_supported{false};
+        fsr_sdk_supported{false}, xess_supported{false};
     std::atomic<int> dlss_preset{DlssPresetK}, dlss_applied_preset{-1};
     std::atomic<bool> dlss_mip_bias{true};
     std::atomic<bool> dlss_auto_exposure{false};
@@ -247,7 +250,7 @@ inline const char* MenuText(const char* english) { return MenuText(english, engl
 
 void Load();
 void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss = false, bool fsr_sdk = false,
-                              bool fsr4_to_sdk = false);
+                              bool fsr4_to_sdk = false, bool xess = false);
 bool FixedRenderSession();
 int RenderPreset();
 bool ResolutionNeedsRestart();

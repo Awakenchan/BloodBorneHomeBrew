@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(scalar, set = 0, binding = 0) readonly buffer Cb { uint d[]; } cbuf;
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+layout(set = 0, binding = 2) uniform sampler2D raw_tex;
+layout(set = 0, binding = 3, rgba8) uniform image2D shadow_img;
+layout(scalar, set = 0, binding = 4) readonly buffer Ub { uint d[]; } ubuf;
+
+layout(push_constant) uniform Constants {
+    uint buf_off;
+    int radius;
+    vec2 size;
+    uint keep_map;
+};
+
+uint base;
+float cb(int i) { return uintBitsToFloat(cbuf.d[base + uint(i)]); }
+vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
+
+mat4 invMat;
+vec4 invZ, invW;
+
+vec3 viewPosAt(vec2 uv, float depth) {
+    vec4 v = invMat * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    return v.xyz / v.w;
+}
+
+float viewZAt(vec2 uv, float depth) {
+    vec4 c = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    return dot(invZ, c) / dot(invW, c);
+}
+
+void main() {
+    base = (buf_off & 0xffu) >> 2;
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(size)))) {
+        return;
+    }
+    const vec2 px = 1.0 / size;
+    const vec2 uv = (vec2(pixel) + 0.5) * px;
+    const float d0 = textureLod(depth_tex, uv, 0.0).x;
+    if (!(d0 < 1.0) || !(d0 > 0.0)) {
+        return;
+    }
+    float center = textureLod(raw_tex, uv, 0.0).x;
+    float low = center, high = center;
+    const vec4 near = textureGather(raw_tex, uv + 0.5 * px, 0);
+    const vec4 far = textureGather(raw_tex, uv - 0.5 * px, 0);
+    low = min(low, min(min(near.x, near.y), min(near.z, min(far.x, min(far.y, far.w)))));
+    high = max(high, max(max(near.x, near.y), max(near.z, max(far.x, max(far.y, far.w)))));
+    float vis = center;
+    invMat = transpose(mat4(row(0), row(4), row(8), row(12)));
+    invZ = vec4(invMat[0][2], invMat[1][2], invMat[2][2], invMat[3][2]);
+    invW = vec4(invMat[0][3], invMat[1][3], invMat[2][3], invMat[3][3]);
+    const float z0 = viewZAt(uv, d0);
+    if (high - low > 0.001 && radius > 0) {
+        const float tolerance = 0.03 + 0.012 * z0;
+        float sum = center;
+        float weight = 1.0;
+        for (int y = -radius; y <= radius; ++y) {
+            for (int x = -radius; x <= radius; ++x) {
+                if (x == 0 && y == 0) {
+                    continue;
+                }
+                const vec2 at = uv + vec2(x, y) * px;
+                const float z = viewZAt(at, textureLod(depth_tex, at, 0.0).x);
+                const float gap = abs(z - z0) / tolerance;
+                const float w = max(1.0 - gap, 0.0) / (1.0 + float(x * x + y * y) * 0.25);
+                sum += textureLod(raw_tex, at, 0.0).x * w;
+                weight += w;
+            }
+        }
+        vis = sum / weight;
+    }
+    const uint ub = ((buf_off >> 8) & 0xffu) >> 2;
+    const float fade = clamp(uintBitsToFloat(ubuf.d[ub + 73u]) *
+                                 (uintBitsToFloat(ubuf.d[ub + 72u]) -
+                                  length(viewPosAt(uv, d0))),
+                             0.0, 1.0);
+    vec4 c = imageLoad(shadow_img, pixel);
+    const float lit = 1.0 - fade * (1.0 - vis);
+    c.a = keep_map != 0u ? min(c.a, lit) : lit;
+    imageStore(shadow_img, pixel, c);
+}

@@ -197,6 +197,7 @@ struct Input {
     bool tone_apply{};
     s32 clip_plane_slot = -1;
     bool vertex_motion{};
+    bool vertex_capture{};
 
     PsVgprs ps_addr;
     PsVgprs ps_en;

@@ -14,6 +14,7 @@
                 new("FSR", "fsr"),
                 new(L.T("FSR 4.1.1 (fsr4vk, experimental)"), "fsr411"),
                 new("DLSS (NVIDIA RTX)", "dlss"),
+                new("XeSS (Intel)", "xess"),
                 new(L.T("TAA (native anti-aliasing)"), "taa"),
                 new(L.T("Off"), "off"),
             }
@@ -133,6 +134,7 @@
             new("effect_volumetric_light", L.T("Volumetric sunlight"), false, L.T("Heavy")),
             new("effect_point_fog", L.T("Fog around lamps"), false, L.T("Heavy")),
             new("effect_point_shadows", L.T("Point light shadows") + L.T(" (experimental)"), false, L.T("Heavy")),
+            new("effect_ray_tracing", L.T("Ray traced lighting") + L.T(" (experimental)"), false, L.T("Sun, lamps and bounced light. Needs a GPU with ray tracing and a restart")),
             new("skip_intro", L.T("Skip intro videos"), false),
             new("debug_camera", L.T("Free camera"), false, L.T("Toggle with Cross + L3 / Space + Z")),
             new("debug_menu", L.T("Debug menu"), false,
@@ -242,6 +244,7 @@
             new(L.T("Spanish"), "3"),
             new(L.T("German"), "4"),
             new(L.T("Italian"), "5"),
+            new("Português (Brasil)", "17"),
         };
 
         public static readonly Choice[] HdrPaperWhite =

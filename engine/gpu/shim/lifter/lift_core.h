@@ -219,7 +219,9 @@ private:
     void ExpandInterpolation();
     void Finish();
     void DeclareStageModes();
+    void MotionBlock(bool outputs);
     void VertexMotion();
+    void VertexCapture();
     void FragmentMotion();
 
     std::vector<u32> Serialize();

@@ -48,6 +48,7 @@ constexpr Knob kKnobs[] = {
     {"effect_volumetric_light", "0"},
     {"effect_point_fog", "0"},
     {"effect_point_shadows", "0"},
+    {"effect_ray_tracing", "0"},
     {"graphics_gi_strength", "6"},
     {"graphics_ssr_intensity", "1"},
     {"graphics_volumetric_intensity", "1"},

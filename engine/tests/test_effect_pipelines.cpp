@@ -24,8 +24,8 @@
 #include "video_core/host_shaders/ssr_temporal_copy_comp.h"
 #include "video_core/host_shaders/ssr_temporal_resolve_comp.h"
 #include "video_core/host_shaders/ssr_trace_comp.h"
-#include "video_core/host_shaders/volumetric_light_celestial_comp.h"
 #include "video_core/host_shaders/volumetric_light_composite_comp.h"
+#include "video_core/host_shaders/volumetric_light_filter_comp.h"
 #include "video_core/host_shaders/volumetric_light_integrate_comp.h"
 #include "video_core/host_shaders/volumetric_light_repair_comp.h"
 #include "video_core/host_shaders/volumetric_light_tint_comp.h"
@@ -131,38 +131,36 @@ int main() {
          68},
         {"point shadows",
          POINT_SHADOW_COMP,
-         {eStorageBuffer, eCombinedImageSampler, eStorageBuffer, eStorageImage, eStorageImage,
-          eStorageImage, eStorageImage},
+         {eStorageBuffer, eCombinedImageSampler, eStorageImage, eStorageImage, eStorageImage,
+          eStorageImage},
          64},
         {"volumetric integrate",
          VOLUMETRIC_LIGHT_INTEGRATE_COMP,
          {eStorageBuffer, eStorageBuffer, eCombinedImageSampler, eCombinedImageSampler,
-          eStorageImage, eStorageImage, eStorageBuffer},
+          eStorageImage, eStorageImage},
          32},
         {"volumetric repair",
          VOLUMETRIC_LIGHT_REPAIR_COMP,
          {eStorageBuffer, eStorageBuffer, eCombinedImageSampler, eCombinedImageSampler,
-          eStorageImage, eStorageImage, eStorageBuffer, eStorageImage},
+          eStorageImage, eStorageImage, eStorageImage},
          32},
         {"volumetric tint",
          VOLUMETRIC_LIGHT_TINT_COMP,
-         {eStorageBuffer, eCombinedImageSampler, eStorageImage},
+         {eStorageBuffer, eStorageBuffer},
          8},
+        {"volumetric filter",
+         VOLUMETRIC_LIGHT_FILTER_COMP,
+         {eCombinedImageSampler, eStorageImage},
+         4},
         {"volumetric composite",
          VOLUMETRIC_LIGHT_COMPOSITE_COMP,
          {eCombinedImageSampler, eCombinedImageSampler, eStorageImage, eStorageBuffer,
           eCombinedImageSampler, eCombinedImageSampler},
-         8},
+         4},
         {"point volumetric",
          POINT_VOLUMETRIC_COMP,
-         {eStorageBuffer, eStorageBuffer, eCombinedImageSampler, eStorageImage, eStorageBuffer,
-          eStorageBuffer},
-         64},
-        {"volumetric celestial",
-         VOLUMETRIC_LIGHT_CELESTIAL_COMP,
-         {eStorageBuffer, eStorageBuffer, eStorageBuffer, eStorageBuffer, eStorageBuffer,
-          eStorageBuffer},
-         32},
+         {eStorageBuffer, eStorageBuffer, eCombinedImageSampler, eStorageImage},
+         8},
     };
     u32 built = 0;
     for (const Pass& pass : passes) {

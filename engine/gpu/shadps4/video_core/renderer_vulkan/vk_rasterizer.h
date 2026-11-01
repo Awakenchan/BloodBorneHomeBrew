@@ -16,6 +16,7 @@
 #include "video_core/renderer_vulkan/vk_bind_helper.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_contact_shadow.h"
+#include "video_core/renderer_vulkan/vk_rt_shadow.h"
 #include "video_core/renderer_vulkan/vk_point_shadow.h"
 #include "video_core/renderer_vulkan/vk_ssgi.h"
 #include "video_core/renderer_vulkan/vk_ssr_temporal.h"
@@ -390,6 +391,8 @@ private:
     void UpdateViewportScissorState() const;
     vk::Rect2D DrawScissor(u32 viewport) const;
     void EffectsOnFrameEnd();
+    void EffectsCaptureDraw(const AmdGpu::Regs& regs, const GraphicsPipeline* pipeline, bool is_indexed,
+                            u32 index_offset);
     void EffectsBeforeTargets(const GraphicsPipeline* pipeline);
     void EffectsAfterTargets(const GraphicsPipeline* pipeline);
     void EffectsBlendedScene();
@@ -581,6 +584,7 @@ private:
     std::unique_ptr<SceneTargets> scene_targets;
     std::unique_ptr<ScreenSpaceGI> ssgi;
     std::unique_ptr<SsrTemporal> ssr_temporal;
+    std::unique_ptr<RtShadow> rt_shadow;
     std::unique_ptr<ContactShadow> contact_shadow;
     std::unique_ptr<PointShadow> point_shadow;
     std::unique_ptr<VolumetricLight> volumetric_light;
@@ -593,6 +597,7 @@ private:
     VideoCore::ImageId previous_scene_depth{};
     std::unique_ptr<ObjectMotion> object_motion;
     bool motion_draw = false;
+    bool capture_draw = false;
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
     bool gbuffer_draw = false;
     std::unique_ptr<HdrNative> hdr_native; // bbport: native HDR output (docs/hdr.md); before

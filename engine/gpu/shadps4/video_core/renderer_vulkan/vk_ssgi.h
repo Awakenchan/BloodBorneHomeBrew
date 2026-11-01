@@ -15,6 +15,7 @@ class TextureCache;
 namespace Vulkan {
 class CameraMotion;
 class Instance;
+class RtShadow;
 class Runtime;
 class SceneTargets;
 class Scheduler;
@@ -23,7 +24,7 @@ class ScreenSpaceGI {
 public:
     ScreenSpaceGI(const Instance& instance, Scheduler& scheduler,
                   VideoCore::TextureCache& texture_cache, Runtime& runtime,
-                  SceneTargets& scene_targets, CameraMotion& camera_motion);
+                  SceneTargets& scene_targets, CameraMotion& camera_motion, RtShadow& rt_shadow);
     ~ScreenSpaceGI();
 
     void OnOpaqueScene(VideoCore::ImageId color, VideoCore::ImageId depth,
@@ -69,9 +70,10 @@ private:
     VideoCore::TextureCache& texture_cache;
     Runtime& runtime;
     SceneTargets& scene_targets;
+    RtShadow& rt_shadow;
     CameraMotion& camera_motion;
 
-    Pass prep, gather, denoise, composite;
+    Pass prep, gather, gather_ray, denoise, composite;
     OwnImage geo;
     std::array<OwnImage, 2> light;
     std::array<OwnImage, 2> filtered;

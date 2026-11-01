@@ -173,6 +173,12 @@ add_host_shader(ssr_temporal.comp ssr_temporal_resolve_comp RESOLVE=1)
 add_host_shader(ssr_temporal.comp ssr_temporal_copy_comp COPY=1)
 add_host_shader(ssr_trace.comp ssr_trace_comp)
 add_host_shader(contact_shadow.comp contact_shadow_comp)
+add_host_shader(rt_shadow.comp rt_shadow_comp)
+add_host_shader(rt_unproject.comp rt_unproject_comp)
+add_host_shader(point_shadow_ray.comp point_shadow_ray_comp)
+add_host_shader(ssgi_gather_ray.comp ssgi_gather_ray_comp)
+add_host_shader(rt_shadow_filter.comp rt_shadow_filter_comp)
+add_host_shader(rt_lab.comp rt_lab_comp)
 add_host_shader(point_shadow.comp point_shadow_comp)
 add_host_shader(point_volumetric.comp point_volumetric_comp)
 add_host_shader(native_motion_blur.frag native_motion_blur_frag)
@@ -181,7 +187,7 @@ add_host_shader(volumetric_light.comp volumetric_light_integrate_comp INTEGRATE=
 add_host_shader(volumetric_light.comp volumetric_light_repair_comp REPAIR=1)
 add_host_shader(volumetric_light.comp volumetric_light_tint_comp TINT=1)
 add_host_shader(volumetric_light.comp volumetric_light_composite_comp COMPOSITE=1)
-add_host_shader(volumetric_light.comp volumetric_light_celestial_comp CELESTIAL=1)
+add_host_shader(volumetric_light.comp volumetric_light_filter_comp FILTER=1)
 add_host_shader(ssgi.comp ssgi_prep_comp PREP=1)
 add_host_shader(ssgi.comp ssgi_gather_comp GATHER=1)
 add_host_shader(ssgi.comp ssgi_denoise_comp DENOISE=1)
@@ -323,6 +329,7 @@ target_include_directories(motion-history-test PRIVATE ..)
 foreach(effect_test
         "motion-blur-shader-test;test_motion_blur.cpp"
         "directional-shadow-test;test_directional_shadows.cpp"
+        "rt-shadow-test;test_rt_shadows.cpp"
         "point-volumetric-test;test_point_volumetric.cpp"
         "effect-pipelines-test;test_effect_pipelines.cpp")
     list(GET effect_test 0 effect_test_name)

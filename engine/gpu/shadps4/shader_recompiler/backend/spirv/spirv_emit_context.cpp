@@ -651,7 +651,7 @@ void EmitContext::DefineOutputs() {
                 ++num_attrs;
             }
 
-            if (VertexMotion()) {
+            if (VertexMotion() && (runtime_info.hw.vs.motion_vectors & MotionVectors::VertexOutputs)) {
                 motion_out_cur = DefineOutput(F32[4], MotionVectors::CurrentLocation);
                 motion_out_prev = DefineOutput(F32[4], MotionVectors::PreviousLocation);
                 Name(motion_out_cur, "motion_cur");
@@ -780,10 +780,15 @@ void EmitContext::DefineOutputs() {
 }
 
 void EmitContext::DefineMotionAddressBlock() {
-    const Id type = TypeStruct(U64, U64);
+    const bool both = runtime_info.hw.vs.motion_vectors == MotionVectors::VertexBoth;
+    const Id type = both ? TypeStruct(U64, U64, U64, U64) : TypeStruct(U64, U64);
     Decorate(type, spv::Decoration::Block);
     MemberDecorate(type, 0, spv::Decoration::Offset, 0U);
     MemberDecorate(type, 1, spv::Decoration::Offset, 8U);
+    if (both) {
+        MemberDecorate(type, 2, spv::Decoration::Offset, 16U);
+        MemberDecorate(type, 3, spv::Decoration::Offset, 24U);
+    }
     motion_addresses = DefineVar(type, spv::StorageClass::Uniform);
     Decorate(motion_addresses, spv::Decoration::DescriptorSet, MotionVectors::DescriptorSet);
     Decorate(motion_addresses, spv::Decoration::Binding, MotionVectors::AddressBinding);

@@ -359,7 +359,8 @@ Input MakeInput(const Shader::Info& info, const Shader::RuntimeInfo& rt,
                 }
             }
         }
-        in.vertex_motion = vs.motion_vectors;
+        in.vertex_motion = (vs.motion_vectors & Shader::MotionVectors::VertexOutputs) != 0;
+        in.vertex_capture = (vs.motion_vectors & Shader::MotionVectors::VertexCapture) != 0;
     }
     if (info.hw_stage == HwStage::Fragment) {
         in.tone_curve = Shader::Native::ToneCurveEnabled();

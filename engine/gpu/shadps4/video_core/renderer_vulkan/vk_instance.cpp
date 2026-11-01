@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include "bbport_settings.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/types.h"
@@ -28,6 +29,7 @@
 #include "video_core/renderer_vulkan/vk_occlusion.h"
 #include "video_core/renderer_vulkan/vk_optiscaler.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_xess.h"
 
 #include <vk_mem_alloc.h>
 
@@ -329,6 +331,8 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE,
         vk::PhysicalDeviceCooperativeMatrixFeaturesKHR, vk::PhysicalDeviceShaderFloat8FeaturesEXT,
         vk::PhysicalDeviceMutableDescriptorTypeFeaturesEXT,
+        vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+        vk::PhysicalDeviceRayQueryFeaturesKHR,
         vk::PhysicalDeviceDescriptorBufferFeaturesEXT, vk::PhysicalDeviceFaultFeaturesEXT,
         vk::PhysicalDeviceAddressBindingReportFeaturesEXT,
         vk::PhysicalDeviceAntiLagFeaturesAMD>();
@@ -620,6 +624,17 @@ bool Instance::CreateDevice() {
         return std::find(available_extensions.begin(), available_extensions.end(), extension) !=
                available_extensions.end();
     };
+    if (BbSettings::Get().startup_effects[BbSettings::EffectRayTracing] &&
+        vk12_features.bufferDeviceAddress && vk13_features.synchronization2 &&
+        feature_chain.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure &&
+        feature_chain.get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery &&
+        extension_available(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        extension_available(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) &&
+        extension_available(VK_KHR_RAY_QUERY_EXTENSION_NAME)) {
+        ray_query = add_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) &&
+                    add_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+                    add_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    }
     fsr4vk = Fsr4Vk::FilesPresent() && features.shaderInt16 &&
              features.shaderStorageImageReadWithoutFormat &&
              features.shaderStorageImageWriteWithoutFormat && vk12_features.shaderFloat16 &&
@@ -649,6 +664,29 @@ bool Instance::CreateDevice() {
         std::printf("Upscaler: AMD FSR SDK 2.4 found (%s)\n", FsrSdk::DirectoryUtf8().c_str());
     } else if (FsrSdk::FilesPresent()) {
         std::printf("Upscaler: AMD FSR SDK found, but this GPU lacks a Vulkan feature it needs\n");
+    }
+    // bbport: Intel XeSS-SR (vk_xess.cpp): the device extensions libxess.dll asks for and the
+    // features its guide names (shaderStorageImageWriteWithoutFormat, mutableDescriptorType; shaderInt8
+    // and shaderIntegerDotProduct are on already where the GPU has them), requested only when the
+    // library is installed, so nothing changes for other paths.
+    if (Xess::FilesPresent() && features.shaderStorageImageWriteWithoutFormat &&
+        feature_chain.get<vk::PhysicalDeviceMutableDescriptorTypeFeaturesEXT>().mutableDescriptorType &&
+        extension_available(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)) {
+        std::vector<const char*> xess_extensions{VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME};
+        std::vector<const char*> required;
+        xess = Xess::RequiredDeviceExtensions(*instance, physical_device, required);
+        xess_extensions.insert(xess_extensions.end(), required.begin(), required.end());
+        for (const char* extension : xess ? xess_extensions : std::vector<const char*>{}) {
+            const bool enabled = std::ranges::any_of(enabled_extensions, [&](const char* name) {
+                return std::strcmp(name, extension) == 0;
+            });
+            xess = (enabled || add_extension(extension)) && xess;
+        }
+        std::printf(xess ? "Upscaler: Intel XeSS found (%s): XeSS-SR available\n"
+                         : "Upscaler: Intel XeSS found (%s), but this GPU or driver lacks what it needs\n",
+                    Xess::DirectoryUtf8().c_str());
+    } else if (Xess::FilesPresent()) {
+        std::printf("Upscaler: Intel XeSS found, but this GPU lacks a Vulkan feature it needs\n");
     }
     const bool fsr_shared = fsr4vk || fsr_sdk;
     vk::StructureChain device_chain = {
@@ -838,7 +876,18 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceAntiLagFeaturesAMD{
             .antiLag = true,
         },
+        vk::PhysicalDeviceAccelerationStructureFeaturesKHR{
+            .accelerationStructure = true,
+        },
+        vk::PhysicalDeviceRayQueryFeaturesKHR{
+            .rayQuery = true,
+        },
     };
+
+    if (!ray_query) {
+        device_chain.unlink<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
+        device_chain.unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
+    }
 
     if (!anti_lag) {
         device_chain.unlink<vk::PhysicalDeviceAntiLagFeaturesAMD>();
@@ -910,8 +959,10 @@ bool Instance::CreateDevice() {
     if (!shader_float8) {
         device_chain.unlink<vk::PhysicalDeviceShaderFloat8FeaturesEXT>();
     }
-    if (!fsr4vk) {
+    if (!fsr4vk && !xess) {
         device_chain.unlink<vk::PhysicalDeviceMutableDescriptorTypeFeaturesEXT>();
+    }
+    if (!fsr4vk) {
         device_chain.unlink<vk::PhysicalDeviceDescriptorBufferFeaturesEXT>();
     }
 

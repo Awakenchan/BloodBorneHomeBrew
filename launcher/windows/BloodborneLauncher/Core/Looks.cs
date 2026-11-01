@@ -56,6 +56,7 @@ namespace BloodborneLauncher.Core
             Toggle("effect_volumetric_light", false),
             Toggle("effect_point_fog", false),
             Toggle("effect_point_shadows", false),
+            Toggle("effect_ray_tracing", false),
             Amount("graphics_gi_strength", 0, 12, 6),
             Amount("graphics_ssr_intensity", 0, 3, 1),
             Amount("graphics_volumetric_intensity", 0, 3, 1),

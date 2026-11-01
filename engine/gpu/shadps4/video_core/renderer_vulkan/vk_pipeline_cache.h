@@ -97,6 +97,7 @@ struct PipelineSelection {
     std::optional<Shader::Gcn::FetchShaderData> fetch_shader{};
     GraphicsPipelineKey graphics_key{};
     bool motion = false;
+    bool capture = false;
     DrawIndirectParams draw_indirect_params{};
     struct PrepWorker* worker{}; ///< set: read-only selection for a draw-preparation worker
 };
@@ -144,6 +145,7 @@ public:
     static void SaveAllForShutdown();
     // Set once before Liverpool can submit draws or preparation work.
     void SetObjectMotionEnabled(bool enabled) { object_motion_enabled = enabled; }
+    void SetPositionCapture(bool enabled) { position_capture = enabled; }
 
     bool LoadComputePipeline(Serialization::Archive& ar);
     bool LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy);
@@ -243,6 +245,7 @@ private:
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
     bool object_motion_enabled{};
+    bool position_capture{};
 
     // Only if Config::collectShadersForDebug()
     tsl::robin_map<vk::ShaderModule,

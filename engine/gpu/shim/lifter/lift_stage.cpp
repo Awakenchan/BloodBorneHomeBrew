@@ -857,6 +857,9 @@ void Lift_::Epilogue() {
     if (in.vertex_motion) {
         VertexMotion();
     }
+    if (in.vertex_capture) {
+        VertexCapture();
+    }
     if (in.fragment_motion && !var_color[7]) {
         FragmentMotion();
     }
@@ -897,7 +900,7 @@ void Lift_::Epilogue() {
     }
 }
 
-void Lift_::VertexMotion() {
+void Lift_::MotionBlock(bool outputs) {
     if (!var_position) {
         Fail("motion vectors without a position");
     }
@@ -906,21 +909,34 @@ void Lift_::VertexMotion() {
         m.Capability(u32(spv::Capability::Int64));
     }
     if (!var_motion_addr) {
+        const bool both = in.vertex_motion && in.vertex_capture;
         const std::array<u32, 2> members{t_u64, t_u64};
-        const u32 block = m.AddUniqueType(O(spv::Op::OpTypeStruct), members);
+        const std::array<u32, 4> both_members{t_u64, t_u64, t_u64, t_u64};
+        const u32 block = both ? m.AddUniqueType(O(spv::Op::OpTypeStruct), both_members)
+                               : m.AddUniqueType(O(spv::Op::OpTypeStruct), members);
         m.Decorate(block, u32(spv::Decoration::Block));
         m.MemberDecorate(block, 0, u32(spv::Decoration::Offset), 0);
         m.MemberDecorate(block, 1, u32(spv::Decoration::Offset), 8);
+        if (both) {
+            m.MemberDecorate(block, 2, u32(spv::Decoration::Offset), 16);
+            m.MemberDecorate(block, 3, u32(spv::Decoration::Offset), 24);
+        }
         var_motion_addr = m.Variable(PtrType(u32(spv::StorageClass::Uniform), block), u32(spv::StorageClass::Uniform));
         m.Decorate(var_motion_addr, u32(spv::Decoration::DescriptorSet), 1);
         m.Decorate(var_motion_addr, u32(spv::Decoration::Binding), 0);
         m.Interface(var_motion_addr);
-        var_motion_cur_out = OutputVar(t_v4f, 30u, std::nullopt);
-        var_motion_prev_out = OutputVar(t_v4f, 31u, std::nullopt);
+        if (outputs) {
+            var_motion_cur_out = OutputVar(t_v4f, 30u, std::nullopt);
+            var_motion_prev_out = OutputVar(t_v4f, 31u, std::nullopt);
+        }
         m.Capability(u32(spv::Capability::PhysicalStorageBufferAddresses));
         m.Extension("SPV_KHR_physical_storage_buffer");
         physical_addressing = true;
     }
+}
+
+void Lift_::VertexMotion() {
+    MotionBlock(true);
     const u32 storage = u32(spv::StorageClass::PhysicalStorageBuffer);
     const u32 ptr_u64 = PtrType(u32(spv::StorageClass::Uniform), t_u64);
     const auto wide = [&](u32 value) { return Emit(O(spv::Op::OpUConvert), t_u64, Ty::U64, {value}); };
@@ -930,7 +946,8 @@ void Lift_::VertexMotion() {
         return iadd64(base, Emit(O(spv::Op::OpIMul), t_u64, Ty::U64, {wide(index), c64(stride)}));
     };
     const u32 position = Emit(O(spv::Op::OpLoad), t_v4f, Ty::V4F, {var_position});
-    const u32 param_index = PushU32(11, -1);
+    const u32 raw_param = PushU32(11, -1);
+    const u32 param_index = in.vertex_capture ? IOp(O(spv::Op::OpBitwiseAnd), raw_param, CU(0xffffu)) : raw_param;
     const u32 params_address = Emit(O(spv::Op::OpLoad), t_u64, Ty::U64, {Emit(O(spv::Op::OpAccessChain), ptr_u64, Ty::None, {var_motion_addr, CU(0)})});
     const u32 positions_address = Emit(O(spv::Op::OpLoad), t_u64, Ty::U64, {Emit(O(spv::Op::OpAccessChain), ptr_u64, Ty::None, {var_motion_addr, CU(1)})});
     const u32 ptr_v4u = PtrType(storage, t_v4u);
@@ -987,6 +1004,60 @@ void Lift_::VertexMotion() {
     previous = Emit(O(spv::Op::OpCompositeInsert), t_v4f, Ty::V4F, {valid, previous, 2}, 4);
     EmitVoid(O(spv::Op::OpStore), {var_motion_cur_out, position});
     EmitVoid(O(spv::Op::OpStore), {var_motion_prev_out, previous});
+}
+
+void Lift_::VertexCapture() {
+    MotionBlock(false);
+    const bool both = in.vertex_motion;
+    const u32 storage = u32(spv::StorageClass::PhysicalStorageBuffer);
+    const u32 ptr_u64 = PtrType(u32(spv::StorageClass::Uniform), t_u64);
+    const auto wide = [&](u32 value) { return Emit(O(spv::Op::OpUConvert), t_u64, Ty::U64, {value}); };
+    const auto c64 = [&](u64 value) { return m.ConstU64(t_u64, value); };
+    const auto iadd64 = [&](u32 a, u32 b) { return Emit(O(spv::Op::OpIAdd), t_u64, Ty::U64, {a, b}); };
+    const auto address = [&](u32 base, u32 index, u32 stride) {
+        return iadd64(base, Emit(O(spv::Op::OpIMul), t_u64, Ty::U64, {wide(index), c64(stride)}));
+    };
+    const u32 position = Emit(O(spv::Op::OpLoad), t_v4f, Ty::V4F, {var_position});
+    const u32 raw_param = PushU32(11, -1);
+    const u32 param_index = both ? IOp(O(spv::Op::OpShiftRightLogical), raw_param, CU(16u)) : raw_param;
+    const auto table = [&](u32 member) {
+        return Emit(O(spv::Op::OpLoad), t_u64, Ty::U64,
+                    {Emit(O(spv::Op::OpAccessChain), ptr_u64, Ty::None, {var_motion_addr, CU(member)})});
+    };
+    const u32 params_address = table(both ? 2u : 0u);
+    const u32 positions_address = table(both ? 3u : 1u);
+    const u32 ptr_v4u = PtrType(storage, t_v4u);
+    const u32 aligned = u32(spv::MemoryAccessMask::Aligned);
+    const u32 params_ptr = Emit(O(spv::Op::OpConvertUToPtr), ptr_v4u, Ty::None, {address(params_address, param_index, 32)});
+    const u32 params = Emit(O(spv::Op::OpLoad), t_v4u, Ty::V4U, {params_ptr, aligned, 16}, 6);
+    const u32 store_base = Extract(t_u32, Ty::U32, params, 0);
+    const u32 vertices = Extract(t_u32, Ty::U32, params, 2);
+    const u32 offsets_ptr = Emit(O(spv::Op::OpConvertUToPtr), ptr_v4u, Ty::None,
+                                 {iadd64(address(params_address, param_index, 32), c64(16))});
+    const u32 offsets = Emit(O(spv::Op::OpLoad), t_v4u, Ty::V4U, {offsets_ptr, aligned, 16}, 6);
+    const u32 first_vertex = Extract(t_u32, Ty::U32, offsets, 0);
+    const u32 first_instance = Extract(t_u32, Ty::U32, offsets, 1);
+    const u32 instances = Extract(t_u32, Ty::U32, offsets, 2);
+    const u32 vertex = IOp(O(spv::Op::OpISub), LoadBuiltinU32(var_vertex_index, spv::BuiltIn::VertexIndex), first_vertex);
+    const u32 instance = IOp(O(spv::Op::OpISub), LoadBuiltinU32(var_instance_index, spv::BuiltIn::InstanceIndex), first_instance);
+    const u32 in_range = Emit(O(spv::Op::OpLogicalAnd), t_bool, Ty::Bool,
+                              {ICmp(O(spv::Op::OpULessThan), vertex, vertices), ICmp(O(spv::Op::OpULessThan), instance, instances)});
+    const u32 slot = IOp(O(spv::Op::OpIAdd), vertex, IOp(O(spv::Op::OpIMul), instance, vertices));
+    const u32 store_label = m.NewId();
+    const u32 store_merge = m.NewId();
+    EmitVoid(O(spv::Op::OpSelectionMerge), {store_merge, 0}, 2);
+    EmitVoid(O(spv::Op::OpBranchConditional), {in_range, store_label, store_merge});
+    Open(store_label);
+    const u32 store_address = address(positions_address, IOp(O(spv::Op::OpIAdd), store_base, slot), 16);
+    const u32 ptr_scalar = PtrType(storage, t_u32);
+    for (u32 i = 0; i < 4; ++i) {
+        const u32 ptr = Emit(O(spv::Op::OpConvertUToPtr), ptr_scalar, Ty::None, {iadd64(store_address, c64(i * 4))});
+        const u32 bits = Emit(O(spv::Op::OpBitcast), t_u32, Ty::U32, {Extract(t_f32, Ty::F32, position, i)});
+        const u32 prev = Emit(O(spv::Op::OpAtomicExchange), t_u32, Ty::U32, {ptr, CU(u32(spv::Scope::Device)), CU(0), bits});
+        nodes[m.NodeOf(prev)].effect = true;
+    }
+    EmitVoid(O(spv::Op::OpBranch), {store_merge});
+    Open(store_merge);
 }
 
 void Lift_::FragmentMotion() {

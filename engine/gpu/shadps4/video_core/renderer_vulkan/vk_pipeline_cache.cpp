@@ -283,7 +283,8 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
             !instance.IsDepthClipControlSupported() &&
             regs.clipper_control.clip_space == AmdGpu::ClipSpace::MinusWToW;
         info.hw.vs.clip_disable = regs.IsClipDisabled();
-        info.hw.vs.motion_vectors = sel.motion;
+        info.hw.vs.motion_vectors =
+            u8((sel.capture ? Shader::MotionVectors::VertexCapture : 0) | (sel.motion ? 1 : 0));
         break;
     }
     case HwStage::Fragment: {
@@ -674,7 +675,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             std::printf("GX records: a record chose another pipeline than the registers (%llu so far)\n",
                         static_cast<unsigned long long>(gx_differ));
         }
-        if (gx_record && !gx_expected && !sel.motion &&
+        if (gx_record && !gx_expected && !sel.motion && !sel.capture &&
             liverpool->regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs) {
             if (gx_pipelines.size() >= (1u << 16)) {
                 gx_pipelines.clear();
@@ -782,6 +783,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                           regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
     }
     sel.motion = false;
+    sel.capture = false;
+    if (position_capture) {
+        u32 bound = 0;
+        for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
+            bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
+        }
+        sel.capture = (bound == 0 || bound >= 5) && regs.depth_buffer.DepthValid() &&
+                      regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
+                      regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
+    }
 
     // First pass to fill render target information needed by shader recompiler
     for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
@@ -893,9 +904,12 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         key.num_samples = std::max(key.num_samples, color_samples);
     }
 
+    if (sel.capture) {
+        key.motion_vectors = Shader::MotionVectors::VertexCapture;
+    }
     if (sel.motion) {
         constexpr u32 mv = Shader::MotionVectors::Output;
-        key.motion_vectors = 1;
+        key.motion_vectors |= 1;
         key.mrt_mask |= 1u << mv;
         key.num_color_attachments = mv + 1;
         auto& color_buffer = key.color_buffers[mv];

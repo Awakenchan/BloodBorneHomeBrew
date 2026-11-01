@@ -15,14 +15,10 @@ namespace {
 #define CHECK(call) do { if ((call) != VK_SUCCESS) { std::fprintf(stderr, "%s failed\n", #call); std::abort(); } } while (false)
 constexpr unsigned W = 19, H = 11;
 struct Push {
-    unsigned offsets = 16 | (32 << 8), count = 1;
-    float intensity = 0.2f;
-    unsigned vertex_offset = 16, vertex_stride = 32, index_offset = 2, index_size = 2;
-    int first_vertex = 1;
-    std::array<float, 4> viewport{W / 2.0f, -H / 2.0f, W / 2.0f, H / 2.0f};
-    std::array<int, 4> scissor{0, 0, W, H};
+    unsigned count = 2;
+    float intensity = 1.0f;
 };
-static_assert(sizeof(Push) == 64);
+static_assert(sizeof(Push) == 8);
 struct Buffer { VkBuffer buffer{}; VkDeviceMemory memory{}; void* data{}; unsigned size{}; };
 struct Image { VkImage image{}; VkDeviceMemory memory{}; VkImageView view{}; };
 struct Test {
@@ -121,10 +117,10 @@ struct Test {
         VkCommandBufferAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
         CHECK(vkAllocateCommandBuffers(device, &ai, &cmd));
-        const std::array<VkDescriptorType, 6> types{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        const std::array<VkDescriptorType, 4> types{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
         for (unsigned i = 0; i < bindings.size(); ++i)
             bindings[i] = {i, types[i], 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
         VkDescriptorSetLayoutCreateInfo si{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -186,85 +182,44 @@ struct Test {
 
 int main() {
     Test t;
-    const auto cb = t.MakeBuffer(256), lights = t.MakeBuffer(1024), vertices = t.MakeBuffer(1024);
-    const auto indices = t.MakeBuffer(64), result = t.MakeBuffer(W * H * 8);
+    const auto cb = t.MakeBuffer(256), lights = t.MakeBuffer(1024), result = t.MakeBuffer(W * H * 8);
     const auto depth = t.MakeImage(VK_FORMAT_R32_SFLOAT), fog = t.MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT);
-    auto* constants = static_cast<float*>(cb.data) + 4;
+    auto* constants = static_cast<float*>(cb.data);
     for (unsigned i = 0; i < 4; ++i) constants[i * 5] = 1;
-
-    auto* light = static_cast<float*>(lights.data) + 8;
+    auto* light = static_cast<float*>(lights.data);
     light[2] = 1; light[3] = 0.01f; light[4] = 1; light[5] = 0.5f; light[6] = 0.25f;
+    light[16] = 0.2f; light[18] = 0.3f; light[19] = 4.0f; light[20] = 8; light[21] = 8; light[22] = 8;
     Push push;
-    std::array<float, 4> quad{0, 0, W, H};
-    const auto upload_quad = [&] {
-        const std::array<std::array<float, 2>, 4> points{{
-            {quad[0], quad[1]}, {quad[2], quad[1]}, {quad[0], quad[3]}, {quad[2], quad[3]}}};
-        for (unsigned i = 0; i < 4; ++i) {
-            auto* p = reinterpret_cast<float*>(static_cast<unsigned char*>(vertices.data) +
-                push.vertex_offset + (i + push.first_vertex) * push.vertex_stride);
-            p[0] = (points[i][0] - push.viewport[2]) / push.viewport[0];
-            p[1] = (points[i][1] - push.viewport[3]) / push.viewport[1];
-            p[2] = 0; p[3] = 1;
-            auto* at = static_cast<unsigned char*>(indices.data) + push.index_offset + i * push.index_size;
-            if (push.index_size == 2) { const uint16_t index = i; std::memcpy(at, &index, 2); }
-            if (push.index_size == 4) std::memcpy(at, &i, 4);
-        }
-    };
     bool initialized = false;
-    const auto run = [&](unsigned tiles, bool quad_tiles = false) {
+    const auto run = [&](float scene_depth) {
         CHECK(vkResetCommandBuffer(t.cmd, 0));
         VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         CHECK(vkBeginCommandBuffer(t.cmd, &begin));
         t.Barrier(depth.image, initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED);
         t.Barrier(fog.image, initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED);
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        const VkClearColorValue scene{{0.5f, 0, 0, 0}}, zero{};
+        const VkClearColorValue scene{{scene_depth, 0, 0, 0}}, zero{};
         vkCmdClearColorImage(t.cmd, depth.image, VK_IMAGE_LAYOUT_GENERAL, &scene, 1, &range);
         vkCmdClearColorImage(t.cmd, fog.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
         t.Barrier(depth.image); t.Barrier(fog.image);
-        std::array<VkDescriptorBufferInfo, 4> buffers{{
-            {cb.buffer, 0, cb.size}, {lights.buffer, 0, lights.size},
-            {vertices.buffer, 0, vertices.size}, {indices.buffer, 0, indices.size}}};
+        const VkDescriptorBufferInfo cbi{cb.buffer, 0, cb.size}, li{lights.buffer, 0, lights.size};
         const VkDescriptorImageInfo d{t.sampler, depth.view, VK_IMAGE_LAYOUT_GENERAL},
             o{{}, fog.view, VK_IMAGE_LAYOUT_GENERAL};
-        std::array<VkWriteDescriptorSet, 6> writes{};
-        for (unsigned i = 0; i < 6; ++i) {
-            writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = i,
-                .descriptorCount = 1, .descriptorType = i == 2 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER :
-                    i == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-            if (i == 2 || i == 3) writes[i].pImageInfo = i == 2 ? &d : &o;
-            else writes[i].pBufferInfo = &buffers[i < 2 ? i : i - 2];
-        }
+        const std::array<VkWriteDescriptorSet, 4> writes{{
+            {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cbi},
+            {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
+             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &li},
+            {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 2, .descriptorCount = 1,
+             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &d},
+            {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 3, .descriptorCount = 1,
+             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &o},
+        }};
         vkCmdBindPipeline(t.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, t.pipeline);
-        t.descriptors(t.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, t.layout, 0, 6, writes.data());
-        for (unsigned tile = 0; tile < tiles; ++tile) {
-            auto p = push;
-            if (quad_tiles) {
-                std::vector<unsigned char> data(vertices.size);
-                std::memcpy(data.data(), vertices.data, vertices.size);
-                const float lo = float(tile * W / tiles), hi = float((tile + 1) * W / tiles);
-                for (unsigned i = 0; i < 4; ++i) {
-                    const float x = ((i & 1 ? hi : lo) - p.viewport[2]) / p.viewport[0];
-                    std::memcpy(data.data() + p.vertex_offset +
-                        (i + p.first_vertex) * p.vertex_stride, &x, sizeof x);
-                }
-                vkCmdUpdateBuffer(t.cmd, vertices.buffer, 0, vertices.size, data.data());
-                VkMemoryBarrier updated{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT};
-                vkCmdPipelineBarrier(t.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 1, &updated, 0, nullptr, 0, nullptr);
-            } else if (tiles > 1) {
-                p.scissor[0] = tile * W / tiles;
-                p.scissor[2] = (tile + 1) * W / tiles;
-            }
-            vkCmdPushConstants(t.cmd, t.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
-            vkCmdDispatch(t.cmd, (W + 7) / 8, (H + 7) / 8, 1);
-            t.Barrier(fog.image);
-            VkMemoryBarrier read{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                .srcAccessMask = VK_ACCESS_SHADER_READ_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
-            vkCmdPipelineBarrier(t.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 1, &read, 0, nullptr, 0, nullptr);
-        }
+        t.descriptors(t.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, t.layout, 0, 4, writes.data());
+        vkCmdPushConstants(t.cmd, t.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+        vkCmdDispatch(t.cmd, (W + 7) / 8, (H + 7) / 8, 1);
+        t.Barrier(fog.image);
         VkBufferImageCopy copy{.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {W, H, 1}};
         vkCmdCopyImageToBuffer(t.cmd, fog.image, VK_IMAGE_LAYOUT_GENERAL, result.buffer, 1, &copy);
         VkMemoryBarrier host{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -279,33 +234,67 @@ int main() {
         const auto* pixels = static_cast<const uint16_t*>(result.data);
         return std::vector<uint16_t>(pixels, pixels + W * H * 4);
     };
-    upload_quad();
-    const auto full = run(1);
-    assert(std::ranges::any_of(full, [](auto v) { return v != 0; }));
-    for (unsigned tiles : {2, 3, 7, 19}) {
-        upload_quad();
-        assert(run(tiles) == full);
-        assert(run(tiles, true) == full);
-    }
-    push.index_size = 4; push.index_offset = 4;
-    upload_quad();
-    assert(run(1) == full);
-    push.index_size = 0;
-    upload_quad();
-    assert(run(1) == full);
-    push.scissor = {3, 2, 17, 9};
-    quad = {5, 1, 14, 8};
-    upload_quad();
-    const auto clipped = run(1);
-    for (unsigned y = 0; y < H; ++y)
-        for (unsigned x = 0; x < W; ++x)
-            for (unsigned c = 0; c < 4; ++c) {
-                const unsigned at = (y * W + x) * 4 + c;
-                assert(clipped[at] == (x >= 5 && x < 14 && y >= 2 && y < 8 ? full[at] : 0));
+    const auto half_to_float = [](uint16_t h) {
+        const int exponent = (h >> 10) & 31, mantissa = h & 1023;
+        const float value = exponent == 0 ? std::ldexp(float(mantissa), -24)
+                                          : std::ldexp(float(mantissa + 1024), exponent - 25);
+        return (h & 0x8000) ? -value : value;
+    };
+    const auto reference = [&](unsigned x, unsigned y, float scene_depth, unsigned channel) {
+        const float u = (float(x) + 0.5f) / W * 2 - 1, v = 1 - (float(y) + 0.5f) / H * 2;
+        const double z = scene_depth == 1.0f ? 0.5 : scene_depth;
+        const double len = std::sqrt(double(u) * u + double(v) * v + z * z);
+        const double ray[3]{u / len, v / len, z / len};
+        const double limit = scene_depth == 1.0f ? 100.0 : std::min(len, 100.0);
+        double total = 0;
+        for (unsigned l = 0; l < 2; ++l) {
+            const float* r = light + l * 16;
+            double rgb[3]{r[4], r[5], r[6]};
+            const double peak = std::max({rgb[0], rgb[1], rgb[2]});
+            const double divide = std::max(1.0, peak / 4);
+            for (auto& c : rgb) c /= divide;
+            const double luminance = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+            const double colour = luminance + (rgb[channel] - luminance) * 0.75;
+            const double radius = 1 / std::sqrt(double(r[3]));
+            constexpr unsigned Steps = 20000;
+            double energy = 0;
+            for (unsigned i = 0; i < Steps; ++i) {
+                const double t = (i + 0.5) / Steps * limit;
+                const double dx = ray[0] * t - r[0], dy = ray[1] * t - r[1], dz = ray[2] * t - r[2];
+                const double falloff = std::max(0.0, 1 - std::sqrt(dx * dx + dy * dy + dz * dz) / radius);
+                energy += falloff * falloff * std::exp(-0.025 * t) * 0.025 * limit / Steps;
             }
+            total += colour * energy;
+        }
+        return total * 0.35 * push.intensity;
+    };
+    double worst = 0;
+    unsigned checked = 0;
+    for (const float scene_depth : {0.5f, 0.9f, 1.0f}) {
+        const auto out = run(scene_depth);
+        for (unsigned y = 0; y < H; ++y) {
+            for (unsigned x = 0; x < W; ++x) {
+                for (unsigned c = 0; c < 3; ++c) {
+                    const double want = reference(x, y, scene_depth, c);
+                    const double got = half_to_float(out[(y * W + x) * 4 + c]);
+                    assert(want > 0);
+                    worst = std::max(worst, std::abs(got - want) / want);
+                    ++checked;
+                }
+            }
+        }
+    }
+    std::printf("Lamp fog: largest error against a 20000-step reference %.3f%% over %u values\n",
+                worst * 100, checked);
+    assert(worst < 0.02);
+    light[19] = 0;
+    light[3] = 1e9f;
+    const auto missed = run(0.5f);
+    assert(std::ranges::all_of(missed, [](auto v) { return v == 0; }));
+    light[3] = 0.01f;
     push.intensity = 0;
-    const auto off = run(1);
+    const auto off = run(0.5f);
     assert(std::ranges::all_of(off, [](auto v) { return v == 0; }));
-    std::puts("Point volumetrics: tiled/fullscreen output identical; quad/scissor coverage, "
-              "16/32-bit indices, offsets, non-indexed quads and zero intensity passed");
+    std::puts("Lamp fog: PASS (reference match with two lights, surfaces and sky, lights the ray "
+              "misses, zero intensity)");
 }

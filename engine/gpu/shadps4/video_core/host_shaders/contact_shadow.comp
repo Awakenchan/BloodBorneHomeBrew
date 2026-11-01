@@ -30,10 +30,20 @@ layout(push_constant) uniform Constants {
     float cascade_blend;
 };
 
-layout(constant_id = 0) const uint optimizations = 1u;
+#ifndef BLOCKER_TAPS
+#define BLOCKER_TAPS 32
+#endif
+#ifndef FILTER_NEAR
+#define FILTER_NEAR 12
+#endif
+#ifndef FILTER_MID
+#define FILTER_MID 20
+#endif
+#ifndef FILTER_FAR
+#define FILTER_FAR 32
+#endif
 
 const int STEPS = 20;
-const int BLOCKER_TAPS = 64;
 
 uint base;
 float cb(int i) { return uintBitsToFloat(cbuf.d[base + uint(i)]); }
@@ -41,14 +51,20 @@ vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
 
 float sceneDepth(vec2 uv) { return textureLod(depth_tex, uv, 0.0).x; }
 
+bool fullyFaded;
 mat4 invMat;
 mat4 projMat;
-bool fullyFaded;
+vec4 invZ, invW;
 
 vec3 viewPosAt(vec2 uv, float depth) {
     vec4 c = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
     vec4 v = invMat * c;
     return v.xyz / v.w;
+}
+
+float viewZAt(vec2 uv, float depth) {
+    vec4 c = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    return dot(invZ, c) / dot(invW, c);
 }
 
 float hash(vec2 p) {
@@ -61,19 +77,21 @@ int cascade;
 vec4 rA, rB, rW, rZ;
 float lu, lv, lz;
 vec2 tileMin, tileMax;
+vec2 extent;
+vec2 texelLo, texelHi;
 
 bool setupCascade(int index) {
     cascade = index;
     tileMin = vec2(index & 1, index >> 1) * 0.5;
     tileMax = tileMin + 0.5;
-    int m = 16 + 16 * cascade;
-
-    mat4 shadowMat = transpose(mat4(row(m), row(m + 4), row(m + 12), row(m + 8)));
-    mat4 T = shadowMat * projMat;
-    rA = vec4(T[0][0], T[1][0], T[2][0], T[3][0]);
-    rB = vec4(T[0][1], T[1][1], T[2][1], T[3][1]);
-    rW = vec4(T[0][2], T[1][2], T[2][2], T[3][2]);
-    rZ = vec4(T[0][3], T[1][3], T[2][3], T[3][3]);
+    texelLo = floor(tileMin * extent);
+    texelHi = floor(tileMax * extent) - 1.0;
+    int m = 16 + 16 * index;
+    mat4 rows = transpose(transpose(mat4(row(m), row(m + 4), row(m + 12), row(m + 8))) * projMat);
+    rA = rows[0];
+    rB = rows[1];
+    rW = rows[2];
+    rZ = rows[3];
     vec4 p4 = vec4(P0, 1.0);
     float wl = dot(rW, p4);
     if (abs(wl) < 1e-9) {
@@ -86,8 +104,6 @@ bool setupCascade(int index) {
 }
 
 bool setup(vec2 uv0) {
-    if (optimizations == 0u) d0 = sceneDepth(uv0);
-    if (!(d0 < 1.0) || !(d0 > 0.0)) return false;
     P0 = viewPosAt(uv0, d0);
     if (!(P0.z > 0.0)) return false;
     int index = int(P0.z > cb(80)) + int(P0.z > cb(81)) + int(P0.z > cb(82));
@@ -107,9 +123,20 @@ float contact(vec2 uv0) {
     }
     dir *= flip;
 
+    int steps = STEPS;
+    vec4 tip = projMat * vec4(P0 + dir * length_m, 1.0);
+    if (tip.w > 0.0) {
+        vec2 tipUv = tip.xy / tip.w * vec2(0.5, -0.5) + 0.5;
+        float span = length((tipUv - uv0) * size);
+        if (span < 1.0) {
+            return 1.0;
+        }
+        steps = clamp(int(span / 1.5), 4, STEPS);
+    }
+
     float jitter = hash(uv0 * size);
-    for (int i = 0; i < STEPS; ++i) {
-        float t = (float(i) + 0.5 + jitter) / float(STEPS);
+    for (int i = 0; i < steps; ++i) {
+        float t = (float(i) + 0.5 + jitter) / float(steps);
         vec3 P = P0 + dir * (t * length_m);
         if (!(P.z > 0.0)) {
             break;
@@ -127,8 +154,7 @@ float contact(vec2 uv0) {
         if (!(sd < 1.0) || !(sd > 0.0)) {
             continue;
         }
-        float zs = viewPosAt(uv, sd).z;
-        float diff = P.z - zs;
+        float diff = P.z - viewZAt(uv, sd);
         float bias = 0.03 + 0.004 * P0.z + 0.04 * t * length_m;
         if (diff > bias && diff < thickness_m) {
             return 1.0 - strength * (1.0 - 0.5 * t);
@@ -160,31 +186,23 @@ vec2 vogel(int i, int n, float phi) {
 }
 
 float mapDepth(vec2 uv) {
-    ivec2 extent = textureSize(shadow_map, 0);
-    ivec2 lo = ivec2(tileMin * vec2(extent));
-    ivec2 hi = ivec2(tileMax * vec2(extent)) - 1;
-    return texelFetch(shadow_map, clamp(ivec2(floor(uv * vec2(extent))), lo, hi), 0).x;
+    return texelFetch(shadow_map, ivec2(clamp(floor(uv * extent), texelLo, texelHi)), 0).x;
 }
 
 float compareBilinear(vec2 uv, vec2 center, vec2 slope, float bias) {
-    ivec2 extent = textureSize(shadow_map, 0);
-    vec2 p = uv * vec2(extent) - 0.5;
-    ivec2 origin = ivec2(floor(p));
+    vec2 p = uv * extent - 0.5;
+    vec2 origin = clamp(floor(p), texelLo, texelHi - 1.0);
     vec2 f = fract(p);
-    ivec2 lo = ivec2(tileMin * vec2(extent));
-    ivec2 hi = ivec2(tileMax * vec2(extent)) - 1;
-    vec4 lit;
-    for (int j = 0; j < 4; ++j) {
-        ivec2 at = clamp(origin + ivec2(j & 1, j >> 1), lo, hi);
-        vec2 delta = (vec2(at) + 0.5) / vec2(extent) - center;
-        float receiver = lz + dot(slope, delta);
-        lit[j] = float(texelFetch(shadow_map, at, 0).x >= receiver - bias);
-    }
-    return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);
+    vec2 step_uv = 1.0 / extent;
+    float receiver = lz + dot(slope, (origin + 0.5) * step_uv - center) - bias;
+    vec2 d = slope * step_uv;
+    vec4 limit = receiver + vec4(d.y, d.x + d.y, d.x, 0.0);
+    vec4 lit = vec4(greaterThanEqual(textureGather(shadow_map, (origin + 1.0) * step_uv, 0), limit));
+    return mix(mix(lit.w, lit.z, f.x), mix(lit.x, lit.y, f.x), f.y);
 }
 
 float pcss(vec2 uv0) {
-    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    vec2 texel = 1.0 / extent;
     vec2 center = vec2(lu, lv);
     if (any(lessThan(center, tileMin)) || any(greaterThanEqual(center, tileMax)) ||
         !(lz >= 0.0 && lz <= 1.0)) return -1.0;
@@ -249,13 +267,16 @@ float pcss(vec2 uv0) {
     if (blockers == 0) {
         return 1.0;
     }
+    if (blockers == BLOCKER_TAPS) {
+        return 0.0;
+    }
 
     float blockerDist = max(lz - blockerSum / float(blockers), 0.0) / gz;
     float penumbra = clamp(blockerDist * light_tan, min_penumbra_m, max_penumbra_m);
 
     vec2 filterRadius = max(penumbra * uvPerMetre, 0.5 * texel);
     float radiusTexels = max(filterRadius.x / texel.x, filterRadius.y / texel.y);
-    int filterTaps = radiusTexels <= 1.0 ? 16 : radiusTexels <= 4.0 ? 32 : 64;
+    int filterTaps = radiusTexels <= 1.0 ? FILTER_NEAR : radiusTexels <= 4.0 ? FILTER_MID : FILTER_FAR;
     float lit = 0.0;
 
     for (int i = 0; i < filterTaps; ++i) {
@@ -267,17 +288,19 @@ float pcss(vec2 uv0) {
 
 void main() {
     base = (buf_off & 0xffu) >> 2;
+
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, ivec2(size)))) {
         return;
     }
     const vec2 uv = (vec2(pixel) + 0.5) / size;
-    if (optimizations != 0u) {
-        d0 = sceneDepth(uv);
-        if (!(d0 < 1.0) || !(d0 > 0.0)) return;
-    }
+    d0 = sceneDepth(uv);
+    if (!(d0 < 1.0) || !(d0 > 0.0)) return;
+    extent = vec2(textureSize(shadow_map, 0));
     invMat = transpose(mat4(row(0), row(4), row(8), row(12)));
     projMat = inverse(invMat);
+    invZ = vec4(invMat[0][2], invMat[1][2], invMat[2][2], invMat[3][2]);
+    invW = vec4(invMat[0][3], invMat[1][3], invMat[2][3], invMat[3][3]);
     vec4 c = imageLoad(shadow_img, pixel);
     if (!setup(uv)) {
         return;
@@ -290,7 +313,7 @@ void main() {
                                (uintBitsToFloat(ubuf.d[ub + 72u]) - length(P0)),
                            0.0, 1.0);
 
-        fullyFaded = optimizations != 0u && fade == 0.0;
+        fullyFaded = fade == 0.0;
         float vis = pcss(uv);
         int primary = cascade;
         if (!fullyFaded && vis >= 0.0 && primary < 3 && cascade_blend > 0.0) {
@@ -302,14 +325,14 @@ void main() {
                 if (next >= 0.0)
                     vis = mix(vis, next, smoothstep(split - band, split, P0.z));
             }
-            if (optimizations == 0u || contact_on != 0u)
+            if (contact_on != 0u)
                 setupCascade(primary);
         }
         if (vis >= 0.0) {
             alpha = 1.0 - fade * (1.0 - vis);
         }
     }
-    if (contact_on != 0u) {
+    if (contact_on != 0u && (debug != 0u || alpha > 1.0 - strength)) {
         float k = contact(uv);
         alpha = debug != 0u ? k : min(alpha, k);
     }

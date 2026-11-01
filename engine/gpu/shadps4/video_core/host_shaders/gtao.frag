@@ -27,6 +27,11 @@ const int SLICES = 1;
 const int STEPS = 5;
 const float MIN_RADIUS_PX = 28.0;
 const int SECTORS = 32;
+const float SECTOR_WEIGHT[32] = float[32](
+    0.00240764, 0.00719972, 0.01192247, 0.01653040, 0.02097913, 0.02522583, 0.02922958, 0.03295184,
+    0.03635675, 0.03941153, 0.04208675, 0.04435665, 0.04619938, 0.04759718, 0.04853659, 0.04900857,
+    0.04900857, 0.04853659, 0.04759718, 0.04619938, 0.04435665, 0.04208675, 0.03941153, 0.03635675,
+    0.03295184, 0.02922958, 0.02522583, 0.02097913, 0.01653040, 0.01192247, 0.00719972, 0.00240764);
 
 const float THICKNESS_NEAR = 0.10;
 const float THICKNESS_FAR = 2.0;
@@ -116,6 +121,7 @@ void main() {
             vec3 full = viewPos(uv + stepUv, depth) - pos;
             float radius = max(length(full), 1e-4);
             vec3 dirV = full / radius;
+            stepUv *= min(1.0, MAX_WORLD_RADIUS / radius);
 
             vec3 ortho = dirV - dot(dirV, v) * v;
             vec3 axis = normalize(cross(ortho, v));
@@ -143,14 +149,12 @@ void main() {
                 mask |= sectorMask(uv - off, pos, v, -1.0, lo, thick, reach, bias);
             }
 
-            float open = 0.0;
-            float cPrev = 1.0;
-            for (int j = 0; j < SECTORS; ++j) {
-                float cNext = cos(PI * float(j + 1) / float(SECTORS));
-                if (((mask >> uint(j)) & 1u) == 0u) open += 0.5 * (cPrev - cNext);
-                cPrev = cNext;
+            float open = 1.0;
+            while (mask != 0u) {
+                open -= SECTOR_WEIGHT[findLSB(mask)];
+                mask &= mask - 1u;
             }
-            accum += clamp(projLen * open, 0.0, 1.0);
+            accum += clamp(open, 0.0, 1.0);
         }
         visibility = accum / float(SLICES);
 

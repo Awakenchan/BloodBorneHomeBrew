@@ -6,6 +6,8 @@
 #include <cstring>
 
 #include "bbport_settings.h"
+#include <xxhash.h>
+
 #include "core/memory.h"
 #include "video_core/renderer_vulkan/vk_effect_shaders.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -19,8 +21,6 @@ constexpr u64 ShadowBlurHash = 0x11ffdfb5;
 constexpr u64 PointLightsFullHash = 0x9f9ef267;
 constexpr u64 HdrPostHash = 0xccbf44a6;
 constexpr u64 DirectionalTableHash = 0xd92266b9;
-constexpr u64 SkyDomeHash = 0xdda49e89;
-constexpr u64 SkyDomeVertexHash = 0xb28f5a56;
 constexpr u64 SceneTargetHash = 0x32e47788;
 constexpr u64 PointGridVertexHash = 0x8747a367;
 
@@ -73,7 +73,8 @@ bool AnyWanted() {
     const auto& s = BbSettings::Get();
     for (const int effect : {BbSettings::EffectGi, BbSettings::EffectContactShadows,
                              BbSettings::EffectPcss, BbSettings::EffectVolumetricLight,
-                             BbSettings::EffectPointFog, BbSettings::EffectPointShadows}) {
+                             BbSettings::EffectPointFog, BbSettings::EffectPointShadows,
+                             BbSettings::EffectRayTracing}) {
         if (s.effects[effect].load(std::memory_order_relaxed)) {
             return true;
         }
@@ -84,6 +85,11 @@ bool AnyWanted() {
 
 void Rasterizer::EffectsOnFrameEnd() {
     effects_wanted = AnyWanted();
+    if (!effects_wanted) {
+        point_shadow->Drop();
+    }
+    point_shadow->OnFrameEnd();
+    rt_shadow->OnFrameEnd();
     ssgi->OnFrameEnd();
     ssr_temporal->OnFrameEnd();
 }
@@ -97,7 +103,10 @@ void Rasterizer::EffectsBeforeTargets(const GraphicsPipeline* pipeline) {
         ssr_temporal->Flush(upscaler->Jitter());
     }
     contact_shadow->Flush(hash == ShadowBlurHash);
-    point_shadow->Flush();
+    if (PointLightCount(hash) == 0) {
+        const auto jitter = upscaler->Jitter();
+        point_shadow->Flush(jitter[0] != 0.0f || jitter[1] != 0.0f);
+    }
 }
 
 void Rasterizer::EffectsAfterTargets(const GraphicsPipeline* pipeline) {
@@ -130,6 +139,87 @@ void Rasterizer::EffectsBeforeUpscaler(u64 compute_hash) {
 void Rasterizer::EffectsBeforeResources(const GraphicsPipeline* pipeline) {
     if (effects_wanted && FragmentHash(pipeline) == HdrPostHash) {
         volumetric_light->Composite();
+    }
+}
+
+void Rasterizer::EffectsCaptureDraw(const AmdGpu::Regs& regs, const GraphicsPipeline* pipeline,
+                                    bool is_indexed, u32 index_offset) {
+    const u32 mode = pipeline->GetGraphicsKey().motion_vectors;
+    if (mode == Shader::MotionVectors::VertexBoth) {
+        push_data.motion_param &= 0xffffu;
+    } else {
+        push_data.motion_param = 0;
+    }
+    if (!rt_shadow->Wanted() || !motion_geometry) {
+        return;
+    }
+    const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
+    const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    const auto& fetch = pipeline->GetFetchShader();
+    u32 first_vertex = regs.index_offset, first_instance = 0;
+    if (fetch) {
+        if (first_vertex == 0 && fetch->vertex_offset_sgpr != -1) {
+            first_vertex = vs.UserData()[fetch->vertex_offset_sgpr];
+        }
+        if (fetch->instance_offset_sgpr != -1) {
+            first_instance = vs.UserData()[fetch->instance_offset_sgpr];
+        }
+    }
+    const u32 index_size = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2u : 4u;
+    RtShadow::Draw draw{
+        .shader = vs.pgm_hash,
+        .geometry = motion_geometry,
+        .index_size = index_size,
+        .index_count = regs.num_indices,
+        .first_vertex = first_vertex,
+        .first_instance = first_instance,
+        .instances = regs.num_instances.NumInstances(),
+        .restart = regs.enable_primitive_restart != 0,
+        .strip = regs.primitive_type == AmdGpu::PrimitiveType::TriangleStrip,
+        .triangles = regs.primitive_type == AmdGpu::PrimitiveType::TriangleStrip ||
+                     regs.primitive_type == AmdGpu::PrimitiveType::TriangleList,
+        .shadow_pass = !gbuffer_draw &&
+                       regs.depth_buffer.Pitch() == regs.depth_buffer.Height() &&
+                       regs.depth_buffer.Height() >= 1024,
+        .camera_pass = gbuffer_draw,
+        .solid = regs.depth_control.depth_write_enable != 0 && !regs.blend_control[0].enable,
+        .alpha = ps && ps->has_discard,
+    };
+    if (is_indexed) {
+        const VAddr address = regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
+        const u64 bytes = u64(regs.num_indices) * index_size;
+        if (address && memory->IsValidGpuMapping(address, 0) &&
+            memory->ClampRangeSize(address, bytes) == bytes) {
+            draw.indices = address;
+        }
+    }
+    for (const auto& resource : vs.buffers) {
+        if (resource.IsSpecial()) {
+            continue;
+        }
+        const auto buffer = resource.GetSharp(vs);
+        const u32 size = buffer.GetSize();
+        if (!buffer.Valid() || !memory->IsValidGpuMapping(buffer.base_address, 0) ||
+            memory->ClampRangeSize(buffer.base_address, size) != size) {
+            continue;
+        }
+        if (size == 864) {
+            draw.constants = reinterpret_cast<const float*>(buffer.base_address);
+        } else if (buffer.GetStride() == 16) {
+            const auto role = Motion::ClassifyBuffer(size);
+            if (role == Motion::BufferRole::Skeleton) {
+                draw.skinned = true;
+            } else if (role == Motion::BufferRole::SmallSkeleton) {
+                draw.palette = XXH3_64bits_withSeed(reinterpret_cast<const void*>(buffer.base_address),
+                                                    size, draw.palette);
+            }
+        }
+    }
+    const u32 param = rt_shadow->PrepareDraw(draw);
+    if (mode == Shader::MotionVectors::VertexBoth) {
+        push_data.motion_param |= param << 16;
+    } else {
+        push_data.motion_param = param;
     }
 }
 
@@ -259,19 +349,22 @@ void Rasterizer::EffectsBeforeBind(const AmdGpu::Regs& regs, const GraphicsPipel
                  .frame_index = shadow_frame++});
         }
     } else if (tile_lights != 0) {
+        const auto& ps = pipeline->GetStage(Shader::SwStage::Fragment);
         if ((pipeline->GetGraphicsKey().mrt_mask & 3) == 3 && cb_descs[0].first &&
-            cb_descs[1].first && buffer_infos.size() >= 2 && buffer_infos[0].buffer &&
-            buffer_infos[1].buffer) {
-            point_shadow->OnLightDraw(cb_descs[0].first, cb_descs[1].first,
-                                      {.constants = buffer_infos[0].buffer,
-                                       .constants_offset = buffer_infos[0].offset,
-                                       .constants_range = buffer_infos[0].range,
-                                       .lights = buffer_infos[1].buffer,
-                                       .lights_offset = buffer_infos[1].offset,
-                                       .lights_range = buffer_infos[1].range,
-                                       .offsets = PackedOffsets(push_data),
-                                       .count = tile_lights,
-                                       .tile = effect_tile});
+            cb_descs[1].first && ps.buffers.size() >= 2 && !ps.buffers[0].IsSpecial() &&
+            !ps.buffers[1].IsSpecial()) {
+            const VAddr constants = ps.buffers[0].GetSharp(ps).base_address;
+            const VAddr lights = ps.buffers[1].GetSharp(ps).base_address;
+            const u64 light_bytes = u64(tile_lights) * 64;
+            if (memory->IsValidGpuMapping(constants, 0) && memory->ClampRangeSize(constants, 64) == 64 &&
+                memory->IsValidGpuMapping(lights, 0) &&
+                memory->ClampRangeSize(lights, light_bytes) == light_bytes) {
+                point_shadow->OnLightDraw(cb_descs[0].first, cb_descs[1].first,
+                                          {.constants = reinterpret_cast<const u32*>(constants),
+                                           .lights = reinterpret_cast<const u32*>(lights),
+                                           .count = tile_lights,
+                                           .tile = effect_tile});
+            }
         }
     } else if (hash == EffectShaders::SsrCompositeHash && EffectShaders::SsrCompositeActive()) {
         const float intensity =
@@ -308,8 +401,8 @@ void Rasterizer::EffectsAfterDraw(const AmdGpu::Regs& regs, const GraphicsPipeli
                                      .shadow_map = image_infos[1].imageView,
                                      .shadow_layout = image_infos[1].imageLayout,
                                      .constants_offset_word = PackedOffsets(push_data)});
-    } else if (hash == DirectionalTableHash && !buffer_infos.empty() && !image_infos.empty()) {
-        volumetric_light->Tint(buffer_infos[0], push_data.buf_offsets[0] & 255u, image_infos[0]);
+    } else if (hash == DirectionalTableHash && !buffer_infos.empty()) {
+        volumetric_light->Tint(buffer_infos[0], push_data.buf_offsets[0] & 255u);
     } else if (const u32 count = PointLightCount(hash);
                count != 0 && (pipeline->GetGraphicsKey().mrt_mask & 3) == 3 && cb_descs[0].first &&
                cb_descs[1].first && buffer_infos.size() >= 2) {
@@ -325,53 +418,6 @@ void Rasterizer::EffectsAfterDraw(const AmdGpu::Regs& regs, const GraphicsPipeli
             memory->ClampRangeSize(lights, light_bytes) == light_bytes) {
             volumetric_light->AddPointLights(reinterpret_cast<const u32*>(constants),
                                              reinterpret_cast<const u32*>(lights), count);
-        }
-    } else if (hash == SkyDomeHash && vs_info.pgm_hash == SkyDomeVertexHash && is_indexed &&
-               num_indices == 1824 && num_instances == 1 && first_vertex == 0) {
-        const auto& v = vertex_binds;
-        const auto position =
-            std::ranges::find(v.attributes, 0u, &vk::VertexInputAttributeDescription2EXT::location);
-        const auto normal =
-            std::ranges::find(v.attributes, 1u, &vk::VertexInputAttributeDescription2EXT::location);
-        u32 first_buffer = 0;
-        for (const auto* stage : pipeline->GetStages()) {
-            if (stage == &vs_info) {
-                break;
-            }
-            if (stage) {
-                first_buffer += u32(stage->buffers.size());
-            }
-        }
-        if (position == v.attributes.end() || normal == v.attributes.end() ||
-            position->format != vk::Format::eR32G32B32Sfloat || vs_info.buffers.size() < 3 ||
-            vs_info.buffers[0].IsSpecial() || vs_info.buffers[1].IsSpecial() ||
-            vs_info.buffers[2].IsSpecial() || first_buffer + 3 > buffer_infos.size()) {
-            return;
-        }
-        const auto pi = position->binding;
-        const auto ni = normal->binding;
-        const bool packed = normal->format == vk::Format::eR8G8B8A8Uint ||
-                            normal->format == vk::Format::eR8G8B8A8Sint;
-        const bool wide = normal->format == vk::Format::eR32G32B32A32Uint ||
-                          normal->format == vk::Format::eR32G32B32A32Sint;
-        const u64 position_bytes = 392 * v.host_strides[pi] + 12;
-        const u64 normal_bytes = 392 * v.host_strides[ni] + (packed ? 4 : 16);
-        if ((packed || wide) && pi < v.num_buffers && ni < v.num_buffers &&
-            v.host_strides[pi] >= 12 && v.host_strides[ni] >= (packed ? 4u : 16u) &&
-            v.host_sizes[pi] >= position_bytes && v.host_sizes[ni] >= normal_bytes) {
-            volumetric_light->Celestial({
-                .positions = {v.host_buffers[pi], v.host_offsets[pi], position_bytes},
-                .normals = {v.host_buffers[ni], v.host_offsets[ni], normal_bytes},
-                .model = buffer_infos[first_buffer],
-                .transforms = buffer_infos[first_buffer + 1],
-                .scene = buffer_infos[first_buffer + 2],
-                .vertex_stride = u32(v.host_strides[pi]),
-                .normal_stride = u32(v.host_strides[ni]),
-                .normal_word = packed ? 0u : 3u,
-                .model_offset = push_data.buf_offsets[first_buffer],
-                .transform_offset = push_data.buf_offsets[first_buffer + 1],
-                .scene_offset = push_data.buf_offsets[first_buffer + 2],
-            });
         }
     } else if (hash == SceneTargetHash && cb_descs[0].first) {
         volumetric_light->Scene(cb_descs[0].first);

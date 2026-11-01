@@ -11,11 +11,13 @@
 #include "video_core/host_shaders/ssgi_composite_comp.h"
 #include "video_core/host_shaders/ssgi_denoise_comp.h"
 #include "video_core/host_shaders/ssgi_gather_comp.h"
+#include "video_core/host_shaders/ssgi_gather_ray_comp.h"
 #include "video_core/host_shaders/ssgi_prep_comp.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_effect_pass.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_rt_shadow.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -115,9 +117,11 @@ vk::WriteDescriptorSet Write(u32 binding, vk::DescriptorType type,
 
 ScreenSpaceGI::ScreenSpaceGI(const Instance& instance_, Scheduler& scheduler_,
                              VideoCore::TextureCache& texture_cache_, Runtime& runtime_,
-                             SceneTargets& scene_targets_, CameraMotion& camera_motion_)
+                             SceneTargets& scene_targets_, CameraMotion& camera_motion_,
+                             RtShadow& rt_shadow_)
     : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
-      runtime{runtime_}, scene_targets{scene_targets_}, camera_motion{camera_motion_} {
+      runtime{runtime_}, scene_targets{scene_targets_}, rt_shadow{rt_shadow_},
+      camera_motion{camera_motion_} {
 }
 
 bool ScreenSpaceGI::Ready() {
@@ -132,6 +136,10 @@ bool ScreenSpaceGI::Ready() {
                    "SSGI prep") &&
         CreatePass(gather, {SampledImage, SampledImage, SampledImage, StorageImage, SampledImage},
                    SSGI_GATHER_COMP, "SSGI gather") &&
+        (!rt_shadow.Capturing() ||
+         CreatePass(gather_ray, {SampledImage, SampledImage, SampledImage, StorageImage, SampledImage,
+                                 vk::DescriptorType::eAccelerationStructureKHR},
+                    SSGI_GATHER_RAY_COMP, "Ray traced bounce")) &&
         CreatePass(denoise, {SampledImage, SampledImage, StorageImage}, SSGI_DENOISE_COMP,
                    "SSGI denoise") &&
         CreatePass(composite, {SampledImage, SampledImage, StorageImage, SampledImage, SampledImage},
@@ -251,7 +259,8 @@ void ScreenSpaceGI::OnFrameEnd() {
 void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
                                   std::array<float, 2> jitter) {
     if (done_this_frame || failed || !color_id || !depth_id ||
-        !BbSettings::Get().effects[BbSettings::EffectGi].load(std::memory_order_relaxed) ||
+        (!BbSettings::Get().effects[BbSettings::EffectGi].load(std::memory_order_relaxed) &&
+         !rt_shadow.Wanted()) ||
         !Ready()) {
         return;
     }
@@ -419,6 +428,12 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
         .step_size = 1.0f,
     };
     const u32 current = frame & 1;
+    scheduler.EndRendering();
+    const bool use_rays = gather_ray.pipeline && rt_shadow.PrepareScene();
+    if (!use_rays &&
+        !BbSettings::Get().effects[BbSettings::EffectGi].load(std::memory_order_relaxed)) {
+        return;
+    }
     EffectPass::Mark(1, "indirect light");
     scheduler.RecordCrumb(
         {.name = "SSGI"},
@@ -434,7 +449,9 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
          filtered_image = std::array{vk::Image(filtered[0].image), vk::Image(filtered[1].image)},
          filtered_view = std::array{*filtered[0].view, *filtered[1].view},
          prep_pipeline = *prep.pipeline, prep_layout = *prep.layout,
-         gather_pipeline = *gather.pipeline, gather_layout = *gather.layout,
+         gather_pipeline = use_rays ? *gather_ray.pipeline : *gather.pipeline,
+         gather_layout = use_rays ? *gather_ray.layout : *gather.layout, use_rays,
+         scene = rt_shadow.Scene(),
          denoise_pipeline = *denoise.pipeline, denoise_layout = *denoise.layout,
          composite_pipeline = *composite.pipeline,
          composite_layout = *composite.layout](vk::CommandBuffer cmdbuf) mutable {
@@ -482,22 +499,37 @@ void ScreenSpaceGI::OnOpaqueScene(VideoCore::ImageId color_id, VideoCore::ImageI
                                         Write(2, SampledImage, &infos[2]),
                                         Write(3, StorageImage, &infos[3]),
                                         Write(4, SampledImage, &infos[4])};
-                run(gather_pipeline, gather_layout, writes, half_x, half_y);
+                if (use_rays) {
+                    const vk::WriteDescriptorSetAccelerationStructureKHR scene_info{
+                        .accelerationStructureCount = 1, .pAccelerationStructures = &scene};
+                    const std::array ray_writes{
+                        writes[0], writes[1], writes[2], writes[3], writes[4],
+                        vk::WriteDescriptorSet{
+                            .pNext = &scene_info,
+                            .dstBinding = 5,
+                            .descriptorCount = 1,
+                            .descriptorType = vk::DescriptorType::eAccelerationStructureKHR}};
+                    run(gather_pipeline, gather_layout, ray_writes, half_x, half_y);
+                } else {
+                    run(gather_pipeline, gather_layout, writes, half_x, half_y);
+                }
             }
             BetweenPasses(cmdbuf);
             vk::ImageView result_view = cur_view;
             {
-                for (u32 i = 0; i < 2; ++i) {
+                const u32 denoise_passes = use_rays ? 3u : 2u;
+                for (u32 i = 0; i < denoise_passes; ++i) {
                     params.step_size = float(1u << i);
-                    const std::array infos{Info(geo_view), Info(i == 0 ? cur_view : filtered_view[0]),
-                                           Info(filtered_view[i])};
+                    const std::array infos{Info(geo_view),
+                                           Info(i == 0 ? cur_view : filtered_view[(i - 1) & 1]),
+                                           Info(filtered_view[i & 1])};
                     const std::array writes{Write(0, SampledImage, &infos[0]),
                                             Write(1, SampledImage, &infos[1]),
                                             Write(2, StorageImage, &infos[2])};
                     run(denoise_pipeline, denoise_layout, writes, half_x, half_y);
                     BetweenPasses(cmdbuf);
                 }
-                result_view = filtered_view[1];
+                result_view = filtered_view[(denoise_passes - 1) & 1];
             }
             {
                 const std::array infos{Info(geo_view), Info(result_view), Info(color_view),

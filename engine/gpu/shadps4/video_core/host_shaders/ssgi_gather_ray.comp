@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform Constants {
+    vec4 proj;
+    vec4 reproject[3];
+    vec2 size;
+    vec2 jitter;
+    vec2 prev_jitter;
+    vec2 prev_proj;
+    uint frame;
+    uint history;
+    float strength;
+    float radius;
+    float feedback;
+    float ao_amount;
+    float albedo_on;
+    float step_size;
+};
+
+layout(binding = 0) uniform texture2D geo_tex;
+layout(binding = 1) uniform texture2D color_tex;
+layout(binding = 2) uniform texture2D prev_tex;
+layout(binding = 3, rgba16f) uniform writeonly image2D gi_img;
+layout(binding = 4) uniform texture2D albedo_tex;
+layout(binding = 5) uniform accelerationStructureEXT scene;
+
+#define gi_size (floor((size + 1.0) * 0.5))
+
+const int RAYS = 2;
+const float REACH = 6.0;
+const float ALBEDO = 0.5;
+const float RADIANCE_CLAMP = 1.5;
+const float TEMPORAL = 0.1;
+const float ENERGY = 0.5;
+const float FEEDBACK = 0.5;
+const float HISTORY_TOLERANCE = 0.04;
+
+vec3 viewPos(vec2 pixel, float z) {
+    const vec2 ndc = (pixel - jitter) / size * 2.0 - 1.0;
+    return vec3(ndc.x * z / proj.x, ndc.y * z / proj.y, z);
+}
+
+bool historyCoord(vec3 pos, out vec2 hf, out float zp) {
+    const vec4 v = vec4(pos, 1.0);
+    const vec3 p = vec3(dot(reproject[0], v), dot(reproject[1], v), dot(reproject[2], v));
+    zp = p.z;
+    hf = vec2(0.0);
+    if (p.z < 1e-3) {
+        return false;
+    }
+    const vec2 uv = p.xy * prev_proj / p.z * 0.5 + 0.5;
+    hf = ((uv * size + prev_jitter) - 0.5) * 0.5;
+    return true;
+}
+
+vec3 sampleHistory(vec2 hf, float zp, out float conf) {
+    const ivec2 gmax = ivec2(gi_size) - 1;
+    const ivec2 b = ivec2(floor(hf));
+    const vec2 f = hf - vec2(b);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        const ivec2 o = ivec2(i & 1, i >> 1);
+        const ivec2 t = b + o;
+        if (any(lessThan(t, ivec2(0))) || any(greaterThan(t, gmax))) {
+            continue;
+        }
+        const vec4 pv = texelFetch(prev_tex, t, 0);
+        if (pv.a <= 0.0 || abs(pv.a - zp) > HISTORY_TOLERANCE * zp) {
+            continue;
+        }
+        const float w = (o.x == 0 ? 1.0 - f.x : f.x) * (o.y == 0 ? 1.0 - f.y : f.y);
+        sum += pv.rgb * w;
+        wsum += w;
+    }
+    conf = wsum;
+    return wsum > 1e-4 ? sum / wsum : vec3(0.0);
+}
+
+vec3 hitRadiance(vec3 hit, vec3 dir, vec3 pos) {
+    if (hit.z < 1e-3) {
+        return vec3(0.0);
+    }
+    const vec2 ndc = hit.xy * proj.xy / hit.z;
+    const vec2 pixel = (ndc * 0.5 + 0.5) * size + jitter;
+    const ivec2 q = ivec2(floor(pixel));
+    if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(size)))) {
+        return vec3(0.0);
+    }
+    const vec4 g = texelFetch(geo_tex, q, 0);
+    if (g.w <= 0.0 || abs(g.w - hit.z) > 0.1 + 0.02 * hit.z) {
+        return vec3(0.0);
+    }
+    const float facing = clamp(dot(g.xyz, -dir), 0.0, 1.0);
+    if (facing <= 0.0) {
+        return vec3(0.0);
+    }
+    vec3 c = texelFetch(color_tex, q, 0).rgb;
+    if ((history & 1u) != 0u && feedback > 0.0) {
+        vec2 hf;
+        float zp;
+        if (historyCoord(hit, hf, zp)) {
+            const ivec2 hn = ivec2(floor(hf + 0.5));
+            if (all(greaterThanEqual(hn, ivec2(0))) && all(lessThan(hn, ivec2(gi_size)))) {
+                const vec4 pv = texelFetch(prev_tex, hn, 0);
+                if (pv.a > 0.0 && abs(pv.a - zp) < HISTORY_TOLERANCE * zp) {
+                    const vec3 tint = albedo_on > 0.5 ? texelFetch(albedo_tex, q, 0).rgb : vec3(ALBEDO);
+                    c += pv.rgb * (FEEDBACK * feedback * tint);
+                }
+            }
+        }
+    }
+    return min(c, vec3(RADIANCE_CLAMP)) * facing;
+}
+
+void main() {
+    const ivec2 h = ivec2(gl_GlobalInvocationID.xy);
+    if (h.x >= int(gi_size.x) || h.y >= int(gi_size.y)) {
+        return;
+    }
+    const ivec2 isize = ivec2(size);
+    const ivec2 pixel = min(h * 2, isize - 1);
+    const vec4 geo = texelFetch(geo_tex, pixel, 0);
+    if (geo.w <= 0.0) {
+        imageStore(gi_img, h, vec4(0.0));
+        return;
+    }
+    const vec3 n = geo.xyz;
+    const float z = geo.w;
+    const vec3 pos = viewPos(vec2(pixel) + 0.5, z);
+    const float reach = 0.02 + 0.0015 * z;
+    const vec3 origin = pos + n * reach;
+    const vec3 tangent = normalize(abs(n.y) < 0.9 ? cross(n, vec3(0.0, 1.0, 0.0))
+                                                  : cross(n, vec3(1.0, 0.0, 0.0)));
+    const vec3 bitangent = cross(n, tangent);
+    const vec2 noise = fract(vec2(pixel) * vec2(0.7548776662, 0.5698402910) +
+                             float(frame & 255u) * vec2(0.6180339887, 0.3819660113));
+    vec3 total = vec3(0.0);
+    for (int i = 0; i < RAYS; ++i) {
+        const float u = fract(noise.x + float(i) / float(RAYS));
+        const float a = 6.2831853 * fract(noise.y + float(i) * 0.61803399);
+        const float s = sqrt(u);
+        const vec3 dir = normalize(tangent * (s * cos(a)) + bitangent * (s * sin(a)) +
+                                   n * sqrt(max(1.0 - u, 0.0)));
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xffu, origin, reach * 0.5, dir, REACH);
+        rayQueryProceedEXT(query);
+        if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            continue;
+        }
+        const float t = rayQueryGetIntersectionTEXT(query, true);
+        const float r = t / REACH;
+        total += hitRadiance(origin + dir * t, dir, pos) * (1.0 - r * r);
+    }
+    vec3 gi = max(ENERGY * total / float(RAYS), vec3(0.0));
+    if ((history & 1u) != 0u) {
+        vec2 hf;
+        float zp;
+        if (historyCoord(pos, hf, zp)) {
+            float conf;
+            const vec3 hist = sampleHistory(hf, zp, conf);
+            gi = mix(gi, hist, (1.0 - TEMPORAL) * clamp(conf, 0.0, 1.0));
+        }
+    }
+    imageStore(gi_img, h, vec4(gi, z));
+}

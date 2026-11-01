@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(scalar, set = 0, binding = 0) readonly buffer Cb { uint d[]; } cbuf;
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+layout(set = 0, binding = 2, r8) uniform writeonly image2D raw_img;
+layout(set = 0, binding = 3) uniform accelerationStructureEXT scene;
+
+layout(push_constant) uniform Constants {
+    uint buf_off;
+    uint frame_index;
+    vec2 size;
+    uint rays;
+    float light_tan;
+    float bias_m;
+    float max_distance;
+};
+
+uint base;
+float cb(int i) { return uintBitsToFloat(cbuf.d[base + uint(i)]); }
+vec4 row(int i) { return vec4(cb(i), cb(i + 1), cb(i + 2), cb(i + 3)); }
+
+mat4 invMat;
+
+vec3 viewPosAt(vec2 uv, float depth) {
+    vec4 v = invMat * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    return v.xyz / v.w;
+}
+
+vec3 sunDirection() {
+    mat4 projMat = inverse(invMat);
+    vec4 p = vec4(0.0, 0.0, 1.0, 1.0);
+    mat4 rows = transpose(transpose(mat4(row(16), row(20), row(28), row(24))) * projMat);
+    float w = dot(rows[2], p);
+    float lu = dot(rows[0], p) / w;
+    float lv = dot(rows[1], p) / w;
+    float lz = dot(rows[3], p) / w;
+    vec3 dir = normalize(cross(rows[0].xyz - lu * rows[2].xyz, rows[1].xyz - lv * rows[2].xyz));
+    return dot(rows[3].xyz - lz * rows[2].xyz, dir) > 0.0 ? -dir : dir;
+}
+
+vec3 surfaceNormal(vec2 uv, vec3 P, vec2 px) {
+    vec3 best[2];
+    for (int axis = 0; axis < 2; ++axis) {
+        vec2 step_uv = axis == 0 ? vec2(px.x, 0.0) : vec2(0.0, px.y);
+        float d1 = textureLod(depth_tex, uv + step_uv, 0.0).x;
+        float d2 = textureLod(depth_tex, uv - step_uv, 0.0).x;
+        vec3 a = viewPosAt(uv + step_uv, d1) - P;
+        vec3 b = P - viewPosAt(uv - step_uv, d2);
+        best[axis] = abs(a.z) < abs(b.z) ? a : b;
+    }
+    vec3 n = cross(best[1], best[0]);
+    float len = length(n);
+    if (!(len > 1e-12)) {
+        return vec3(0.0);
+    }
+    n /= len;
+    return dot(n, P) > 0.0 ? -n : n;
+}
+
+float noise(vec2 pixel) {
+    float k = float(frame_index & 63u);
+    return fract(52.9829189 * fract(dot(pixel + 5.588238 * k, vec2(0.06711056, 0.00583715))));
+}
+
+void main() {
+    base = (buf_off & 0xffu) >> 2;
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(size)))) {
+        return;
+    }
+    const vec2 uv = (vec2(pixel) + 0.5) / size;
+    const float d0 = textureLod(depth_tex, uv, 0.0).x;
+    if (!(d0 < 1.0) || !(d0 > 0.0)) {
+        imageStore(raw_img, pixel, vec4(1.0));
+        return;
+    }
+    invMat = transpose(mat4(row(0), row(4), row(8), row(12)));
+    const vec3 P = viewPosAt(uv, d0);
+    const vec3 dir = sunDirection();
+    const vec3 n = surfaceNormal(uv, P, 1.0 / size);
+    const float reach = bias_m + 0.0015 * P.z;
+    if (dot(n, dir) <= 0.0 && n != vec3(0.0)) {
+        imageStore(raw_img, pixel, vec4(0.0));
+        return;
+    }
+    const vec3 origin = P + n * reach;
+    const vec3 tangent = normalize(abs(dir.y) < 0.9 ? cross(dir, vec3(0.0, 1.0, 0.0))
+                                                    : cross(dir, vec3(1.0, 0.0, 0.0)));
+    const vec3 bitangent = cross(dir, tangent);
+    const float phi = 6.2831853 * noise(vec2(pixel));
+    const float radius_scale = 1.0 / float(rays);
+    uint lit = 0u;
+    for (uint i = 0u; i < rays; ++i) {
+        float r = sqrt((float(i) + 0.5) * radius_scale) * light_tan;
+        float a = float(i) * 2.399963 + phi;
+        vec3 ray = normalize(dir + (cos(a) * tangent + sin(a) * bitangent) * r);
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, scene,
+                              gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0x01u,
+                              origin, reach * 0.5, ray, max_distance);
+        rayQueryProceedEXT(query);
+        if (rayQueryGetIntersectionTypeEXT(query, true) ==
+            gl_RayQueryCommittedIntersectionNoneEXT) {
+            ++lit;
+        }
+    }
+    imageStore(raw_img, pixel, vec4(float(lit) * radius_scale));
+}

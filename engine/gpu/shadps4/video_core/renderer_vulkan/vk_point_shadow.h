@@ -4,6 +4,9 @@
 
 #include "common/types.h"
 #include <array>
+#include <memory>
+#include <vector>
+#include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image.h"
 
@@ -14,6 +17,7 @@ class TextureCache;
 namespace Vulkan {
 class CameraMotion;
 class Instance;
+class RtShadow;
 class Runtime;
 class SceneTargets;
 class Scheduler;
@@ -22,24 +26,23 @@ class PointShadow {
 public:
     PointShadow(const Instance& instance, Scheduler& scheduler,
                 VideoCore::TextureCache& texture_cache, Runtime& runtime,
-                SceneTargets& scene_targets, CameraMotion& camera_motion);
+                SceneTargets& scene_targets, CameraMotion& camera_motion, RtShadow& rt_shadow);
     ~PointShadow();
 
     struct Inputs {
-        vk::Buffer constants;
-        vk::DeviceSize constants_offset = 0;
-        vk::DeviceSize constants_range = 0;
-        vk::Buffer lights;
-        vk::DeviceSize lights_offset = 0;
-        vk::DeviceSize lights_range = 0;
-        u32 offsets = 0;
+        const u32* constants = nullptr;
+        const u32* lights = nullptr;
         u32 count = 0;
         vk::Rect2D tile{};
     };
 
     void OnLightDraw(VideoCore::ImageId color0, VideoCore::ImageId color1, const Inputs& inputs);
 
-    void Flush();
+    void Flush(bool animate_noise);
+
+    void OnFrameEnd();
+
+    void Drop();
 
 private:
     bool Ready();
@@ -56,6 +59,10 @@ private:
     VideoCore::TextureCache& texture_cache;
     Runtime& runtime;
     SceneTargets& scene_targets;
+    RtShadow& rt_shadow;
+    vk::UniqueDescriptorSetLayout ray_set_layout;
+    vk::UniquePipelineLayout ray_layout;
+    vk::UniquePipeline ray_pipeline;
     CameraMotion& camera_motion;
 
     vk::UniqueDescriptorSetLayout set_layout;
@@ -65,8 +72,19 @@ private:
     OwnImage snapshot[2];
     std::array<VideoCore::ImageId, 2> pending{};
     std::array<u64, 2> pending_uid{};
-    Inputs pending_inputs;
+    struct Tile {
+        std::array<s32, 4> rect;
+        u32 first_light;
+        u32 count;
+    };
+    std::vector<Tile> tiles;
+    std::vector<u32> data;
+    std::unique_ptr<VideoCore::Buffer> light_data;
     u32 frame_index = 0;
+    u32 batches = 0;
+    u32 frame_tiles = 0;
+    bool one_tile_batches = false;
+    bool reported = false;
     float length_m = 2.5f;
     float thickness_m = 0.6f;
     float strength = 0.85f;
@@ -75,7 +93,6 @@ private:
     float bias_m = 0.03f;
     u32 steps = 16;
     bool tried = false;
-    std::array<s32, 4> pending_rect{};
     bool failed = false;
 };
 

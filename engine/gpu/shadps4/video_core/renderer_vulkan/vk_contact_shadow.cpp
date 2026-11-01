@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/vk_effect_pass.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_rt_shadow.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -47,9 +48,11 @@ constexpr auto Compute = vk::PipelineStageFlagBits2::eComputeShader;
 
 ContactShadow::ContactShadow(const Instance& instance_, Scheduler& scheduler_,
                              VideoCore::TextureCache& texture_cache_, Runtime& runtime_,
-                             SceneTargets& scene_targets_, CameraMotion& camera_motion_)
+                             SceneTargets& scene_targets_, CameraMotion& camera_motion_,
+                             RtShadow& rt_shadow_)
     : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
-      runtime{runtime_}, scene_targets{scene_targets_}, camera_motion{camera_motion_} {
+      runtime{runtime_}, scene_targets{scene_targets_}, camera_motion{camera_motion_},
+      rt_shadow{rt_shadow_} {
 }
 
 bool ContactShadow::Ready() {
@@ -82,8 +85,13 @@ void ContactShadow::OnShadowDraw(VideoCore::ImageId target, const Inputs& inputs
     use_contact = settings.effects[BbSettings::EffectContactShadows].load(std::memory_order_relaxed);
     use_pcss = inputs.uniforms && inputs.shadow_map &&
                settings.effects[BbSettings::EffectPcss].load(std::memory_order_relaxed);
+    use_rt = inputs.uniforms && rt_shadow.Complete();
+    if (use_rt) {
+        use_contact = false;
+        use_pcss = use_pcss && rt_shadow.KeepMap();
+    }
     use_filter = use_pcss;
-    if ((!use_contact && !use_filter) || !Ready()) {
+    if ((!use_contact && !use_filter && !use_rt && !rt_shadow.Wanted()) || !Ready()) {
         return;
     }
     pending = target;
@@ -121,6 +129,10 @@ void ContactShadow::Flush(bool native_blur) {
         return;
     }
     scheduler.EndRendering();
+    if (!use_contact && !use_filter && !use_rt) {
+        rt_shadow.RecordBuilds();
+        return;
+    }
     const auto device = instance.GetDevice();
     vk::ImageView target_view{}, depth_view{};
     u32 width = target.info.size.width, height = target.info.size.height;
@@ -194,6 +206,21 @@ void ContactShadow::Flush(bool native_blur) {
     };
     const auto in = pending_inputs;
     const bool filter_on = use_filter;
+    if (!use_contact && !use_filter) {
+        rt_shadow.Record({.constants = in.constants,
+                          .constants_offset = in.constants_offset,
+                          .constants_range = in.constants_range,
+                          .uniforms = in.uniforms,
+                          .uniforms_offset = in.uniforms_offset,
+                          .uniforms_range = in.uniforms_range,
+                          .depth = depth_view,
+                          .target = target_view,
+                          .constants_offset_word = in.constants_offset_word,
+                          .frame_index = in.frame_index,
+                          .width = width,
+                          .height = height});
+        return;
+    }
     EffectPass::Mark(4, "contact shadows and PCSS");
     scheduler.RecordCrumb(
         {.name = "Contact shadows"},
@@ -250,6 +277,20 @@ void ContactShadow::Flush(bool native_blur) {
                                  vk::AccessFlagBits2::eMemoryWrite};
             cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
         });
+    if (use_rt) {
+        rt_shadow.Record({.constants = in.constants,
+                          .constants_offset = in.constants_offset,
+                          .constants_range = in.constants_range,
+                          .uniforms = in.uniforms,
+                          .uniforms_offset = in.uniforms_offset,
+                          .uniforms_range = in.uniforms_range,
+                          .depth = depth_view,
+                          .target = target_view,
+                          .constants_offset_word = in.constants_offset_word,
+                          .frame_index = in.frame_index,
+                          .width = width,
+                          .height = height});
+    }
 }
 
 }

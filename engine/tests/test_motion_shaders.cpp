@@ -13,6 +13,13 @@
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 
+extern "C" {
+void runtime_blocked_report(void) {}
+[[noreturn]] void runtime_thread_exit(void*) { std::abort(); }
+int sys_pad_type(void) { return 0; }
+int sys_pad_button(uint32_t, int) { return 0; }
+}
+
 static void CheckMetadata() {
     using namespace Shader;
     const auto load = [](bool motion, u32 version) {
@@ -27,7 +34,7 @@ static void CheckMetadata() {
         const auto hash = HashCombine(original.pgm_hash, u64{2});
         Serialization::Archive output;
         Serialization::Writer writer{output};
-        writer.Write(u32{7});
+        writer.Write(u32{8});
         writer.Write(version);
         writer.Write(hash);
         writer.Write(size_t{2});
@@ -98,18 +105,26 @@ static void CheckMotionInterface(const std::vector<u32>& code, bool vertex_motio
 
 int main(int argc, char** argv) {
     using namespace Shader;
+#ifdef _WIN32
+    _set_error_mode(_OUT_TO_STDERR);
+#endif
     CheckMetadata();
     const std::filesystem::path dir = argc > 1 ? argv[1] : ".";
     std::filesystem::create_directories(dir);
     for (bool vertex : {true, false}) {
-        for (bool motion : {false, true}) {
+        for (u8 mode : {u8(0), Shader::MotionVectors::VertexOutputs, Shader::MotionVectors::VertexCapture,
+                        Shader::MotionVectors::VertexBoth}) {
+            if (!vertex && mode >= Shader::MotionVectors::VertexCapture) {
+                continue;
+            }
+            const bool motion = mode == Shader::MotionVectors::VertexOutputs;
             Info info{};
             info.hw_stage = vertex ? HwStage::Vertex : HwStage::Fragment;
             info.sw_stage = vertex ? SwStage::Vertex : SwStage::Fragment;
             RuntimeInfo runtime{};
             runtime.Initialize(info.hw_stage, info.sw_stage);
             if (vertex) {
-                runtime.hw.vs.motion_vectors = motion;
+                runtime.hw.vs.motion_vectors = mode;
             } else {
                 runtime.hw.fs.motion_vectors = motion;
                 runtime.hw.fs.color_buffers[0].num_format = AmdGpu::NumberFormat::Float;
@@ -138,9 +153,14 @@ int main(int argc, char** argv) {
             profile.support_int64 = true;
             Backend::Bindings bindings{};
             const auto code = Backend::SPIRV::EmitSPIRV(profile, runtime, program, bindings);
-            CheckMotionInterface(code, vertex && motion);
+            if (mode < Shader::MotionVectors::VertexCapture) {
+                CheckMotionInterface(code, vertex && motion);
+            }
+            const char* kind = mode == Shader::MotionVectors::VertexBoth ? "-both.spv"
+                               : mode == Shader::MotionVectors::VertexCapture ? "-capture.spv"
+                                                                            : motion ? "-motion.spv" : "-plain.spv";
             const auto path = dir / (std::string(vertex ? "vertex" : "fragment") +
-                                      (motion ? "-motion.spv" : "-plain.spv"));
+                                      kind);
             std::ofstream out(path, std::ios::binary);
             out.write(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(u32));
             if (!out) { return 1; }

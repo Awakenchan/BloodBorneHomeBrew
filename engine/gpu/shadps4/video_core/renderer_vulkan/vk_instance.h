@@ -157,6 +157,10 @@ public:
     }
 
     /// Returns true if VK_KHR_maintenance8 is supported
+    bool IsRayQuerySupported() const {
+        return ray_query;
+    }
+
     bool IsMaintenance8Supported() const {
         return maintenance_8;
     }
@@ -352,6 +356,9 @@ public:
 
     /// The Vulkan extensions required by NVIDIA NGX are enabled.
     bool IsDlssCapable() const { return dlss_extensions; }
+
+    /// bbport: libxess.dll is loaded and the extensions and features Intel XeSS-SR needs are enabled.
+    bool IsXessCapable() const { return xess; }
 
     /// bbport: FSR 4.1.1's FP8 matrix variant (RDNA4): FP8 cooperative matrices, the Vulkan
     /// memory model, wave32 in full subgroups.
@@ -677,6 +684,7 @@ private:
     bool workgroup_memory_explicit_layout{};
     bool maintenance_5{};
     bool maintenance_8{};
+    bool ray_query{};
     bool buffer_marker{};
     bool device_fault{};
     bool address_binding_report{};
@@ -689,6 +697,7 @@ private:
     bool fsr_sdk{};
     bool fsr4vk{};                  // bbport: the device features of the fsr4vk provider are enabled
     bool dlss_extensions{};         // bbport: VK_NVX_binary_import + VK_NVX_image_view_handle
+    bool xess{};                    // bbport: what Intel XeSS-SR needs is enabled (vk_xess.h)
     bool full_screen_exclusive{};   // bbport: VK_EXT_full_screen_exclusive (Windows)
     bool hdr_metadata{};            // bbport: VK_EXT_hdr_metadata
     bool low_latency_boost{};       // bbport: VK_NV_low_latency2 (+ VK_KHR_present_id), boost hint

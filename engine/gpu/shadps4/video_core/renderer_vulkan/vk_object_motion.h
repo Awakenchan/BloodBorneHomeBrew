@@ -11,6 +11,7 @@
 #include "video_core/renderer_vulkan/motion_history.h"
 
 #include "common/types.h"
+#include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image.h"
 
@@ -29,6 +30,9 @@ public:
 
     [[nodiscard]] bool Enabled() const noexcept {
         return enabled;
+    }
+    [[nodiscard]] Shader::MotionVectors::Addresses AddressTable() const noexcept {
+        return address_table;
     }
 
     using DrawInfo = Motion::Draw;
@@ -108,6 +112,7 @@ private:
     u32* params_mapped{};
     vk::Buffer positions_buffer{};
     VmaAllocation positions_allocation{};
+    Shader::MotionVectors::Addresses address_table{};
     vk::Buffer address_buffer{};
     VmaAllocation address_allocation{};
     vk::UniqueDescriptorSetLayout address_layout;

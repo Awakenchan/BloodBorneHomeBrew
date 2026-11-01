@@ -37,6 +37,7 @@ Seamless co-op runs on a server in Frankfurt, sponsored by [1337 Hosting](https:
 | FSR 3.1 and FSR 4 on Vulkan | [FireBurn/FSR-Vulkan](https://github.com/FireBurn/FSR-Vulkan) and the AMD FidelityFX SDK |
 | FSR 4.1.1 | [fsr4vk](https://github.com/dvj5411/fsr4vk), with the AMD driver fix from [0xCydral](https://github.com/0xCydral/bloodborne_pc) |
 | DLSS | NVIDIA DLSS SDK |
+| XeSS Super Resolution | [Intel XeSS SDK 3.0.2](https://github.com/intel/xess), Intel's `libxess.dll` (downloaded by `engine/tools/fetch_xess.sh`) |
 | Sound | [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9) |
 | In-game menu | [Dear ImGui](https://github.com/ocornut/imgui) |
 | 4K menus | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) with [ncnn](https://github.com/Tencent/ncnn), downloaded by the launcher and run on the player's own game files |

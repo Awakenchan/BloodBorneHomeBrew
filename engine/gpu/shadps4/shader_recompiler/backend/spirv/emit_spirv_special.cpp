@@ -76,7 +76,10 @@ static void EmitVertexMotion(EmitContext& ctx) {
     const Id param_ptr = ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::PushConstant, u32_type),
                                            ctx.push_data_block,
                                            ctx.ConstU32(PushData::MotionParamIndex));
-    const Id param_index = ctx.OpLoad(u32_type, param_ptr);
+    Id param_index = ctx.OpLoad(u32_type, param_ptr);
+    if (ctx.runtime_info.hw.vs.motion_vectors == MotionVectors::VertexBoth) {
+        param_index = ctx.OpBitwiseAnd(u32_type, param_index, ctx.ConstU32(0xffffU));
+    }
     // Load process-local addresses through a descriptor, never SPIR-V constants. Physical
     // addressing keeps the existing history capacity (larger than the minimum SSBO range).
     const auto load_address = [&](u32 member) {
@@ -161,6 +164,63 @@ static void EmitVertexMotion(EmitContext& ctx) {
     ctx.OpStore(ctx.motion_out_prev, previous);
 }
 
+static void EmitVertexCapture(EmitContext& ctx) {
+    const Id u32_type = ctx.U32[1];
+    const Id position = ctx.OpLoad(ctx.F32[4], ctx.output_position);
+    const Id param_ptr = ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::PushConstant, u32_type),
+                                           ctx.push_data_block,
+                                           ctx.ConstU32(PushData::MotionParamIndex));
+    const bool both = ctx.runtime_info.hw.vs.motion_vectors == MotionVectors::VertexBoth;
+    Id param_index = ctx.OpLoad(u32_type, param_ptr);
+    if (both) {
+        param_index = ctx.OpShiftRightLogical(u32_type, param_index, ctx.ConstU32(16U));
+    }
+    const auto load_address = [&](u32 member) {
+        const Id pointer = ctx.TypePointer(spv::StorageClass::Uniform, ctx.U64);
+        return ctx.OpLoad(ctx.U64, ctx.OpAccessChain(pointer, ctx.motion_addresses,
+                                                    ctx.ConstU32(member)));
+    };
+    const Id params_address = load_address(both ? 2 : 0);
+    const Id positions_address = load_address(both ? 3 : 1);
+    const auto address = [&](Id base, Id index, u32 stride) {
+        return ctx.OpIAdd(ctx.U64, base,
+                          ctx.OpIMul(ctx.U64, ctx.OpUConvert(ctx.U64, index),
+                                     ctx.Constant(ctx.U64, u64(stride))));
+    };
+    const Id u32x4_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, ctx.U32[4]);
+    const Id f32x4_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, ctx.F32[4]);
+    const Id params = ctx.OpLoad(
+        ctx.U32[4],
+        ctx.OpConvertUToPtr(u32x4_ptr, address(params_address, param_index, 32)),
+        spv::MemoryAccessMask::Aligned, 16u);
+    const Id offsets = ctx.OpLoad(
+        ctx.U32[4], ctx.OpConvertUToPtr(u32x4_ptr,
+            ctx.OpIAdd(ctx.U64, address(params_address, param_index, 32),
+                       ctx.Constant(ctx.U64, u64{16}))),
+        spv::MemoryAccessMask::Aligned, 16u);
+    const Id store_base = ctx.OpCompositeExtract(u32_type, params, 0u);
+    const Id vertices = ctx.OpCompositeExtract(u32_type, params, 2u);
+    const Id first_vertex = ctx.OpCompositeExtract(u32_type, offsets, 0u);
+    const Id first_instance = ctx.OpCompositeExtract(u32_type, offsets, 1u);
+    const Id instances = ctx.OpCompositeExtract(u32_type, offsets, 2u);
+    const Id vertex = ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.vertex_index), first_vertex);
+    const Id instance = ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.instance_id), first_instance);
+    const Id bool_type = ctx.U1[1];
+    const Id in_range = ctx.OpLogicalAnd(bool_type, ctx.OpULessThan(bool_type, vertex, vertices),
+                                         ctx.OpULessThan(bool_type, instance, instances));
+    const Id slot = ctx.OpIAdd(u32_type, vertex, ctx.OpIMul(u32_type, instance, vertices));
+    const Id store_label = ctx.OpLabel();
+    const Id store_merge = ctx.OpLabel();
+    ctx.OpSelectionMerge(store_merge, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(in_range, store_label, store_merge);
+    ctx.AddLabel(store_label);
+    ctx.OpStore(ctx.OpConvertUToPtr(f32x4_ptr, address(positions_address,
+                                                       ctx.OpIAdd(u32_type, store_base, slot), 16)),
+                position, spv::MemoryAccessMask::Aligned, 16u);
+    ctx.OpBranch(store_merge);
+    ctx.AddLabel(store_merge);
+}
+
 // Screen-space motion (previous minus current, pixels) through the viewport scale; z = valid.
 static void EmitFragmentMotion(EmitContext& ctx) {
     const Id f32_type = ctx.F32[1];
@@ -199,6 +259,9 @@ static void EmitFragmentMotion(EmitContext& ctx) {
 void EmitEpilogue(EmitContext& ctx) {
     if (Sirit::ValidId(ctx.motion_out_cur)) {
         EmitVertexMotion(ctx);
+    }
+    if (ctx.VertexMotion() && (ctx.runtime_info.hw.vs.motion_vectors & MotionVectors::VertexCapture)) {
+        EmitVertexCapture(ctx);
     }
     if (Sirit::ValidId(ctx.motion_frag_out)) {
         EmitFragmentMotion(ctx);
