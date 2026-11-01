@@ -428,6 +428,13 @@ int Main(std::vector<std::wstring> arguments) {
 
     try {
         PrepareImage(merged, out, folders.engine);
+        std::string isa_scan_output;
+        const int isa_scan_status = RunProgram(out / "bb-isa-scan.exe",
+                                               {(out / "boot-linked.bin").native(), out.native()},
+                                               &isa_scan_output);
+        if (isa_scan_status != 0)
+            throw Error("ISA scan failed (exit " + std::to_string(isa_scan_status) + "): " + Trim(isa_scan_output));
+        if (!Trim(isa_scan_output).empty()) Log("%s", Trim(isa_scan_output).c_str());
     } catch (const GameCheckError& e) {
         Log("\nUnsupported game files: %s\nSet BB_SKIP_GAME_CHECK=1 to start anyway.", e.what());
         return 2;
