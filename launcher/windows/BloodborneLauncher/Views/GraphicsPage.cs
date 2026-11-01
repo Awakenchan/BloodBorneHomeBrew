@@ -265,6 +265,9 @@ namespace BloodborneLauncher.Views
                     ? L.T("Needs an NVIDIA GeForce RTX GPU; others fall back to FSR 3.1") +
                       (Ini.Get("preset", "0") == "0" ? L.T(". With Native AA this is DLAA: DLSS as anti-aliasing at full resolution") : "")
                     : L.T("DLSS files are missing: the game falls back to FSR 3.1"),
+                "xess" => XessFound()
+                    ? L.T("Intel XeSS Super Resolution: the XMX model on Intel Arc, the DP4a model on other GPUs. GPUs it does not support fall back to FSR 3.1")
+                    : L.T("xess (libxess.dll) is missing from the engine folder: the game falls back to FSR 3.1"),
                 "taa" => L.T("Anti-aliasing at the output resolution, without an FSR model. Softer than DLAA or FSR Native AA: add sharpening below"),
                 _ => null,
             };
@@ -310,6 +313,10 @@ namespace BloodborneLauncher.Views
         /// <summary>The fsr4vk provider the package ships (FSR 4.1.1 on any GPU, vk_fsr4vk.cpp).</summary>
         private static bool Fsr4VkFound() =>
             File.Exists(Path.Combine(Paths.EngineDir, "fsr4vk", "amd_fidelityfx_upscaler_vk.dll"));
+
+        /// <summary>Intel's XeSS-SR library (tools/fetch_xess.sh, vk_xess.cpp).</summary>
+        private static bool XessFound() =>
+            File.Exists(Path.Combine(Paths.EngineDir, "xess", "libxess.dll"));
 
         private static bool FsrSdkFound() =>
             File.Exists(Path.Combine(Paths.EngineDir, "fsr_sdk", "amd_fidelityfx_loader_vk.dll")) &&

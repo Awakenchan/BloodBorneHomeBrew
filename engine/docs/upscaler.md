@@ -1,5 +1,10 @@
 # Temporal upscaling and frame generation — frame analysis and plan
 
+## Intel XeSS Super Resolution (upscaler=xess, 2026-11-01)
+
+`upscaler=xess` runs XeSS-SR from Intel's XeSS SDK 3.0.2 (`vk_xess.cpp`, Windows only) on the same
+frame as DLSS. XeSS Frame Generation is D3D12 only and not used. See docs/xess.md.
+
 ## FSR through AMD's FSR SDK 2.4 (upscaler=fsr, 2026-10-29)
 
 `upscaler=fsr` / `BB_UPSCALER=fsr` runs AMD's own signed Vulkan upscaler from the FSR SDK 2.4.0

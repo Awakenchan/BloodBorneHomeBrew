@@ -23,6 +23,7 @@
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_fsr4.h"
 #include "video_core/renderer_vulkan/vk_hdr_native.h"
+#include "video_core/renderer_vulkan/vk_xess.h"
 #include "video_core/texture_cache/image.h"
 
 struct FfxVkPortableUpscaleContext;
@@ -314,6 +315,7 @@ private:
     bool resources_taa = false;
     std::unique_ptr<Fsr4Upscaler> fsr4;
     std::unique_ptr<DlssUpscaler> dlss; ///< NVIDIA devices only; records the FSR 4 frame
+    std::unique_ptr<XessUpscaler> xess; ///< with libxess.dll (Windows); records the FSR 4 frame
     bool fsr4_failed = false;
     bool fsr4_building = false; ///< FSR 4's model is built in the background: FSR 3.1 until then
     VideoCore::UniqueImage motion_image;

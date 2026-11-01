@@ -60,6 +60,17 @@ int main() {
     s.upscaler = BbSettings::UpscalerDlss;
     BbSettings::ConfigureUpscalerSupport(false, false, true);
     assert(s.upscaler == BbSettings::UpscalerDlss && s.dlss_supported);
+    s.upscaler = BbSettings::UpscalerXess;
+    BbSettings::Save();
+    assert(Read(path).find("upscaler=xess\n") != std::string::npos);
+    s.upscaler = BbSettings::UpscalerOff;
+    BbSettings::Load();
+    assert(s.upscaler == BbSettings::UpscalerXess);
+    BbSettings::ConfigureUpscalerSupport(false, false, false);
+    assert(s.upscaler == BbSettings::UpscalerFsr3 && !s.xess_supported);
+    s.upscaler = BbSettings::UpscalerXess;
+    BbSettings::ConfigureUpscalerSupport(false, false, false, false, false, true);
+    assert(s.upscaler == BbSettings::UpscalerXess && s.xess_supported);
     s.upscaler = BbSettings::UpscalerFsr411;
     BbSettings::ConfigureUpscalerSupport(true, false, false);
     assert(s.upscaler == BbSettings::UpscalerFsr4);

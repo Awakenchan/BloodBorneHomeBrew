@@ -26,6 +26,7 @@
 #include "video_core/renderer_vulkan/vk_optiscaler.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_streamline_loader.h"
+#include "video_core/renderer_vulkan/vk_xess.h"
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -308,7 +309,22 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
                VK_VERSION_MAJOR(available_version), VK_VERSION_MINOR(available_version));
 
     const auto layers = GetInstanceLayers(enable_validation, enable_crash_diagnostic);
-    const auto extensions = GetLayerExtensions(GetInstanceExtensions(window_type, true), layers);
+    auto extensions = GetLayerExtensions(GetInstanceExtensions(window_type, true), layers);
+    // bbport: Intel XeSS-SR (vk_xess.h) names the instance extensions it needs, when libxess.dll is
+    // installed; none on current drivers.
+    u32 xess_api_version = 0;
+    for (const char* extension : Xess::RequiredInstanceExtensions(&xess_api_version)) {
+        if (std::ranges::none_of(extensions, [&](const char* name) {
+                return std::string_view(name) == extension;
+            })) {
+            extensions.push_back(extension);
+        }
+    }
+    if (xess_api_version > available_version) {
+        LOG_WARNING(Render_Vulkan, "XeSS needs Vulkan {}.{}; the instance has {}.{}",
+                    VK_VERSION_MAJOR(xess_api_version), VK_VERSION_MINOR(xess_api_version),
+                    VK_VERSION_MAJOR(available_version), VK_VERSION_MINOR(available_version));
+    }
     enabled_instance_extensions.assign(extensions.begin(), extensions.end());
 
     const vk::ApplicationInfo application_info = {
