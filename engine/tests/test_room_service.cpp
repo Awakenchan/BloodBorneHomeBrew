@@ -283,6 +283,12 @@ int Host(int game_port, int http_port) {
         reply.value("ResKind", -1) != 0)
         return Fail("the host cannot find the guest by name");
     std::printf("host: guest found by name\n");
+    if (!BbRoom::Call("/np/signaling/resolve", {{"OnlineId", "GuestHunter-ab12"}}, reply, error, 8000) ||
+        reply.value("ResKind", -1) != 0)
+        return Fail("the host cannot find a guest introduced by its room name from its online id");
+    if (!BbRoom::Call("/np/signaling/resolve", {{"OnlineId", "GuestHunterX-ab12"}}, reply, error, 8000) ||
+        reply.value("ResKind", -1) == 0)
+        return Fail("a longer name must not match");
     Game(http_port, "/summon_messenger/request", {{"TargetUserId", user}});
     Json ev;
     if (!Poll(ev, "room_member_joined")) return Fail("host saw no member join");

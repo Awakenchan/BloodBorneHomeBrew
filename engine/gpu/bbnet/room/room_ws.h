@@ -11,7 +11,7 @@
 
 namespace BbRoom {
 
-constexpr int kRoomProtocol = 15;
+constexpr int kRoomProtocol = 16;
 
 class WebSocket {
 public:

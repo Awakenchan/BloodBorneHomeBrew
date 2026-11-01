@@ -41,6 +41,8 @@ namespace BloodborneLauncher.Views
         private string _search = "";
         private int _shown;
         private bool _filling;
+        private string? _error;
+        private readonly Dictionary<string, int> _given = new();
 
         public SaveEditorPage() : base(L.T("Save editor"), "")
         {
@@ -93,9 +95,10 @@ namespace BloodborneLauncher.Views
                 : _catalog == null
                     ? L.T("Item names come from your game folder. Set the game folder on the Play page to give items and see their names.")
                     : null;
-            _notice.Title = problem == null ? "" : L.T("Saves can't be changed yet");
-            _notice.Message = problem ?? "";
-            _notice.IsOpen = problem != null;
+            _notice.Title = _error != null ? L.T("That did not work") : problem == null ? "" : L.T("Saves can't be changed yet");
+            _notice.Message = _error ?? problem ?? "";
+            _notice.Severity = _error != null ? InfoBarSeverity.Error : InfoBarSeverity.Warning;
+            _notice.IsOpen = _error != null || problem != null;
             _save.IsEnabled = _session is { Changes: > 0 } && !GameRunning;
             _discard.IsEnabled = _session is { Changes: > 0 };
             _status.Text = _session == null
@@ -158,6 +161,8 @@ namespace BloodborneLauncher.Views
                 _filling = false;
                 return;
             }
+            _error = null;
+            _given.Clear();
             try
             {
                 _session = SaveEditorSession.Open(_found[index].Place, _found[index].Character);
@@ -173,9 +178,11 @@ namespace BloodborneLauncher.Views
         private void Save()
         {
             if (_session == null) return;
+            _error = null;
             try
             {
                 _session.Commit();
+                _given.Clear();
                 Ws.Log(L.F($"Save editor: {_session.Slot.Name} saved"), LogLevel.Info);
                 FillCharacters();
             }
@@ -190,6 +197,8 @@ namespace BloodborneLauncher.Views
         private void Discard()
         {
             _session?.Discard();
+            _error = null;
+            _given.Clear();
             Refresh();
             Draw();
         }
@@ -197,6 +206,7 @@ namespace BloodborneLauncher.Views
         private void Edit(Action<SaveSlot> edit)
         {
             if (_session == null) return;
+            _error = null;
             try
             {
                 _session.Edit(edit);
@@ -210,8 +220,9 @@ namespace BloodborneLauncher.Views
 
         private void Report(Exception e)
         {
+            _error = e.Message.Length > 0 ? e.Message : L.T("The save did not take that change.");
             _notice.Title = L.T("That did not work");
-            _notice.Message = e.Message;
+            _notice.Message = _error;
             _notice.Severity = InfoBarSeverity.Error;
             _notice.IsOpen = true;
         }
@@ -292,6 +303,9 @@ namespace BloodborneLauncher.Views
 
         private bool Shows(bool dlc) => _contentFilter == 0 || (_contentFilter == 2) == dlc;
 
+        private string? GivenNote(string name) =>
+            _given.TryGetValue(name, out var count) ? L.F($"{count} added. Press Save changes at the top to keep it.") : null;
+
         private static string Tagged(string? hint, bool dlc) =>
             !dlc ? hint ?? "" : string.IsNullOrEmpty(hint) ? L.T("The Old Hunters") : hint + "  ·  " + L.T("The Old Hunters");
 
@@ -347,10 +361,19 @@ namespace BloodborneLauncher.Views
                     var count = int.TryParse(amount.Text, NumberStyles.None, CultureInfo.InvariantCulture, out var typed) ? Math.Clamp(typed, 1, give.MaxHeld) : 1;
                     var have = _session!.Slot.Items.FirstOrDefault(i => i.Id == give.Id && i.Category == 4 && i.List != SaveList.Storage);
                     if (have != null) count = Math.Max(0, Math.Min(count, give.MaxHeld - have.Quantity));
-                    if (count > 0) Edit(s => s.AddGoods(give.Id, count, give.Sort, give.KeyItem));
+                    if (count > 0)
+                    {
+                        var before = _session.Changes;
+                        Edit(s => s.AddGoods(give.Id, count, give.Sort, give.KeyItem));
+                        if (_session.Changes > before) _given[give.Name] = _given.GetValueOrDefault(give.Name) + count;
+                    }
+                    else
+                    {
+                        Report(new InvalidOperationException(L.F($"You already carry the most you can of {give.Name}.")));
+                    }
                     FillItems(into);
                 });
-                Add(Card(SymbolRegular.Add24, g.Name, Tagged(g.KeyItem ? L.T("Key item") : L.F($"Carry up to {g.MaxHeld}"), g.Dlc), Row(amount, button), out _), into);
+                Add(Card(SymbolRegular.Add24, g.Name, Tagged(GivenNote(g.Name) ?? (g.KeyItem ? L.T("Key item") : L.F($"Carry up to {g.MaxHeld}")), g.Dlc), Row(amount, button), out _), into);
             }
             if (goods.Count > MaxRows) into.Children.Add(Text(L.F($"Showing {MaxRows} of {goods.Count}. Search to narrow it down."), "Faint"));
         }
@@ -392,9 +415,11 @@ namespace BloodborneLauncher.Views
             foreach (var (name, dlc, give, icon) in all.Take(MaxRows))
             {
                 var run = give;
-                Add(Card(icon, name, dlc ? Tagged(null, true) : null, SmallButton(L.T("Give"), SymbolRegular.Add24, (_, _) =>
+                Add(Card(icon, name, GivenNote(name) is { } note ? Tagged(note, dlc) : dlc ? Tagged(null, true) : null, SmallButton(L.T("Give"), SymbolRegular.Add24, (_, _) =>
                 {
+                    var before = _session!.Changes;
                     run();
+                    if (_session.Changes > before) _given[name] = _given.GetValueOrDefault(name) + 1;
                     FillGear(into);
                 }), out _), into);
             }

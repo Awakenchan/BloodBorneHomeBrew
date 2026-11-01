@@ -150,6 +150,7 @@ struct State {
     bool host = false;
     std::atomic<int> own_slot{0};
     std::string player;
+    std::string online_id;
     std::atomic<bool> started{false};
 
     std::mutex mu;
@@ -430,16 +431,21 @@ Json HandleSession(int slot, const std::string& path, const Json& body) {
     }
     if (path == "/np/signaling/resolve") {
         const std::string id = StrOf(body, "OnlineId");
-        int best = 0;
-        Clock::time_point best_at{};
-        for (const auto& [s, name] : S().names) {
-            if (name != id) continue;
-            const auto at = S().named_at.count(s) ? S().named_at[s] : Clock::time_point{};
-            if (!best || at > best_at) {
-                best = s;
-                best_at = at;
+        const auto find = [&](const auto& same) {
+            int best = 0;
+            Clock::time_point best_at{};
+            for (const auto& [s, name] : S().names) {
+                if (!same(name)) continue;
+                const auto at = S().named_at.count(s) ? S().named_at[s] : Clock::time_point{};
+                if (!best || at > best_at) {
+                    best = s;
+                    best_at = at;
+                }
             }
-        }
+            return best;
+        };
+        int best = find([&](const std::string& name) { return name == id; });
+        if (!best) best = find([&](const std::string& name) { return !name.empty() && id.rfind(name + "-", 0) == 0; });
         if (best) return {{"ResKind", 0}, {"Slot", best}};
         return {{"ResKind", 1}};
     }
@@ -837,6 +843,11 @@ bool Rpc(const Json& request, Json& reply, std::string& error, int timeout_ms) {
         reply = HandleHost(own, request);
         Localize(reply);
         return true;
+    }
+    if (StrOf(request, "p") == "/mp/matching2/context_start" && request.contains("b")) {
+        const std::string started_as = StrOf(request["b"], "OnlineId");
+        std::lock_guard lock(S().mu);
+        if (!started_as.empty()) S().online_id = started_as;
     }
     const bool start = StrOf(request, "p") == "/mp/matching2/context_start" && Env("BB_ROOM_START_WAITS_HOST") != "1";
     const int host = HostSlotWait(start ? 0 : std::min(timeout_ms, 10000));
@@ -1373,9 +1384,15 @@ void LinkLoop() {
                     S().cv.notify_all();
                 }
                 last_host = e.slot;
-                if (e.slot && !S().host && !S().player.empty())
+                if (e.slot && !S().host && !S().player.empty()) {
+                    std::string introduce;
+                    {
+                        std::lock_guard lock(S().mu);
+                        introduce = S().online_id.empty() ? S().player : S().online_id;
+                    }
                     SendJson(e.slot, kRequest,
-                             Json{{"p", "/mp/matching2/context_start"}, {"b", {{"OnlineId", S().player}}}}, 0, true);
+                             Json{{"p", "/mp/matching2/context_start"}, {"b", {{"OnlineId", introduce}}}}, 0, true);
+                }
                 break;
             case Event::Kind::Data:
                 {
@@ -1446,6 +1463,16 @@ std::string GameApiAnswer(const std::string& path, const Json& body) {
     if (path == "/basic_utils/get_normal_notice") return R"({"ResKind":0,"NoticeList":[]})";
     if (path == "/basic_utils/get_emergency_notice")
         return Json{{"ResKind", 0}, {"NoticeList", Json::array()}, {"CheckTime", Stamp()}}.dump();
+    if (path == "/summon_messenger/create" && !S().host) {
+        std::string introduce;
+        {
+            std::lock_guard lock(S().mu);
+            introduce = S().online_id;
+        }
+        const int host = S().link.HostSlot();
+        if (host && !introduce.empty())
+            SendJson(host, kRequest, Json{{"p", "/mp/matching2/context_start"}, {"b", {{"OnlineId", introduce}}}}, 0, true);
+    }
     if (path.rfind("/summon_messenger/", 0) == 0 || path.rfind("/channel/", 0) == 0) {
         Json reply;
         std::string error;
@@ -2093,6 +2120,13 @@ void SendLampAsk(std::uint32_t lamp) {
     }
     S().status.GuestLampAsked(now);
     Log("asked the host to take the party to lamp %u", lamp);
+}
+
+bool SignsWaiting() {
+    if (!S().host) return false;
+    std::lock_guard lock(S().host_mu);
+    const int own = S().own_slot.load();
+    return std::any_of(S().signs.begin(), S().signs.end(), [&](const auto& sign) { return sign.first != own; });
 }
 
 bool PendingLampAsk(int& slot, std::string& who, std::uint32_t& lamp) {

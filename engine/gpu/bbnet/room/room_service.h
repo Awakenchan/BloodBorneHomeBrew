@@ -54,6 +54,7 @@ bool TakeDungeon(Dungeon& out);
 void SendChalices(const std::vector<std::uint32_t>& goods);
 bool TakeChalices(std::vector<std::uint32_t>& out);
 int HostSlot();
+bool SignsWaiting();
 void SendPortrait(const std::vector<std::uint8_t>& packed);
 std::vector<std::pair<int, std::vector<std::uint8_t>>> TakePortraits();
 

@@ -185,7 +185,7 @@ namespace BloodborneLauncher.Core
         public void SetQuantity(SaveItem item, int quantity)
         {
             if (quantity < 1) throw new ArgumentOutOfRangeException(nameof(quantity));
-            var current = _items.FirstOrDefault(i => i.Offset == item.Offset && i.ItemId == item.ItemId && i.List == item.List)
+            var current = _items.FirstOrDefault(i => i.Position == item.Position && i.ItemId == item.ItemId && i.List == item.List)
                           ?? throw new InvalidOperationException();
             W32(current.Offset + 8, quantity);
             _items[_items.IndexOf(current)] = current with { Quantity = quantity };

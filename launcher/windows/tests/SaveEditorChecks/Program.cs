@@ -112,6 +112,18 @@ static int Check(string[] saves)
     Require(weapon.Handle == 0x80800002 && armor.Handle == 0x90800003, "Gear handles take the next free table index, past the gem's");
     Require(again.Gear.Count == SaveSlot.TableSlots, "The table keeps its size");
     Require(again.Name == "Fixture" && again.Level == 155, "Player data moved whole");
+    var many = SaveSlot.Parse(fixture);
+    var firstGoods = many.Items.First(i => i.Category == 4);
+    for (var i = 0; i < 12; i++) many.AddWeapon(7000300, 200, 510000 - 300, new[] { 1u, 1u, 0x80000000, 0x80000000, 0x80000000 });
+    many.AddArmor(230000, 0, 100000);
+    many.AddWeapon(7000300, 200, 510000 - 300, new[] { 1u, 1u, 0x80000000, 0x80000000, 0x80000000 });
+    many.SetQuantity(firstGoods, firstGoods.Quantity + 1);
+    var manyAgain = SaveSlot.Parse(many.ToBytes());
+    var givenWeapons = manyAgain.Items.Where(i => i.Id == 7000300 && i.Category == 0).ToList();
+    Require(givenWeapons.Count == 13, "Many of one weapon can be given in one go");
+    Require(manyAgain.Items.Where(i => i.List == SaveList.Inventory).Select(i => i.Handle).Distinct().Count() == manyAgain.Items.Count(i => i.List == SaveList.Inventory), "Given gear never shares a handle");
+    Require(manyAgain.Items.Where(i => i.Category <= 1).All(i => manyAgain.Gear.Any(g => g.Handle == i.Handle && g.ItemId == i.ItemId)), "Every given item has its own table entry");
+    Require(manyAgain.Items.First(i => i.Position == firstGoods.Position && i.List == firstGoods.List).Quantity == firstGoods.Quantity + 1, "A quantity edit still finds its item after gear moved the lists");
     var grown = gear.ToBytes();
     Require(grown[again.LogicalEnd - 1] == 0xAB, "The last byte of the save moves with it");
     Require(grown[again.LogicalEnd + 2 * 0x34 - 2 * 0x34 + 1] == fixture[again.LogicalEnd + 1], "What lies past the save stays where it is");

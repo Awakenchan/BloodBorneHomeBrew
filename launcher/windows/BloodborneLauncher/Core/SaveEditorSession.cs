@@ -10,6 +10,7 @@ namespace BloodborneLauncher.Core
         public SaveSlot Slot { get; private set; }
         public int Changes { get; private set; }
         private byte[] _original;
+        private readonly List<Action<SaveSlot>> _edits = new();
 
         private SaveEditorSession(SavePlace place, SaveCharacter character, byte[] bytes)
         {
@@ -25,11 +26,20 @@ namespace BloodborneLauncher.Core
         public void Edit(Action<SaveSlot> edit)
         {
             edit(Slot);
+            _edits.Add(edit);
             Changes++;
         }
 
         public string Commit()
         {
+            var onDisk = File.ReadAllBytes(Character.File);
+            if (!onDisk.AsSpan().SequenceEqual(_original))
+            {
+                var fresh = SaveSlot.Parse(onDisk);
+                foreach (var edit in _edits) edit(fresh);
+                _original = onDisk;
+                Slot = fresh;
+            }
             var backup = SaveStore.Commit(Place, Character, _original, Slot);
             Reload();
             return backup;
@@ -38,6 +48,7 @@ namespace BloodborneLauncher.Core
         public void Discard()
         {
             Slot = SaveSlot.Parse(_original);
+            _edits.Clear();
             Changes = 0;
         }
 
@@ -45,6 +56,7 @@ namespace BloodborneLauncher.Core
         {
             _original = File.ReadAllBytes(Character.File);
             Slot = SaveSlot.Parse(_original);
+            _edits.Clear();
             Changes = 0;
         }
 
