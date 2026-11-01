@@ -32,6 +32,11 @@ int main() {
 
     BbSettings::Load();
     auto& s = BbSettings::Get();
+    assert(!s.graphics_native_sss);
+    assert(!s.graphics_directional_ggx && !s.startup_directional_ggx);
+    s.graphics_native_sss = true;
+    s.graphics_directional_ggx = true;
+    assert(!s.startup_directional_ggx);
     assert(s.upscaler == BbSettings::UpscalerFsr3 && !s.show_fps && s.menu_x < 0.0f);
     s.show_fps = true;
     s.upscaler = BbSettings::UpscalerFsr411;
@@ -46,11 +51,18 @@ int main() {
     assert(saved.find("menu_pos=0.6250,0.1250\n") != std::string::npos);
     assert(saved.find("upscaler=fsr3") == std::string::npos);
     assert(saved.find("fullscreen=1\n") != std::string::npos);
+    assert(saved.find("graphics_native_sss=1\n") != std::string::npos);
+    assert(saved.find("graphics_directional_ggx=1\n") != std::string::npos);
 
+    s.graphics_native_sss = false;
+    s.graphics_directional_ggx = false;
     s.menu_x = -1.0f;
     s.menu_y = -1.0f;
     BbSettings::Load();
     assert(s.menu_x == 0.625f && s.menu_y == 0.125f && s.upscaler == BbSettings::UpscalerFsr411);
+    assert(s.graphics_native_sss && s.graphics_directional_ggx && s.startup_directional_ggx);
+    s.graphics_directional_ggx = false;
+    assert(s.startup_directional_ggx);
     s.upscaler = BbSettings::UpscalerDlss;
     BbSettings::Save();
     assert(Read(path).find("upscaler=dlss\n") != std::string::npos);

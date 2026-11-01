@@ -23,6 +23,7 @@
 #include "bbport_looks.h"
 #include "engine/cheats.h"
 #include "engine/graphics.h"
+#include "engine/native_sss.h"
 #include "engine/online_fixes.h"
 #include "input/input.h"
 #include "voice.h"
@@ -570,6 +571,26 @@ void HdrSection() {
 void PictureSection() {
     auto& s = BbSettings::Get();
     Section("Picture", "Изображение");
+    const auto sss_status = BbEngine::Sss::CurrentStatus();
+    ImGui::BeginDisabled(sss_status == BbEngine::Sss::Status::Unsupported);
+    if (const char* label = Item("Native skin SSS (experimental)", "Нативный SSS кожи (эксперимент)")) {
+        Checkbox(label, s.graphics_native_sss);
+        Hint(BbSettings::MenuText(
+            "Off by default. Uses Bloodborne's native material-profile subsurface scattering "
+            "and diffuse blur; authored strengths and specular lighting stay unchanged. "
+            "Independent of Picture tuning. Applies live when this view has native SSS resources.",
+            "По умолчанию выключено. Использует нативные профили рассеивания под поверхностью "
+            "и размытие диффузного света. Авторская сила эффекта и блики не меняются. "
+            "Не зависит от настройки изображения. Работает сразу, если у вида есть ресурсы SSS."));
+    }
+    ImGui::EndDisabled();
+    if (WholeSection() && Shown("Picture", "Изображение")) {
+        const char* status = sss_status == BbEngine::Sss::Status::Active ? "Native skin SSS: active" :
+                             sss_status == BbEngine::Sss::Status::Waiting ? "Native skin SSS: waiting for native resources" :
+                             sss_status == BbEngine::Sss::Status::Unsupported ? "Native skin SSS: unavailable" :
+                             "Native skin SSS: off";
+        ImGui::TextDisabled("%s", BbSettings::MenuText(status));
+    }
     const bool live = BbEngine::Graphics::Enabled();
     if (!live && WholeSection() && Shown("Picture", "Изображение")) {
         ImGui::TextDisabled("%s", BbSettings::MenuText("Unavailable: the game's code differs from version 1.09.",
@@ -680,6 +701,20 @@ void PictureSection() {
 void EffectsSection() {
     auto& s = BbSettings::Get();
     Section("Game effects (restart required)", "Эффекты игры (после перезапуска)");
+    if (const char* label = Item("Directional GGX (native-anchored, experimental)",
+                                "Направленный GGX (нативная калибровка, экспериментальный)")) {
+        Checkbox(label, s.graphics_directional_ggx);
+        Hint(BbSettings::MenuText(
+            "Off by default. Native-anchored GGX for the four directional specular lobes only. "
+            "Softer highlight tails can brighten rough or grazing surfaces. Diffuse, local lights "
+            "and environment/SSR remain native. Requires restarting Bloodborne; unsupported shader "
+            "variants retain native specular and report a warning. Not a full PBR conversion.",
+            "По умолчанию выключено. GGX с нативной калибровкой для четырёх направленных бликов. "
+            "Мягкие края могут осветлять шероховатые поверхности и скользящие углы. Диффузное "
+            "освещение, локальные источники и окружение/SSR не меняются. Требуется перезапуск "
+            "Bloodborne. Неподдерживаемые шейдеры сохраняют нативные блики с предупреждением. "
+            "Не является полной PBR-конверсией."));
+    }
     if (const char* label = Item("Model detail", "Детализация моделей")) {
         const char* lods[] = {BbSettings::MenuText("Highest (-2)", "Максимальная (-2)"),
                               BbSettings::MenuText("Game default", "Как в игре"),
@@ -2056,6 +2091,7 @@ void Menu() {
         s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
         s.live_resolution != s.startup_live_resolution || s.hdr != s.startup_hdr ||
         s.graphics_motion_blur_quality != s.startup_motion_blur_quality ||
+        s.graphics_directional_ggx != s.startup_directional_ggx ||
         s.graphics_shadow_resolution != s.startup_shadow_resolution ||
         s.graphics_local_shadow_resolution != s.startup_local_shadow_resolution ||
         BbSettings::ResolutionNeedsRestart();

@@ -1,5 +1,83 @@
 # Temporal upscaling and frame generation — frame analysis and plan
 
+## Native skin SSS, directional GGX and verified sky/POM fixes
+
+These additions are ported from the latest [BBFSS preview PR](https://github.com/fromsoftserve/BBFSS/pull/1),
+not the fork's older renderer or packaging. Upstream's existing lighting effects, draw hooks,
+upscalers and native shader cache remain in place.
+
+| Control | Default | Scope |
+|---|---|---|
+| `graphics_native_sss` | `0`, live | Enable the game's native skin subsurface scattering when its render entry, view and allocated resources match. |
+| `graphics_directional_ggx` | `0`, restart required | Replace four directional specular lobes with native-anchored GGX; diffuse, local/forward lights, environment/SSR and specular alpha stay native. |
+| `BB_SKY_SEAM_FIX` | enabled; `0` disables | Correct the verified Hunter's Dream dome's inset horizontal UV seam, not its panorama, vertical UVs, clouds or moon. |
+| `BB_SKY_ZENITH_FIX` | disabled; `1` enables | Experimental wrap-aware filtering of the verified Dream panorama's zenith region. |
+
+Both saved settings are available in the launcher and Insert menu, independently of Picture
+tuning. SSS validates the executable entry and native view/resources before writing either
+enable switch. Disabling it restores only still-owned switches on the same view/resources;
+external changes and replaced views are not overwritten. Unsupported views retain their native
+state and the overlay reports availability.
+
+GGX freezes the startup setting, so menu changes cannot split cold and warmed pipelines between
+models. It requires the exact directional program hash, native module word count/FNV checksum,
+SPIR-V structure and all replacement/bypass instruction sites. Unknown variants warn and retain
+native specular; no captured shader blob is shipped. The authored width and peak retain the native
+material response but use longer GGX tails, so rough/grazing highlights can be brighter.
+
+Upstream defaults to the Lifter. Only enabled directional GGX selects the guarded recompiler for
+that shader; a targeted native binary version separates its cache from default lifted binaries.
+Changing the startup setting therefore rebuilds the affected directional permutations rather
+than accidentally warming an incompatible module. Persisted SPIR-V stays native and GGX is
+reapplied only to the submitted module. POM fragments keep upstream's native cache version:
+the existing startup-only POM effect reapplies its patch on both paths. Its first-hit bracket now
+uses the true top surface rather than a synthetic previous sample paired with a dithered layer;
+all three exact native POM layouts validate their phi/upper-layer sites before mutation.
+
+The seam path checks the shader pair, indexed draw and separate position/UV stream layout,
+then fingerprints the geometry on the GPU. Nonmatching geometry keeps its UVs; devices without
+dynamic vertex input retain the original path. Normal rendering adds no CPU readback or wait.
+Zenith filtering additionally checks the panorama's dimensions, BC1 sRGB format, 12 mip levels
+and 16 encoded sample positions; its owned filtered images do not alter the source texture.
+Neither is a general sky replacement.
+
+Zenith work is still experimental, not a claimed fix for all radial banding. For stationary
+diagnostic comparisons, `BB_SKY_ZENITH_MODE_FILE` can name a text file containing `0` (original),
+`1` (local filter), `2` (flat-color isolation), or `3` (gradient reconstruction), optionally
+followed by gradient strength from 0 to 1. For example, `3 0.4` selects the measured gradient
+prototype. The file is polled every 30 supported draws; a normal launcher sets none of these
+diagnostic flags. `BB_SKY_ZENITH_FIX=1` alone selects the local filter.
+
+### Local-fixture diagnostics
+
+No game data, native shader binaries, captures, settings or logs belong in the repository.
+The CMake targets `ggx-patch-test` and `pom-patch-test` accept explicit native SPIR-V fixtures;
+`sky-seam-test` takes a 485-record position/UV fixture, and `sky-zenith-test` takes a decoded
+2048x512 RGBA8 panorama. `billboard-probe-test` requires an explicit matching native hull/domain
+shader pair and remains an authored diagnostic only, with no replacement integrated into play.
+Its supported flat-billboard family is `bb88db5f/9071184b`, not the three blended-effect
+families used by the separate draw-omission diagnostic.
+
+The exact directional replay runner is `ggx-directional-test`. Its
+`tools/re/ggx_directional_replay.py` front end requires an explicit capture, vertex and fragment
+snapshots, runner path and new output directory; it checks shader/pipeline/resource provenance
+instead of substituting a similar scene. Build the runner with
+`cmake --build engine\out\gpu --target ggx-directional-test --parallel 4` from the repository root.
+Use each tool's `--help` for its required fixture paths.
+
+`ggx_directional_controls.py` compares native/GGX material and angular rows;
+`ggx_directional_timing.py` records paired GPU pass samples without installing a candidate
+in the game. Native evidence requires startup GGX disabled: `BB_SPECULAR_CAPTURE=1` records
+submitted modules, pipeline state and exact draw resources for explicit diagnostics, and refuses
+an enabled GGX session. The focused Python tests require explicit shaders for patch/runtime checks;
+do not use blanket discovery as a substitute for supplying those fixtures.
+
+Prior BBFSS evidence included a native packed zero-difference replay, 16 material/58 angular
+rows, runtime-emitter equivalence and approximately +8% median GPU time for the captured pass
+(about 0.004 ms on an RTX 4060 Ti, with noisy tails). This is not a whole-game FPS result.
+The upstream port must be checked against its current compiler and retained local fixtures;
+those offline checks do not establish new in-game visual coverage or performance on other GPUs.
+
 ## Intel XeSS Super Resolution (upscaler=xess, 2026-11-01)
 
 `upscaler=xess` runs XeSS-SR from Intel's XeSS SDK 3.0.2 (`vk_xess.cpp`, Windows only) on the same

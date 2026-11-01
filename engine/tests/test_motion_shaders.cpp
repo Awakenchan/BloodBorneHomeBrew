@@ -9,9 +9,13 @@
 #include <unordered_set>
 #include "common/hash.h"
 #include "common/serdes.h"
+#include "bbport_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
+#include "video_core/renderer_vulkan/vk_pom_patch.h"
+#include "video_core/renderer_vulkan/vk_ggx_patch.h"
+#include "video_core/renderer_vulkan/vk_shader_util.h"
 
 extern "C" {
 void runtime_blocked_report(void) {}
@@ -22,19 +26,31 @@ int sys_pad_button(uint32_t, int) { return 0; }
 
 static void CheckMetadata() {
     using namespace Shader;
-    const auto load = [](bool motion, u32 version) {
+    const auto load = [](u8 motion, u32 version, HwStage stage = HwStage::Vertex,
+                         u64 pgm_hash = 0x123456) {
         Info original{};
-        original.hw_stage = HwStage::Vertex;
-        original.sw_stage = SwStage::Vertex;
-        original.pgm_hash = 0x123456;
+        original.hw_stage = stage;
+        original.sw_stage = stage == HwStage::Vertex ? SwStage::Vertex : SwStage::Fragment;
+        original.pgm_hash = pgm_hash;
         StageSpecialization spec{};
         spec.info = &original;
         spec.runtime_info.Initialize(original.hw_stage, original.sw_stage);
-        spec.runtime_info.hw.vs.motion_vectors = motion;
+        if (stage == HwStage::Vertex) spec.runtime_info.hw.vs.motion_vectors = motion;
         const auto hash = HashCombine(original.pgm_hash, u64{2});
+        Serialization::Archive emitted{Vulkan::SerializeShaderMeta(original, spec, hash, 2)};
+        Serialization::Reader emitted_reader{emitted};
+        u32 meta_version{}, emitted_version{};
+        emitted_reader.Read(meta_version);
+        emitted_reader.Read(emitted_version);
+        const u32 expected = stage == HwStage::Fragment &&
+                                     pgm_hash == Vulkan::Ggx::DirectionalHash &&
+                                     BbSettings::Get().startup_directional_ggx ? 10
+                                 : stage != HwStage::Vertex || !motion ? 7
+                                 : (motion & MotionVectors::VertexCapture) ? 9 : 8;
+        assert(emitted_version == expected);
         Serialization::Archive output;
         Serialization::Writer writer{output};
-        writer.Write(u32{8});
+        writer.Write(meta_version);
         writer.Write(version);
         writer.Write(hash);
         writer.Write(size_t{2});
@@ -59,6 +75,57 @@ static void CheckMetadata() {
     assert(load(false, 7));
     assert(!load(false, 8));
     assert(!load(true, 99));
+    assert(load(MotionVectors::VertexCapture, 9));
+    assert(load(MotionVectors::VertexBoth, 9));
+    assert(!load(MotionVectors::VertexCapture, 8));
+    assert(!load(false, 9));
+    // Upstream caches native fragments; effects are reapplied to submitted modules on warmup.
+    for (const auto& shader : Vulkan::Pom::kShaders) {
+        assert(load(0, 7, HwStage::Fragment, shader.hash));
+        assert(!load(0, 9, HwStage::Fragment, shader.hash));
+    }
+    assert(load(0, 7, HwStage::Fragment, Vulkan::Ggx::DirectionalHash));
+    assert(!load(0, 9, HwStage::Fragment, Vulkan::Ggx::DirectionalHash));
+    assert(!load(0, 10, HwStage::Fragment, Vulkan::Ggx::DirectionalHash));
+    BbSettings::Get().startup_directional_ggx = true;
+    assert(!load(0, 7, HwStage::Fragment, Vulkan::Ggx::DirectionalHash));
+    assert(load(0, 10, HwStage::Fragment, Vulkan::Ggx::DirectionalHash));
+    assert(load(0, 7, HwStage::Fragment));
+    assert(!load(0, 10, HwStage::Fragment));
+    assert(load(MotionVectors::VertexCapture, 9));
+    for (const auto& shader : Vulkan::Pom::kShaders) {
+        assert(load(0, 7, HwStage::Fragment, shader.hash));
+    }
+    BbSettings::Get().startup_directional_ggx = false;
+}
+
+static void CheckDirectionalModule(const char* path) {
+    using namespace Vulkan;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    assert(file && file.tellg() >= 20 && file.tellg() % 4 == 0);
+    std::vector<u32> native(size_t(file.tellg()) / 4);
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(native.data()), std::streamsize(native.size() * 4));
+    assert(file);
+    const auto original = native;
+    auto expected = native;
+    assert(Ggx::Patch(Ggx::DirectionalHash, true, true, expected) == Ggx::Result::Applied);
+    auto& settings = BbSettings::Get();
+    settings.graphics_directional_ggx = true;
+    assert(DirectionalGgxModule(Ggx::DirectionalHash, true, native).empty());
+    settings.startup_directional_ggx = true;
+    assert(DirectionalGgxModule(Ggx::DirectionalHash, true, native) == expected);
+    settings.graphics_directional_ggx = false;
+    assert(DirectionalGgxModule(Ggx::DirectionalHash, true, native) == expected);
+    assert(DirectionalGgxModule(Ggx::DirectionalHash, false, native).empty());
+    assert(DirectionalGgxModule(0, true, native).empty());
+    auto unsupported = native;
+    unsupported.back() ^= 1;
+    const auto unsupported_original = unsupported;
+    assert(DirectionalGgxModule(Ggx::DirectionalHash, true, unsupported).empty());
+    assert(native == original && unsupported == unsupported_original);
+    settings.startup_directional_ggx = false;
+    assert(DirectionalGgxModule(Ggx::DirectionalHash, true, native).empty());
 }
 
 static void CheckMotionInterface(const std::vector<u32>& code, bool vertex_motion) {
@@ -109,6 +176,10 @@ int main(int argc, char** argv) {
     _set_error_mode(_OUT_TO_STDERR);
 #endif
     CheckMetadata();
+    if (argc == 4) {
+        CheckDirectionalModule(argv[2]);
+        CheckDirectionalModule(argv[3]);
+    }
     const std::filesystem::path dir = argc > 1 ? argv[1] : ".";
     std::filesystem::create_directories(dir);
     for (bool vertex : {true, false}) {

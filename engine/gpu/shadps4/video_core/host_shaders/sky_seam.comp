@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) readonly buffer Positions { uint positions[]; };
+layout(set = 0, binding = 1, std430) readonly buffer SourceUV { uint source_uv[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer ResultUV { uint result_uv[]; };
+layout(push_constant) uniform Params {
+    uint position_offset;
+    uint uv_offset;
+    uint position_stride;
+    uint uv_stride;
+    uint count;
+} p;
+
+void main() {
+    uint hash = 2166136261u;
+    for (uint i = 0; i < 485u; ++i) {
+        uint at = p.position_offset + i * p.position_stride;
+        for (uint j = 0; j < 3u; ++j)
+            hash = (hash ^ positions[at + j]) * 16777619u;
+        hash = (hash ^ source_uv[p.uv_offset + i * p.uv_stride]) * 16777619u;
+    }
+    bool verified = hash == 0xba38bc6fu;
+    for (uint i = 0; i < p.count; ++i) {
+        uint uv = source_uv[p.uv_offset + i * p.uv_stride];
+        if (verified) {
+            int u = int(uv << 16) >> 16;
+            // The authored closing vertices use 20 and 4076, leaving an inset gap.
+            int corrected = int(round(float(u - 20) * (4096.0 / 4056.0)));
+            uv = (uv & 0xffff0000u) | (uint(corrected) & 0xffffu);
+        }
+        result_uv[i] = uv;
+    }
+    result_uv[p.count] = verified ? 1u : 0u;
+    result_uv[p.count + 1u] = hash;
+}

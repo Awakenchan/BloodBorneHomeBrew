@@ -7,7 +7,17 @@
 #include "bbport_platform.h"
 #include "engine/gx_trace.h"
 #include <bit>
+#include <cerrno>
+#include <charconv>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <map>
+#include <sstream>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <xxhash.h>
@@ -52,6 +62,91 @@
 
 namespace Vulkan {
 
+static bool HideTessellationEffect(u64 hs, u64 ds, u64 ps) {
+    static const std::string mode_file = [] {
+        const char* file = std::getenv("BB_TESS_EFFECT_MODE_FILE");
+        return file ? std::string(file) : std::string{};
+    }();
+    if (mode_file.empty()) return false;
+    u32 family = 0;
+    if (hs == 0x8453cd1c && ds == 0x7f03e945 && ps == 0x71c96598) family = 1;
+    if (hs == 0xbc234799 && ds == 0x0c1888bd && ps == 0x71c96598) family = 2;
+    if (hs == 0xbc234799 && ds == 0x52d756df && ps == 0x2e86d610) family = 3;
+    if (!family) return false;
+    static u32 mode = 0, polls = 0;
+    if (polls++ % 30 == 0) {
+        u32 next = 0;
+        if (FILE* file = std::fopen(mode_file.c_str(), "r")) {
+            char extra;
+            const int fields = std::fscanf(file, "%1u %c", &next, &extra);
+            const bool valid = fields == 1 && next <= 3 && !std::ferror(file);
+            std::fclose(file);
+            if (!valid) {
+                std::printf("Tessellation effect diagnostic: invalid mode; restoring all draws\n");
+                next = 0;
+            }
+        } else {
+            std::printf("Tessellation effect diagnostic: mode file unavailable (%d); "
+                        "restoring all draws\n", errno);
+        }
+        if (mode != next)
+            std::printf("Tessellation effect diagnostic mode %u (0 restores all draws)\n", next);
+        mode = next;
+    }
+    return mode == family;
+}
+
+static bool HidePomDraw(u64 ps, u32 count) {
+    if (ps != 0x053bbf3b && ps != 0x505acc58 && ps != 0x08ccd4c7) return false;
+    static const std::string mode_file = [] {
+        const char* file = std::getenv("BB_POM_DRAW_MODE_FILE");
+        return file ? std::string(file) : std::string{};
+    }();
+    if (mode_file.empty()) return false;
+    static u32 selected_ps = 0, selected_count = 0, polls = 0;
+    if (polls++ % 30 == 0) {
+        u32 next_ps = 0, next_count = 0;
+        if (FILE* file = std::fopen(mode_file.c_str(), "r")) {
+            char text[128]{};
+            bool valid = std::fgets(text, sizeof(text), file) && !std::ferror(file);
+            if (valid) {
+                std::string_view remaining{text};
+                const auto number = [&](u32& output, int base) {
+                    const auto start = remaining.find_first_not_of(" \t\r\n");
+                    if (start == std::string_view::npos) return false;
+                    remaining.remove_prefix(start);
+                    const auto result = std::from_chars(
+                        remaining.data(), remaining.data() + remaining.size(), output, base);
+                    if (result.ec != std::errc{}) return false;
+                    remaining.remove_prefix(size_t(result.ptr - remaining.data()));
+                    return remaining.empty() || remaining.front() == ' ' ||
+                           remaining.front() == '\t' || remaining.front() == '\r' ||
+                           remaining.front() == '\n';
+                };
+                valid = number(next_ps, 16) && number(next_count, 10) &&
+                        remaining.find_first_not_of(" \t\r\n") == std::string_view::npos &&
+                        std::fgetc(file) == EOF && !std::ferror(file) &&
+                        ((next_ps == 0 && next_count == 0) ||
+                         ((next_ps == 0x053bbf3b || next_ps == 0x505acc58 ||
+                           next_ps == 0x08ccd4c7) && next_count > 0));
+            }
+            std::fclose(file);
+            if (!valid) {
+                std::printf("POM draw diagnostic: invalid selection; restoring all draws\n");
+                next_ps = next_count = 0;
+            }
+        } else {
+            std::printf("POM draw diagnostic: file unavailable (%d); restoring all draws\n", errno);
+        }
+        if (next_ps != selected_ps || next_count != selected_count)
+            std::printf("POM draw diagnostic: hide ps %08x idx %u (0 0 restores draws)\n",
+                        next_ps, next_count);
+        selected_ps = next_ps;
+        selected_count = next_count;
+    }
+    return selected_ps == ps && selected_count == count;
+}
+
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     // TODO(roamic): Add support for multiple viewports and geometry shaders when ViewportIndex
     // is encountered and implemented in the recompiler.
@@ -94,6 +189,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
                                                  *scene_targets, *camera_motion, *rt_shadow);
     volumetric_light = std::make_unique<VolumetricLight>(instance, scheduler, texture_cache,
                                                          runtime, *scene_targets);
+    sky_seam = std::make_unique<SkySeam>(instance, scheduler);
+    sky_zenith = std::make_unique<SkyZenith>(instance, scheduler);
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets, *hdr_native);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -2033,6 +2130,103 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (!bound) {
         return;
     }
+    const auto* sky_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    bool sky_candidate = sky_seam->Enabled() && sky_ps && sky_ps->pgm_hash == 0xdda49e89 &&
+        pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash == 0xb28f5a56 &&
+        is_indexed && regs.num_indices == 1920 && regs.num_instances.NumInstances() == 1 &&
+        instance.IsVertexInputDynamicState();
+    if (sky_candidate) {
+        const auto [vertex, instance_index] = GetDrawOffsets(
+            regs, pipeline->GetStage(Shader::SwStage::Vertex), pipeline->GetFetchShader());
+        sky_candidate = vertex == 0 && instance_index == 0;
+    }
+    if (sky_candidate) {
+        if (!inputs_resolved) {
+            ResolveVertexBuffers(pipeline, draw_prepared);
+            ResolveIndexBuffer(index_offset);
+        }
+        auto& v = vertex_binds;
+        if (FrameCapture::Active()) {
+            for (const auto& attr : v.attributes) {
+                const auto binding = attr.binding;
+                if (binding >= v.num_buffers) continue;
+                const auto note = fmt::format(
+                    "\n  sky vertex location {} format {} stride {} size {} offset {}",
+                    attr.location, vk::to_string(attr.format), v.host_strides[binding],
+                    v.host_sizes[binding], attr.offset);
+                FrameCapture::Note(note.c_str());
+            }
+        }
+        const auto position = std::ranges::find(v.attributes, 0u,
+            &vk::VertexInputAttributeDescription2EXT::location);
+        const auto uv = std::ranges::find(v.attributes, 3u,
+            &vk::VertexInputAttributeDescription2EXT::location);
+        if (position != v.attributes.end() && uv != v.attributes.end() &&
+            position->format == vk::Format::eR32G32B32Sfloat &&
+            uv->format == vk::Format::eR16G16Sint &&
+            position->offset == 0 && uv->offset == 0 &&
+            position->binding != uv->binding &&
+            position->binding < v.num_buffers && uv->binding < v.num_buffers) {
+            const auto pi = position->binding, ui = uv->binding;
+            if (v.host_strides[pi] == 24 && v.host_strides[ui] == 24 &&
+                v.host_sizes[pi] == v.host_sizes[ui] && v.host_sizes[pi] % 24 == 0 &&
+                v.host_sizes[pi] == 1824 * 24 &&
+                v.host_buffers[pi] && v.host_buffers[ui]) {
+                const u32 count = u32(v.host_sizes[pi] / 24);
+                const auto result = sky_seam->Correct(
+                    {v.host_buffers[pi], v.host_offsets[pi], 484 * 24 + 12},
+                    {v.host_buffers[ui], v.host_offsets[ui], (count - 1) * 24 + 4}, 24, 24, count);
+                if (result) {
+                    if (sky_zenith->Enabled()) {
+                        u32 first_image = 0;
+                        for (const auto* stage : pipeline->GetStages()) {
+                            if (stage == sky_ps) break;
+                            if (stage) first_image += u32(stage->images.size());
+                        }
+                        for (u32 i = 0; i < sky_ps->images.size(); ++i) {
+                            const auto sharp = sky_ps->images[i].GetSharp(*sky_ps);
+                            const u32 index = first_image + i;
+                            if (sharp.base_level != 0 || sharp.last_level != 11 ||
+                                index >= image_infos.size()) continue;
+                            const auto image = std::ranges::find_if(bound_images,
+                                [&](VideoCore::ImageId id) {
+                                    if (!id) return false;
+                                    const auto& info = texture_cache.GetImage(id).info;
+                                    return info.guest_address == sharp.Address() &&
+                                        info.pixel_format == vk::Format::eBc1RgbaSrgbBlock &&
+                                        info.size.width == 2048 && info.size.height == 512 &&
+                                        info.resources.layers == 1 && info.resources.levels == 12;
+                                });
+                            if (image == bound_images.end()) continue;
+                            runtime.FlushBarriers();
+                            if (const auto view = sky_zenith->Filter(image_infos[index],
+                                    sky_seam->VerificationBuffer(), count)) {
+                                image_infos[index].imageView = view;
+                                image_infos[index].imageLayout = vk::ImageLayout::eGeneral;
+                                if (FrameCapture::Active()) {
+                                    const auto note = fmt::format("\n  sky zenith GPU verified {}",
+                                        sky_zenith->CaptureVerification());
+                                    FrameCapture::Note(note.c_str());
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if (FrameCapture::Active()) {
+                        const auto note = fmt::format("\n  sky seam GPU verified {}",
+                            sky_seam->CaptureVerification());
+                        FrameCapture::Note(note.c_str());
+                    }
+                    v.host_buffers[ui] = result;
+                    v.host_offsets[ui] = 0;
+                    v.host_sizes[ui] = count * 4;
+                    v.host_strides[ui] = 4;
+                    for (auto& binding : v.bindings)
+                        if (binding.binding == ui) binding.stride = 4;
+                }
+            }
+        }
+    }
     const auto state = BeginRendering(pipeline);
     if (ProxyTraceOn()) {
         const auto target = cb_descs[0].first ? cb_descs[0].first : db_desc.first;
@@ -2040,7 +2234,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                         target ? &texture_cache.GetImage(target) : nullptr);
     }
 
-    if (!inputs_resolved) {
+    if (!inputs_resolved && !sky_candidate) {
         ResolveVertexBuffers(pipeline, draw_prepared);
         if (is_indexed) {
             ResolveIndexBuffer(index_offset);
@@ -2156,6 +2350,436 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             GetDrawOffsets(regs, pipeline->GetStage(Shader::SwStage::Vertex), pipeline->GetFetchShader());
         EffectsBeforeBind(regs, pipeline, is_indexed, index_offset, effect_first_vertex);
     }
+    static const u32 capture_pom_patch = [] {
+        const char* flag = std::getenv("BB_POM_PATCH_CAPTURE");
+        if (!flag || !flag[0] || (flag[0] == '0' && flag[1] == '\0')) {
+            return 0u;
+        }
+        if ((flag[0] >= '1' && flag[0] <= '3') && flag[1] == '\0') {
+            return u32(flag[0] - '0');
+        }
+        std::printf("POM patch capture: invalid BB_POM_PATCH_CAPTURE; disabled\n");
+        return 0u;
+    }();
+    const bool capture_specular = SpecularCaptureEnabled();
+    const auto* capture_vertex = pipeline->GetStages()[u32(Shader::SwStage::Vertex)];
+    const auto* capture_fragment = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    const u64 capture_vs = capture_vertex ? capture_vertex->pgm_hash : 0;
+    const u64 capture_ps = capture_fragment ? capture_fragment->pgm_hash : 0;
+    const bool capture_patch_match =
+        capture_vs == 0xc829ee58 && capture_ps == 0x08ccd4c7 && regs.num_indices == 210;
+    const bool capture_neighbor_match =
+        (capture_vs == 0xc829ee58 && capture_ps == 0x08ccd4c7 && regs.num_indices == 4455) ||
+        (capture_vs == 0x9da6aacb && capture_ps == 0xca7226ec && regs.num_indices == 30096);
+    const bool capture_specular_match =
+        capture_specular && capture_vs == 0x8747a367 && capture_ps == 0xd92266b9;
+    std::filesystem::path specular_capture_directory;
+    const auto capture_specular_targets = [&](const std::filesystem::path& directory,
+                                              const char* phase) {
+        scheduler.EndRendering();
+        const bool include_depth = regs.depth_control.depth_enable &&
+                                   std::strcmp(phase, "before") == 0;
+        for (u32 local = 0; local < (include_depth ? 3u : 2u); ++local) {
+            const bool depth = local == 2;
+            const auto id = depth ? db_desc.first : cb_descs[local].first;
+            if (!id) return false;
+            auto& image = texture_cache.GetImage(id);
+            const bool format_ok = depth
+                                       ? (image.info.pixel_format == vk::Format::eD32SfloatS8Uint ||
+                                          image.info.pixel_format == vk::Format::eD32Sfloat)
+                                       : image.info.pixel_format == vk::Format::eB10G11R11UfloatPack32;
+            if (!format_ok ||
+                image.info.resources.layers != 1 || image.info.resources.levels != 1 ||
+                image.info.num_samples != 1 ||
+                (!depth && state.color_attachments[local].is_clear)) {
+                std::printf("Specular capture: unsupported lighting target %u\n", local);
+                return false;
+            }
+            const u64 bytes = u64(image.info.size.width) * image.info.size.height * 4;
+            if (!bytes || bytes > 32 * 1024 * 1024) {
+                std::printf("Specular capture: lighting target %u exceeds size limit\n", local);
+                return false;
+            }
+            // Runtime's range tracker uses the combined depth/stencil block size.
+            const u64 allocation_bytes = depth ? bytes * 2 : bytes;
+            VideoCore::Buffer readback(instance, 0, allocation_bytes, VideoCore::MemoryType::HostCached,
+                                       "Native specular target capture");
+            const vk::BufferImageCopy region{
+                .imageSubresource = {depth ? vk::ImageAspectFlagBits::eDepth
+                                          : vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                .imageExtent = {image.info.size.width, image.info.size.height, 1}};
+            runtime.DownloadImage(&image, &readback, std::span{&region, 1});
+            runtime.Transit(&image, depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                                         : vk::ImageLayout::eColorAttachmentOptimal,
+                            depth ? vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                        vk::PipelineStageFlagBits2::eLateFragmentTests
+                                  : vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                            depth ? vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+                                        vk::AccessFlagBits2::eDepthStencilAttachmentWrite
+                                  : vk::AccessFlagBits2::eColorAttachmentRead |
+                                        vk::AccessFlagBits2::eColorAttachmentWrite);
+            runtime.FlushBarriers();
+            scheduler.Record([](vk::CommandBuffer cmd) {
+                const vk::MemoryBarrier2 barrier{
+                    .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                    .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+                    .dstAccessMask = vk::AccessFlagBits2::eHostRead};
+                cmd.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &barrier});
+            });
+            scheduler.Finish();
+            readback.Invalidate(0, allocation_bytes);
+            const auto filename = depth ? "before-depth.bin" :
+                std::string(phase) + "-" + std::to_string(local) + ".bin";
+            std::ofstream file(directory / filename,
+                               std::ios::binary);
+            file.write(reinterpret_cast<const char*>(readback.mapped_data.data()),
+                       std::streamsize(bytes));
+            file.close();
+            if (!file) {
+                std::printf("Specular capture: lighting target write failed for %s\n",
+                            filename.c_str());
+                return false;
+            }
+        }
+        return true;
+    };
+    if (FrameCapture::Active() && (is_indexed || capture_specular_match) &&
+        (capture_specular_match ||
+         (capture_pom_patch && regs.depth_control.depth_enable &&
+          regs.depth_control.depth_write_enable &&
+          (capture_patch_match || (capture_pom_patch >= 2 && capture_neighbor_match))))) {
+        const char* capture_label = capture_specular_match ? "Specular" : "POM patch";
+        const char* capture_dir = std::getenv("BB_CAPTURE_DIR");
+        if (!capture_dir) {
+            std::printf("%s capture: BB_CAPTURE_DIR is required\n", capture_label);
+        } else {
+            struct Copy {
+                vk::Buffer source;
+                u64 offset, size, destination;
+                std::string name;
+            };
+            std::vector<Copy> copies;
+            u64 total = 0;
+            bool valid = true;
+            std::ostringstream metadata;
+            metadata << std::setprecision(9);
+            const auto add = [&](vk::Buffer buffer, u64 offset, u64 size, std::string name) {
+                if (!buffer || !size || size > 8 * 1024 * 1024) {
+                    std::printf("%s capture: unsupported %s, bytes %llu, bound %u\n",
+                                capture_label, name.c_str(),
+                                static_cast<unsigned long long>(size), u32(bool(buffer)));
+                    valid = false;
+                    return;
+                }
+                copies.push_back({buffer, offset, size, total, std::move(name)});
+                total += size;
+            };
+            const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
+            const auto [base, first_instance] = GetDrawOffsets(regs, vs, pipeline->GetFetchShader());
+            const u32 index_bytes = index_bind.type == vk::IndexType::eUint16 ? 2 :
+                                    index_bind.type == vk::IndexType::eUint32 ? 4 : 0;
+            metadata << "version 3\nvs " << std::hex << capture_vs << "\nps " << capture_ps
+                     << std::dec << "\nindices " << regs.num_indices << "\nindex_bytes "
+                     << index_bytes << "\nbase_vertex " << s32(base) << "\nfirst_instance "
+                     << first_instance << "\ninstances " << regs.num_instances.NumInstances()
+                     << "\nprimitive " << u32(regs.primitive_type) << '\n';
+            metadata << "viewport " << regs.viewports[0].xscale << ' '
+                     << regs.viewports[0].xoffset << ' ' << regs.viewports[0].yscale << ' '
+                     << regs.viewports[0].yoffset << '\n';
+            if (capture_specular_match) {
+                metadata << "pipeline_key " << std::hex
+                         << std::hash<GraphicsPipelineKey>{}(pipeline->GetGraphicsKey()) << std::dec
+                         << "\nspecular_capture 1\nindexed " << is_indexed << "\ndepth_test "
+                         << u32(regs.depth_control.depth_enable) << "\nstencil_test "
+                         << u32(regs.depth_control.stencil_enable) << "\ndepth_func "
+                         << u32(regs.depth_control.depth_func) << "\ndepth_write "
+                         << u32(regs.depth_control.depth_write_enable) << "\ndepth_bounds "
+                         << u32(regs.depth_control.depth_bounds_enable) << "\nhost_topology "
+                         << u32(LiverpoolToVK::PrimitiveType(pipeline->GetGraphicsKey().prim_type))
+                         << '\n';
+                metadata << "depth_format "
+                         << (db_desc.first ? u32(texture_cache.GetImage(db_desc.first).info.pixel_format)
+                                           : 0u) << '\n';
+                for (u32 stage = 0; stage < MaxShaderStages; ++stage)
+                    if (pipeline->GetStages()[stage])
+                        metadata << "shader_key " << stage << ' ' << std::hex
+                                 << pipeline->GetGraphicsKey().stage_hashes[stage]
+                                 << std::dec << '\n';
+                for (u32 i = 0; i < 2; ++i) {
+                    if (!cb_descs[i].first) { valid = false; break; }
+                    const auto& target = texture_cache.GetImage(cb_descs[i].first);
+                    metadata << "target " << i << " format " << u32(target.info.pixel_format)
+                             << " width " << target.info.size.width << " height "
+                             << target.info.size.height << '\n';
+                }
+            }
+            if (is_indexed)
+                add(index_bind.handle, index_bind.offset, u64(regs.num_indices) * index_bytes,
+                    "indices.bin");
+            const auto& v = vertex_binds;
+            for (u32 i = 0; i < v.num_buffers; ++i) {
+                add(v.host_buffers[i], v.host_offsets[i], v.host_sizes[i],
+                    "vertex-" + std::to_string(i) + ".bin");
+                metadata << "vertex " << i << " stride " << v.host_strides[i] << " bytes "
+                         << v.host_sizes[i] << '\n';
+            }
+            for (const auto& a : v.attributes)
+                metadata << "attribute " << a.location << " binding " << a.binding
+                         << " offset " << a.offset << " format " << u32(a.format) << '\n';
+            u32 buffer_binding = 0, image_binding = 0;
+            for (const auto* stage : pipeline->GetStages()) {
+                if (!stage) continue;
+                for (u32 i = 0; i < stage->buffers.size(); ++i, ++buffer_binding) {
+                    const auto& resource = stage->buffers[i];
+                    if (buffer_binding >= buffer_infos.size()) { valid = false; break; }
+                    if (resource.IsSpecial() && !capture_specular_match) continue;
+                    const auto& info = buffer_infos[buffer_binding];
+                    if (capture_specular_match &&
+                        resource.buffer_type == Shader::BufferType::ClipPlanes &&
+                        !info.buffer && regs.clipper_control.user_clip_plane_enable == 0) {
+                        metadata << "unused_null_clip_planes " << buffer_binding << '\n';
+                        continue;
+                    }
+                    const VAddr address =
+                        resource.IsSpecial() ? 0 : resource.GetSharp(*stage).base_address;
+                    add(info.buffer, info.offset, info.range,
+                        "constant-" + std::to_string(buffer_binding) + ".bin");
+                    metadata << "constant " << buffer_binding << " stage " << u32(stage->sw_stage)
+                             << " local " << i << " guest " << std::hex << address
+                             << std::dec << " bytes " << info.range << " push_offset "
+                             << u32(push_data.buf_offsets[buffer_binding]) << '\n';
+                    if (capture_specular_match)
+                        metadata << "buffer_type " << buffer_binding << " uniform "
+                                 << resource.is_uniform << " special " << resource.IsSpecial()
+                                 << '\n';
+                }
+                for (u32 i = 0; i < stage->images.size(); ++i, ++image_binding) {
+                    const auto sharp = stage->images[i].GetSharp(*stage);
+                    std::array<u32, 8> words;
+                    std::memcpy(words.data(), &sharp, sizeof(words));
+                    metadata << "image " << image_binding << " stage " << u32(stage->sw_stage)
+                             << " local " << i << " sharp";
+                    for (u32 word : words) metadata << ' ' << std::hex << word;
+                    metadata << std::dec << '\n';
+                }
+                for (u32 i = 0; i < stage->samplers.size(); ++i) {
+                    const auto sharp = stage->samplers[i].GetSharp(*stage);
+                    std::array<u32, sizeof(sharp) / sizeof(u32)> words;
+                    std::memcpy(words.data(), &sharp, sizeof(sharp));
+                    metadata << "sampler_guest stage " << u32(stage->sw_stage)
+                             << " local " << i << " sharp";
+                    for (u32 word : words) metadata << ' ' << std::hex << word;
+                    metadata << std::dec << '\n';
+                    auto effective = sharp;
+                    ForceAnisotropy(effective, stage->samplers[i].is_depth);
+                    std::memcpy(words.data(), &effective, sizeof(effective));
+                    metadata << "sampler_effective stage " << u32(stage->sw_stage)
+                             << " local " << i << " lod_bias "
+                             << (stage->samplers[i].is_depth ? 0.0f : sampler_lod_bias)
+                             << " sharp";
+                    for (u32 word : words) metadata << ' ' << std::hex << word;
+                    metadata << std::dec << '\n';
+                    const bool aniso = instance.IsAnisotropicFilteringSupported() &&
+                        (AmdGpu::IsAnisoFilter(effective.xy_mag_filter) ||
+                         AmdGpu::IsAnisoFilter(effective.xy_min_filter));
+                    metadata << "sampler_host stage " << u32(stage->sw_stage) << " local " << i
+                             << " min " << u32(LiverpoolToVK::Filter(effective.xy_min_filter))
+                             << " mag " << u32(LiverpoolToVK::Filter(effective.xy_mag_filter))
+                             << " mip " << u32(LiverpoolToVK::MipFilter(effective.mip_filter))
+                             << " u " << u32(LiverpoolToVK::ClampMode(effective.clamp_x))
+                             << " v " << u32(LiverpoolToVK::ClampMode(effective.clamp_y))
+                             << " w " << u32(LiverpoolToVK::ClampMode(effective.clamp_z))
+                             << " bias " << std::clamp(
+                                    effective.LodBias() +
+                                        (stage->samplers[i].is_depth ? 0.0f : sampler_lod_bias),
+                                    -instance.MaxSamplerLodBias(), instance.MaxSamplerLodBias())
+                             << " min_lod " << effective.MinLod()
+                             << " max_lod " << effective.MaxLod()
+                             << " aniso " << (aniso ? std::clamp(effective.MaxAniso(), 1.0f,
+                                                                instance.MaxSamplerAnisotropy())
+                                                    : 1.0f)
+                             << " aniso_enable " << aniso
+                             << " compare_enable " << stage->samplers[i].is_depth
+                             << " compare_op "
+                             << u32(LiverpoolToVK::DepthCompare(effective.depth_compare_func))
+                             << " border "
+                             << u32(LiverpoolToVK::BorderColor(effective.border_color_type))
+                             << '\n';
+                }
+            }
+            if (!valid || total > 32 * 1024 * 1024) {
+                std::printf("%s capture: unsupported buffer layout; no dump written\n",
+                            capture_label);
+            } else {
+                std::error_code error;
+                static u32 sequence = 0;
+                std::filesystem::path directory;
+                bool created = false;
+                do {
+                    directory = std::filesystem::path(capture_dir) /
+                                ((capture_specular_match ? "specular-input-" :
+                                  capture_pom_patch == 3 ? "pom-material-" :
+                                  capture_pom_patch == 2 ? "pom-neighbor-" : "pom-patch-") +
+                                 std::to_string(sequence++));
+                    created = std::filesystem::create_directory(directory, error);
+                } while (!created && !error && sequence < 10000);
+                if (!created || error) {
+                    std::printf("%s capture: cannot create output directory (%s)\n",
+                                capture_label, error.message().c_str());
+                } else {
+                    VideoCore::Buffer readback(instance, 0, total, VideoCore::MemoryType::HostCached,
+                                               "POM patch explicit capture");
+                    scheduler.EndRendering();
+                    scheduler.Record([copies, dst = readback.Handle()](vk::CommandBuffer cmd) {
+                        const vk::MemoryBarrier2 before{
+                            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                            .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                            .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                            .dstAccessMask = vk::AccessFlagBits2::eTransferRead};
+                        cmd.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &before});
+                        for (const auto& copy : copies)
+                            cmd.copyBuffer(copy.source, dst,
+                                           vk::BufferCopy{copy.offset, copy.destination, copy.size});
+                        const vk::MemoryBarrier2 after{
+                            .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                            .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+                            .dstAccessMask = vk::AccessFlagBits2::eHostRead};
+                        cmd.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
+                    });
+                    scheduler.Finish();
+                    readback.Invalidate(0, total);
+                    bool written = true;
+                    for (const auto& copy : copies) {
+                        std::ofstream file(directory / copy.name, std::ios::binary);
+                        file.write(reinterpret_cast<const char*>(readback.mapped_data.data()) +
+                                       copy.destination, std::streamsize(copy.size));
+                        file.close();
+                        written &= bool(file);
+                    }
+                    if (((capture_pom_patch == 3 && capture_patch_match) ||
+                         capture_specular_match) && written) {
+                        const u32 image_count = capture_specular_match ? 5 : 3;
+                        if (image_infos.size() < image_count) {
+                            std::printf("%s capture: not enough bound images\n", capture_label);
+                            written = false;
+                        }
+                        for (u32 local = 0; written && local < image_count; ++local) {
+                            VideoCore::Image* image = nullptr;
+                            const VideoCore::ImageViewInfo* view = nullptr;
+                            for (const auto id : bound_images) {
+                                if (!id) continue;
+                                auto& candidate = texture_cache.GetImage(id);
+                                for (const auto view_id : candidate.backing->image_view_ids) {
+                                    const auto& candidate_view = texture_cache.GetImageView(view_id);
+                                    if (*candidate_view.image_view == image_infos[local].imageView) {
+                                        image = &candidate;
+                                        view = &candidate_view.info;
+                                        break;
+                                    }
+                                }
+                                if (image) break;
+                            }
+                            const bool format_ok = image &&
+                                (capture_specular_match
+                                     ? (image->info.pixel_format == vk::Format::eR8G8B8A8Unorm ||
+                                        image->info.pixel_format == vk::Format::eR32Sfloat)
+                                     : (image->info.pixel_format == vk::Format::eBc1RgbaUnormBlock ||
+                                        image->info.pixel_format == vk::Format::eBc4UnormBlock));
+                            if (!image || !view || image->info.resources.layers != 1 ||
+                                image->info.num_samples != 1 ||
+                                !format_ok ||
+                                view->range.base.layer != 0 || view->range.extent.layers != 1) {
+                                std::printf("%s capture: unsupported bound image %u\n",
+                                            capture_label, local);
+                                written = false;
+                                break;
+                            }
+                            std::vector<vk::BufferImageCopy> regions;
+                            u64 image_bytes = 0;
+                            for (u32 mip = 0; mip < image->info.resources.levels; ++mip) {
+                                const u32 width = std::max(1u, image->info.size.width >> mip);
+                                const u32 height = std::max(1u, image->info.size.height >> mip);
+                                const u64 bytes = capture_specular_match
+                                                      ? u64(width) * height * 4
+                                                      : u64((width + 3) / 4) * ((height + 3) / 4) * 8;
+                                regions.push_back({
+                                    .bufferOffset = image_bytes,
+                                    .imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, 0, 1},
+                                    .imageExtent = {width, height, 1}});
+                                metadata << "gpu_mip " << local << " level " << mip << " width "
+                                         << width << " height " << height << " offset "
+                                         << image_bytes << " bytes " << bytes << '\n';
+                                image_bytes += bytes;
+                            }
+                            if (image_bytes > (capture_specular_match ? 32u : 8u) * 1024 * 1024) {
+                                std::printf("%s capture: image %u exceeds size limit\n",
+                                            capture_label, local);
+                                written = false;
+                                break;
+                            }
+                            if (capture_specular_match && local == 0 && written) {
+                                std::ofstream push_file(directory / "push-data.bin", std::ios::binary);
+                                push_file.write(reinterpret_cast<const char*>(&push_data),
+                                                sizeof(push_data));
+                                push_file.close();
+                                written = bool(push_file) &&
+                                          capture_specular_targets(directory, "before");
+                            }
+                            metadata << "gpu_image " << local << " format "
+                                     << u32(image->info.pixel_format) << " view_format "
+                                     << u32(view->format) << " base_mip " << view->range.base.level
+                                     << " mip_count " << view->range.extent.levels << " mapping "
+                                     << u32(view->mapping.r) << ' ' << u32(view->mapping.g) << ' '
+                                     << u32(view->mapping.b) << ' ' << u32(view->mapping.a) << '\n';
+                            VideoCore::Buffer texture_readback(
+                                instance, 0, image_bytes, VideoCore::MemoryType::HostCached,
+                                "POM material texture readback");
+                            runtime.DownloadImage(image, &texture_readback, regions);
+                            runtime.Transit(image, image_infos[local].imageLayout,
+                                            vk::PipelineStageFlagBits2::eFragmentShader,
+                                            vk::AccessFlagBits2::eShaderSampledRead);
+                            runtime.FlushBarriers();
+                            scheduler.Record([](vk::CommandBuffer cmd) {
+                                const vk::MemoryBarrier2 barrier{
+                                    .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                                    .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                                    .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+                                    .dstAccessMask = vk::AccessFlagBits2::eHostRead};
+                                cmd.pipelineBarrier2(
+                                    {.memoryBarrierCount = 1, .pMemoryBarriers = &barrier});
+                            });
+                            scheduler.Finish();
+                            texture_readback.Invalidate(0, image_bytes);
+                            std::ofstream file(
+                                directory / ("gpu-texture-" + std::to_string(local) + ".bin"),
+                                std::ios::binary);
+                            file.write(reinterpret_cast<const char*>(
+                                           texture_readback.mapped_data.data()),
+                                       std::streamsize(image_bytes));
+                            file.close();
+                            written &= bool(file);
+                        }
+                    }
+                    if (written) {
+                        std::ofstream file(directory / "metadata.txt");
+                        file << metadata.str();
+                        file.close();
+                        written &= bool(file);
+                    }
+                    if (capture_specular_match && written) specular_capture_directory = directory;
+                    std::printf("%s capture: %s in %s\n", capture_label,
+                                written ? "written" : "write failed; dump incomplete",
+                                directory.string().c_str());
+                    FrameCapture::Note(written ? "\n  captured explicit GPU draw inputs"
+                                               : "\n  explicit GPU draw capture failed");
+                    EmitVertexBuffers();
+                    if (is_indexed) EmitIndexBuffer();
+                }
+            }
+        }
+    }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
     if (capture_draw) {
@@ -2171,12 +2795,75 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         draw_jitter = upscaler->Jitter();
     }
     UpdateDynamicState(pipeline, is_indexed);
+    if (!specular_capture_directory.empty()) {
+        const auto& dynamic = scheduler.GetDynamicState();
+        std::ofstream metadata(specular_capture_directory / "metadata.txt", std::ios::app);
+        metadata << std::setprecision(9);
+        if (dynamic.viewports.size() == 1 && dynamic.scissors.size() == 1) {
+            const auto& viewport = dynamic.viewports.front();
+            const auto& scissor = dynamic.scissors.front();
+            metadata << "host_viewport " << viewport.x << ' ' << viewport.y << ' '
+                     << viewport.width << ' ' << viewport.height << ' '
+                     << viewport.minDepth << ' ' << viewport.maxDepth << "\nhost_scissor "
+                     << scissor.offset.x << ' ' << scissor.offset.y << ' '
+                     << scissor.extent.width << ' ' << scissor.extent.height << '\n';
+        }
+        metadata << "host_raster " << u32(dynamic.front_face) << ' ' << u32(dynamic.cull_mode)
+                 << ' ' << dynamic.rasterizer_discard_enable << ' '
+                 << dynamic.primitive_restart_enable << ' ' << dynamic.depth_bias_enabled
+                 << ' ' << dynamic.line_width << "\nhost_depth "
+                 << dynamic.depth_test_enabled << ' ' << dynamic.depth_write_enabled << ' '
+                 << u32(dynamic.depth_compare_op) << ' ' << dynamic.depth_bounds_test_enabled
+                 << ' ' << dynamic.stencil_test_enabled << "\nhost_color_masks";
+        for (auto mask : dynamic.color_write_masks) metadata << ' ' << u32(mask);
+        metadata << "\nhost_render_area " << state.width << ' ' << state.height << '\n';
+        metadata.close();
+        if (!metadata) {
+            std::printf("Specular capture: actual draw state write failed; dump incomplete\n");
+            specular_capture_directory.clear();
+        }
+    }
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
+
+    const auto* effect_hs = pipeline->GetStages()[u32(Shader::SwStage::TessellationControl)];
+    const auto* effect_ds = pipeline->GetStages()[u32(Shader::SwStage::TessellationEval)];
+    const auto* effect_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    if (!effect_hs && !effect_ds && effect_ps && is_indexed &&
+        pipeline->GetGraphicsKey().patch_control_points == 0 &&
+        regs.depth_control.depth_enable && regs.depth_control.depth_write_enable &&
+        HidePomDraw(effect_ps->pgm_hash, regs.num_indices)) {
+        if (FrameCapture::Active()) {
+            char note[128];
+            std::snprintf(note, sizeof(note), "\n  diagnostic omitted POM ps %08x idx %u",
+                          u32(effect_ps->pgm_hash), regs.num_indices);
+            FrameCapture::Note(note);
+        }
+        ResetBindings(false);
+        scheduler.KickRecording();
+        return;
+    }
+    if (effect_hs && effect_ds && effect_ps &&
+        pipeline->GetGraphicsKey().patch_control_points == 1 &&
+        regs.depth_control.depth_enable && !regs.depth_control.depth_write_enable &&
+        regs.blend_control[0].enable &&
+        HideTessellationEffect(effect_hs->pgm_hash, effect_ds->pgm_hash, effect_ps->pgm_hash)) {
+        if (FrameCapture::Active()) {
+            char note[160];
+            std::snprintf(note, sizeof(note),
+                          "\n  diagnostic omitted tess effect hs %08x ds %08x ps %08x idx %u",
+                          u32(effect_hs->pgm_hash), u32(effect_ds->pgm_hash),
+                          u32(effect_ps->pgm_hash), regs.num_indices);
+            FrameCapture::Note(note);
+        }
+        ResetBindings(false);
+        scheduler.KickRecording();
+        return;
+    }
 
     // bbport (docs/pipeline_compiles.md): a pipeline still compiling does not hold this thread
     // (nor the GPU command thread and the guest threads that drain behind it): the draw is left
@@ -2223,6 +2910,31 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             cmdbuf.endQuery(query.pool, query.index);
         }
     });
+    if (!specular_capture_directory.empty()) {
+        const bool written = capture_specular_targets(specular_capture_directory, "native");
+        if (written) {
+            std::ofstream complete(specular_capture_directory / "complete.txt");
+            complete << "native directional draw; GGX not active\n";
+            complete.close();
+            if (!complete)
+                std::printf("Specular capture: completion marker write failed\n");
+        } else {
+            std::printf("Specular capture: native output failed; dump incomplete\n");
+        }
+        FrameCapture::Note(written ? "\n  captured native directional lighting output"
+                                   : "\n  native directional lighting output capture failed");
+    }
+    if (sky_candidate && FrameCapture::Active() && cb_descs[0].first) {
+        const auto& sky = texture_cache.GetImage(cb_descs[0].first);
+        if (sky.info.pixel_format == vk::Format::eR16G16B16A16Sfloat) {
+            if (const char* dir = std::getenv("BB_CAPTURE_DIR")) {
+                // Read the rendered dome, not a cleared target or post-tonemap upscaler input.
+                scheduler.EndRendering();
+                texture_cache.DumpImagesAt(sky.info.guest_address, dir);
+                FrameCapture::Note("\n  captured sky HDR immediately after dome draw");
+            }
+        }
+    }
     EffectsAfterDraw(regs, pipeline, is_indexed, num_indices, num_instances, first_vertex);
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];

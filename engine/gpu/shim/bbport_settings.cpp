@@ -296,6 +296,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.graphics_controls=i!=0;
     } else if (key == "graphics_vignette") {
         v.graphics_vignette=i!=0;
+    } else if (key == "graphics_native_sss") {
+        v.graphics_native_sss=i!=0;
+    } else if (key == "graphics_directional_ggx") {
+        v.graphics_directional_ggx=i!=0;
     } else if (key == "graphics_ao_strength") {
         v.graphics_ao_strength=Clamp(std::isfinite(f)?f:1.0f,0.0f,5.0f);
     } else if (key == "graphics_gi_strength") {
@@ -550,6 +554,7 @@ void Load() {
     v.startup_frame_gen = v.frame_gen;
     v.startup_upscaler = v.upscaler;
     v.startup_motion_blur_quality = v.graphics_motion_blur_quality;
+    v.startup_directional_ggx = v.graphics_directional_ggx;
     v.startup_shadow_resolution = v.graphics_shadow_resolution;
     v.startup_local_shadow_resolution = v.graphics_local_shadow_resolution;
     v.startup_object_motion = v.object_motion;
@@ -713,6 +718,8 @@ void Save() {
     put("hdr_mode", HdrModeNames[std::clamp(v.hdr_mode.load(), 0, HdrModeCount - 1)]);
     put("graphics_controls",flag(v.graphics_controls));
     put("graphics_vignette",flag(v.graphics_vignette));
+    put("graphics_native_sss",flag(v.graphics_native_sss));
+    put("graphics_directional_ggx",flag(v.graphics_directional_ggx));
     put("graphics_ao_strength",fixed(v.graphics_ao_strength,2));
     put("graphics_gi_strength",fixed(v.graphics_gi_strength,2));
     put("graphics_volumetric_intensity",fixed(v.graphics_volumetric_intensity,2));

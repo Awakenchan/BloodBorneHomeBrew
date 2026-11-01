@@ -1097,25 +1097,32 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     const bool is_patched = patch && EmulatorSettings.IsPatchShaders();
     const auto effect_shader = EffectShaders::Replacement(info, profile, binding_before);
     const auto effect_patch = effect_shader.empty() ? EffectShaders::Patched(info, spv) : std::nullopt;
+    auto selected = is_patched ? std::span<const u32>(*patch)
+                      : !effect_shader.empty() ? effect_shader
+                      : effect_patch ? std::span<const u32>(*effect_patch)
+                                     : std::span<const u32>(spv);
+    const auto ggx = DirectionalGgxModule(info.pgm_hash,
+                                        info.hw_stage == Shader::HwStage::Fragment, selected);
+    if (!ggx.empty()) {
+        selected = ggx;
+    }
     if (is_patched) {
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
-        module = CompileSPV(*patch, instance.GetDevice());
-    } else if (!effect_shader.empty()) {
-        module = CompileSPV(effect_shader, instance.GetDevice());
-    } else if (effect_patch) {
-        module = CompileSPV(*effect_patch, instance.GetDevice());
-    } else {
-        module = CompileSPV(spv, instance.GetDevice());
     }
+    CaptureSpecularModule(info.pgm_hash, perm_idx, selected);
+    module = CompileSPV(selected, instance.GetDevice());
 
+    // Keep native binaries reusable; startup-only effects are selected again during warmup.
+    if (EmulatorSettings.IsShaderCollect()) {
+        const auto name = GetShaderName(info.hw_stage, info.pgm_hash, perm_idx);
+        DebugState.CollectShader(name, info.sw_stage, module, ggx.empty() ? std::span<const u32>(spv)
+                                                                       : std::span<const u32>(ggx),
+                                 code, patch ? *patch : std::span<const u32>{}, is_patched);
+    }
     RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);
 
     const auto name = GetShaderName(info.hw_stage, info.pgm_hash, perm_idx);
     Vulkan::SetObjectName(instance.GetDevice(), module, name);
-    if (EmulatorSettings.IsShaderCollect()) {
-        DebugState.CollectShader(name, info.sw_stage, module, spv, code,
-                                 patch ? *patch : std::span<const u32>{}, is_patched);
-    }
     return module;
 }
 

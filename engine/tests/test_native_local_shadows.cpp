@@ -3,6 +3,7 @@
 #include "../gpu/shim/bbport_platform.h"
 #include "../gpu/shim/bbport_settings.h"
 #include <array>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,19 @@ bool ReadProcessMemory(const void* p, void* out, size_t n) {
 }
 }
 #endif
+
+namespace BbEngine {
+bool host_read_safe(const void* p, void* out, std::size_t n) {
+    return BbPlatform::ReadProcessMemory(p, out, n);
+}
+void host_log(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    std::vprintf(format, args);
+    va_end(args);
+    std::putchar('\n');
+}
+}
 
 namespace {
 int failures = 0;

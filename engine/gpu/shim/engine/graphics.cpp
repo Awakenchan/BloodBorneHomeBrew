@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "graphics.h"
 #include "engine_hooks.h"
+#include "native_sss.h"
 #include "bbport_platform.h"
 #include "bbport_settings.h"
 #include <algorithm>
@@ -142,6 +143,7 @@ int g_blur_said = -1;
 
 GUEST_ABI std::int64_t BeforeRenderView(std::uint64_t, const std::uint64_t* saved) {
     const std::uint64_t r = saved[0];
+    Sss::BeforeRender(r);
     if (!r) return 0;
     std::scoped_lock lock(g_renderer_mutex);
     Renderer* own = nullptr;
@@ -422,6 +424,7 @@ bool Install(std::uint8_t* image, std::size_t size) {
         FreeStub(fog_stub);
     }
     g_post_block = image + block;
+    Sss::Install(image, size);
     Commit(hooks);
     if (fog) CommitFogUpload(image, fog_stub);
     g_enabled = true;

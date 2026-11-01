@@ -15,12 +15,14 @@
 #include <algorithm>
 #include <stdexcept>
 #include "bbport_threads.h"
+#include "bbport_settings.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/info.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_effect_shaders.h"
+#include "video_core/renderer_vulkan/vk_ggx_patch.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
@@ -29,11 +31,26 @@ namespace Serialization {
 static constexpr u32 ShaderBinaryVersion = 7u; // bbport: interpolated integer fix (Pascal)
 static constexpr u32 MotionShaderBinaryVersion = 8u; // runtime address descriptor, set 1
 static constexpr u32 CaptureShaderBinaryVersion = 9u;
+static constexpr u32 DirectionalGgxShaderBinaryVersion = 10u; // native recompiled, not lifted
 static constexpr u32 ShaderMetaVersion = 8u; // bbport: HwFragmentRuntimeInfo::depth_first
 static constexpr u32 PipelineKeyVersion = 6u; // pointer-free pipeline state + generated fragment
 } // namespace Serialization
 
 namespace Vulkan {
+
+static u32 ShaderBinaryVersion(const Shader::Info& info,
+                              const Shader::StageSpecialization& spec) {
+    if (info.hw_stage == Shader::HwStage::Vertex && spec.runtime_info.hw.vs.motion_vectors) {
+        return (spec.runtime_info.hw.vs.motion_vectors & Shader::MotionVectors::VertexCapture)
+                   ? Serialization::CaptureShaderBinaryVersion
+                   : Serialization::MotionShaderBinaryVersion;
+    }
+    if (info.hw_stage == Shader::HwStage::Fragment && info.pgm_hash == Ggx::DirectionalHash &&
+        BbSettings::Get().startup_directional_ggx) {
+        return Serialization::DirectionalGgxShaderBinaryVersion;
+    }
+    return Serialization::ShaderBinaryVersion;
+}
 
 void RegisterPipelineData(const ComputePipelineKey& key,
                           ComputePipeline::SerializationSupport& sdata) {
@@ -79,12 +96,7 @@ std::vector<u8> SerializeShaderMeta(const Shader::Info& info, const Shader::Stag
     Serialization::Writer meta{ar};
 
     meta.Write(Serialization::ShaderMetaVersion);
-    const bool vertex_motion = info.hw_stage == Shader::HwStage::Vertex &&
-                               spec.runtime_info.hw.vs.motion_vectors;
-    const bool vertex_capture = vertex_motion && (spec.runtime_info.hw.vs.motion_vectors & 2) != 0;
-    meta.Write(vertex_capture ? Serialization::CaptureShaderBinaryVersion
-                             : vertex_motion ? Serialization::MotionShaderBinaryVersion
-                             : Serialization::ShaderBinaryVersion);
+    meta.Write(ShaderBinaryVersion(info, spec));
     meta.Write(perm_hash);
     meta.Write(perm_idx);
     spec.Serialize(ar);
@@ -119,12 +131,7 @@ void RegisterShaderMeta(const Shader::Info& info,
     Serialization::Writer meta{ar};
 
     meta.Write(Serialization::ShaderMetaVersion);
-    const bool vertex_motion = info.hw_stage == Shader::HwStage::Vertex &&
-                               spec.runtime_info.hw.vs.motion_vectors;
-    const bool vertex_capture = vertex_motion && (spec.runtime_info.hw.vs.motion_vectors & 2) != 0;
-    meta.Write(vertex_capture ? Serialization::CaptureShaderBinaryVersion
-                             : vertex_motion ? Serialization::MotionShaderBinaryVersion
-                             : Serialization::ShaderBinaryVersion);
+    meta.Write(ShaderBinaryVersion(info, spec));
 
     meta.Write(perm_hash);
     meta.Write(perm_idx);
@@ -161,7 +168,8 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     meta.Read(binary_version);
     if (binary_version != Serialization::ShaderBinaryVersion &&
         binary_version != Serialization::MotionShaderBinaryVersion &&
-        binary_version != Serialization::CaptureShaderBinaryVersion) {
+        binary_version != Serialization::CaptureShaderBinaryVersion &&
+        binary_version != Serialization::DirectionalGgxShaderBinaryVersion) {
         return false;
     }
 
@@ -177,14 +185,9 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
         return false;
     }
 
-    // Only old motion vertex binaries embed process-local addresses. Other v7 shaders remain
-    // reusable; v8 motion binaries load the current addresses from a renderer-owned descriptor.
-    const bool vertex_motion = info.hw_stage == Shader::HwStage::Vertex &&
-                               spec.runtime_info.hw.vs.motion_vectors;
-    const bool vertex_capture = vertex_motion && (spec.runtime_info.hw.vs.motion_vectors & 2) != 0;
-    if (binary_version != (vertex_capture ? Serialization::CaptureShaderBinaryVersion
-                             : vertex_motion ? Serialization::MotionShaderBinaryVersion
-                                        : Serialization::ShaderBinaryVersion)) {
+    // Changing the GGX startup model rebuilds only its directional shader: lifted native
+    // binaries cannot satisfy the exact patch gates, and disabling GGX restores upstream lifting.
+    if (binary_version != ShaderBinaryVersion(info, spec)) {
         return false;
     }
 
@@ -464,9 +467,16 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         const auto effect_shader = EffectShaders::Replacement(program->info, profile, spec.start);
         const auto effect_patch =
             effect_shader.empty() ? EffectShaders::Patched(program->info, spv) : std::nullopt;
-        const std::span<const u32> code = !effect_shader.empty() ? effect_shader
-                                          : effect_patch         ? std::span<const u32>(*effect_patch)
-                                                                 : std::span<const u32>(spv);
+        std::span<const u32> code = !effect_shader.empty() ? effect_shader
+                                     : effect_patch         ? std::span<const u32>(*effect_patch)
+                                                            : std::span<const u32>(spv);
+        const auto ggx = DirectionalGgxModule(program->info.pgm_hash,
+                                              program->info.hw_stage == Shader::HwStage::Fragment,
+                                              code);
+        if (!ggx.empty()) {
+            code = ggx;
+        }
+        CaptureSpecularModule(program->info.pgm_hash, perm_idx, code);
         const auto [result, compiled] = instance.GetDevice().createShaderModule(
             {.codeSize = code.size_bytes(), .pCode = code.data()});
         if (result != vk::Result::eSuccess) {

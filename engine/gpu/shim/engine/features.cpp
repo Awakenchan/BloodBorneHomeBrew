@@ -14,6 +14,7 @@
 #include "game_status.h"
 #include "job_slots.h"
 #include "graphics.h"
+#include "native_sss.h"
 #include "loading.h"
 #include "menu_memory.h"
 #include "online_fixes.h"
@@ -64,6 +65,7 @@ std::int64_t __attribute__((sysv_abi)) OnStep(std::uint64_t, const std::uint64_t
 std::int64_t __attribute__((sysv_abi)) OnFrame(std::uint64_t, const std::uint64_t* saved) {
     FrameRate::Tick();
     Loading::Tick(saved[5]);
+    Sss::Tick();
     ChangeAppearance::Tick();
     BbFaceShot::Tick(ChangeAppearance::PreviewShown() && Seamless());
     Rebirth::Tick();

@@ -20,19 +20,24 @@ struct PomShader {
     uint32_t step_id;
     uint32_t steps_convert;
     uint32_t preheader;
+    uint32_t iteration_phi;
+    uint32_t upper_layer_cast;
 };
 
 inline constexpr std::array<PomShader, 3> kShaders{{
-    {0x053bbf3b, 8006, 0xa573c2dc, 741, {739, 740, 0, 0}, {642, 644, 0, 0}, 734, 732, 118},
-    {0x505acc58, 8252, 0x95faa9a2, 718, {716, 717, 0, 0}, {645, 646, 0, 0}, 712, 710, 120},
+    {0x053bbf3b, 8006, 0xa573c2dc, 741, {739, 740, 0, 0}, {642, 644, 0, 0}, 734, 732, 118,
+     736, 775},
+    {0x505acc58, 8252, 0x95faa9a2, 718, {716, 717, 0, 0}, {645, 646, 0, 0}, 712, 710, 120,
+     713, 751},
     {0x08ccd4c7, 10337, 0x64e132cc, 993, {989, 990, 991, 992}, {904, 905, 907, 908}, 985, 983,
-     126},
+     126, 986, 1043},
 }};
 
-constexpr uint32_t kOpEntryPoint = 15, kOpTypeInt = 21, kOpTypeFloat = 22, kOpTypeVector = 23,
+constexpr uint32_t kOpEntryPoint = 15, kOpTypeBool = 20, kOpTypeInt = 21, kOpTypeFloat = 22, kOpTypeVector = 23,
                    kOpTypePointer = 32, kOpConstant = 43, kOpFunction = 54, kOpVariable = 59,
                    kOpLoad = 61, kOpDecorate = 71, kOpCompositeExtract = 81, kOpBitcast = 124,
-                   kOpFAdd = 129, kOpFSub = 131, kOpFMul = 133, kOpPhi = 245, kOpLabel = 248,
+                   kOpFAdd = 129, kOpFSub = 131, kOpFMul = 133, kOpSelect = 169, kOpIEqual = 170,
+                   kOpPhi = 245, kOpLabel = 248,
                    kOpBranch = 249, kOpConvertFToS = 110, kOpExtInst = 12, kOpExtInstImport = 11;
 
 inline uint32_t Word(uint32_t op, uint32_t len) {
@@ -175,14 +180,17 @@ inline void PatchPom(uint64_t pgm_hash, bool is_fragment, std::vector<uint32_t>&
         return;
     }
 
-    uint32_t f32 = 0, u32 = 0, vec4 = 0, ptr_vec4 = 0, glsl = 0;
+    uint32_t f32 = 0, u32 = 0, boolean = 0, zero = 0, vec4 = 0, ptr_vec4 = 0, glsl = 0;
     size_t entry = 0, first_decorate = 0, first_function = 0, convert = 0, terminator = 0;
-    size_t layer_phi = 0;
+    size_t layer_phi = 0, iteration_phi = 0, upper_layer_cast = 0;
     std::array<size_t, 4> uv_phi{};
     bool in_preheader = false;
     for (size_t i = 5; i < spv.size(); i += spv[i] >> 16) {
         const uint32_t op = spv[i] & 0xffff;
         switch (op) {
+        case kOpTypeBool:
+            boolean = spv[i + 1];
+            break;
         case kOpEntryPoint:
             entry = i;
             break;
@@ -194,6 +202,16 @@ inline void PatchPom(uint64_t pgm_hash, bool is_fragment, std::vector<uint32_t>&
         case kOpTypeInt:
             if (spv[i + 2] == 32 && spv[i + 3] == 0) {
                 u32 = spv[i + 1];
+            }
+            break;
+        case kOpConstant:
+            if (spv[i + 1] == u32 && spv[i + 3] == 0) {
+                zero = spv[i + 2];
+            }
+            break;
+        case kOpBitcast:
+            if (spv[i + 2] == shader->upper_layer_cast) {
+                upper_layer_cast = i;
             }
             break;
         case kOpTypeVector:
@@ -228,6 +246,9 @@ inline void PatchPom(uint64_t pgm_hash, bool is_fragment, std::vector<uint32_t>&
             if (spv[i + 2] == shader->layer_phi) {
                 layer_phi = i;
             }
+            if (spv[i + 2] == shader->iteration_phi) {
+                iteration_phi = i;
+            }
             for (size_t k = 0; k < 4; k++) {
                 if (shader->uv_phi[k] && spv[i + 2] == shader->uv_phi[k]) {
                     uv_phi[k] = i;
@@ -256,11 +277,39 @@ inline void PatchPom(uint64_t pgm_hash, bool is_fragment, std::vector<uint32_t>&
             uv_count++;
         }
     }
-    if (!f32 || !u32 || !vec4 || !ptr_vec4 || !glsl || !entry || !first_decorate ||
+    if (!f32 || !u32 || !boolean || !zero || !vec4 || !ptr_vec4 || !glsl || !entry || !first_decorate ||
         !first_function || !convert || !terminator || !layer_phi || !uv_count ||
-        !(convert < terminator && terminator < layer_phi) || spv[layer_phi + 3] == 0) {
+        !iteration_phi || !upper_layer_cast ||
+        !(convert < terminator && terminator < layer_phi && layer_phi < upper_layer_cast) ||
+        spv[layer_phi + 3] == 0 || spv[iteration_phi + 1] != u32 ||
+        spv[upper_layer_cast + 1] != u32) {
         return;
     }
+
+    const auto initial_operand = [&](size_t phi) -> size_t {
+        const size_t end = phi + (spv[phi] >> 16);
+        for (size_t p = phi + 3; p + 1 < end; p += 2) {
+            if (spv[p + 1] == shader->preheader) return p;
+        }
+        return 0;
+    };
+    const size_t layer_initial = initial_operand(layer_phi);
+    const size_t iteration_initial = initial_operand(iteration_phi);
+    std::array<size_t, 4> uv_initial{};
+    if (!layer_initial || !iteration_initial || spv[iteration_initial] != zero) return;
+    for (size_t k = 0; k < uv_count; ++k) {
+        uv_initial[k] = initial_operand(uv_phi[k]);
+        if (!uv_initial[k]) return;
+    }
+    bool valid_upper = false;
+    for (size_t i = 5; i < spv.size(); i += spv[i] >> 16) {
+        if ((spv[i] & 0xffff) == kOpFAdd && spv[i + 2] == spv[upper_layer_cast + 3]) {
+            valid_upper = i < upper_layer_cast && spv[i + 1] == f32 &&
+                          spv[i + 3] == shader->step_id;
+            break;
+        }
+    }
+    if (!valid_upper) return;
 
     uint32_t next_id = spv[3];
     const auto alloc = [&] { return next_id++; };
@@ -304,25 +353,22 @@ inline void PatchPom(uint64_t pgm_hash, bool is_fragment, std::vector<uint32_t>&
         emit({kOpFSub, f32, start, spv[uv_phi[k] + 3], moved});
     }
 
-    const auto set_initial = [&](size_t phi, uint32_t value) {
-        const size_t end = phi + (spv[phi] >> 16);
-        for (size_t p = phi + 3; p + 1 < end; p += 2) {
-            if (spv[p + 1] == shader->preheader) {
-                spv[p] = value;
-                return true;
-            }
-        }
-        return false;
-    };
-    bool ok = set_initial(layer_phi, layer_u);
+    spv[layer_initial] = layer_u;
     for (size_t k = 0; k < uv_count; k++) {
-        ok = set_initial(uv_phi[k], uv_new[k]) && ok;
-    }
-    if (!ok) {
-        return;
+        spv[uv_initial[k]] = uv_new[k];
     }
     spv[convert + 3] = steps_scaled;
 
+    // The dithered first layer has no sampled predecessor. Keep the top surface as its
+    // upper hit bracket; using the dithered layer with synthetic height one can divide by zero.
+    const uint32_t first_step = alloc(), upper_layer = alloc();
+    const std::array<uint32_t, 11> bracket_ins{
+        Word(kOpIEqual, 5), boolean, first_step, shader->iteration_phi, zero,
+        Word(kOpSelect, 6), f32, upper_layer, first_step, c_one, spv[upper_layer_cast + 3]};
+    spv[upper_layer_cast + 3] = upper_layer;
+
+    // Insert from the back so earlier positions stay valid.
+    spv.insert(spv.begin() + upper_layer_cast, bracket_ins.begin(), bracket_ins.end());
     spv.insert(spv.begin() + terminator, ins.begin(), ins.end());
     spv.insert(spv.begin() + convert, steps_ins.begin(), steps_ins.end());
     std::vector<uint32_t> globals;
