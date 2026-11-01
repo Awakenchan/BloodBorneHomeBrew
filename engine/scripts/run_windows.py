@@ -376,6 +376,37 @@ def main():
             print(f"Widescreen: UI viewport {info['ui_size']} (the 16:9 stage centred in it)", flush=True)
         else:
             os.environ.pop('BB_UI_SIZE', None)
+        # Widescreen on a screen of another shape: widened copies of the menu movies mounted over
+        # the game's (BB_WIDE_UI_MOVIES) and the PC menus' optionsetting.gfx (BB_WIDE_OPTION_MOVIE),
+        # as bb-start.exe does (start/main.cpp).
+        for key in ('BB_WIDE_UI_MOVIES', 'BB_WIDE_OPTION_MOVIE'):
+            os.environ.pop(key, None)
+        # Only a UI viewport of another shape than 16:9, as bb-start.exe has it.
+        ui = [int(v) for v in os.environ.get('BB_UI_SIZE', '1920x1080').split('x')]
+        wide_ui = ui[0] * 1080 != ui[1] * 1920
+        if wide_ui:
+            from engine_assets import prepare_wide_movies
+            try:
+                width, height = (int(v) for v in os.environ['BB_UI_SIZE'].split('x'))
+                option_movie = None
+                if os.environ.get('BB_PC_MENU_ASSETS'):
+                    prepared = Path(os.environ['BB_PC_MENU_ASSETS']) / 'dvdroot_ps4/menu/optionsetting.gfx'
+                    option_movie = prepared if prepared.is_file() else None
+                movies = prepare_wide_movies(merged, option_movie, data / 'engine-assets',
+                                             out / 'bb-engine-assets.exe', width, height)
+                listing = ''
+                for relative, path, _ in movies:
+                    if option_movie and relative == 'dvdroot_ps4/menu/optionsetting.gfx':
+                        os.environ['BB_WIDE_OPTION_MOVIE'] = str(path)
+                    else:
+                        listing += f'{relative}\t{path}\n'
+                if listing:
+                    (out / 'wide-ui-movies.txt').write_text(listing, encoding='utf-8')
+                    os.environ['BB_WIDE_UI_MOVIES'] = str(out / 'wide-ui-movies.txt')
+                print(f"Widescreen: {len(movies)} menu movies' full-screen dims, fades and bands widened for "
+                      f"{os.environ['BB_UI_SIZE']}", flush=True)
+            except (OSError, ValueError) as error:
+                print(f"Widescreen: the menus' full-screen dims and fades stay 16:9: {error}", flush=True)
         if heaps and 'BB_DMEM_MB' not in os.environ:
             os.environ['BB_DMEM_MB'] = '9152'
             print("Patches: the game's heaps are enlarged; direct memory 9152 MiB", flush=True)

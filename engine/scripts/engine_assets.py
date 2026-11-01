@@ -379,3 +379,70 @@ def prepare_menu_assets(game, elf_path, cache, tool, rebirth=False, host_title='
     temporary.write_text(json.dumps({'generator': generator, 'files': rows}, indent=2), encoding='utf-8')
     os.replace(temporary, manifest_path)
     return root.resolve()
+
+
+def prepare_wide_movies(game, option_movie, cache, tool, width, height):
+    """Widescreen: the game's menu movies whose full-screen dims, fades and bands stop at the
+    16:9 stage's edges, widened by tool (bb-engine-assets wide-movies) for the UI viewport
+    width x height (BB_UI_SIZE) into cache/wide-ui-py/WxH, and kept while the movies, the tool and the
+    size stay the same. option_movie, when given, is the PC menus' optionsetting.gfx, widened in
+    place of the game's. Returns (relative path, file, what changed) for each movie made. As
+    start/assets.cpp PrepareWideMovies."""
+    game, tool = Path(game), Path(tool)
+    size = f'{width}x{height}'
+    # Apart from bb-start.exe's cache/wide-ui: the two take a file's time from different clocks, and
+    # in one folder each would make the other's movies again at every start.
+    root = Path(cache) / 'wide-ui-py' / size
+    option = 'dvdroot_ps4/menu/optionsetting.gfx'
+    sources = sorted((f'dvdroot_ps4/menu/{p.name}', Path(option_movie) if p.name == 'optionsetting.gfx' and option_movie else p)
+                     for p in (game / 'dvdroot_ps4/menu').glob('*.gfx') if p.is_file())
+    if not sources:
+        raise ValueError(f'no menu movies in {game / "dvdroot_ps4/menu"}')
+    # Told by each file's size and time: hashing some 70 movies at every start took longer than the
+    # check is worth.
+    def stamp(path):
+        try:
+            info = path.stat()
+        except OSError:
+            return 'missing'
+        return f'{info.st_size}:{info.st_mtime_ns}'
+    key = sha(f'{stamp(tool)} {size}'.encode() +
+              b''.join(f'\n{relative} {stamp(source)}'.encode() for relative, source in sources))
+    manifest_path = root / 'manifest.json'
+    try:
+        previous = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        previous = {}
+    if previous.get('key') == key and 'files' in previous:
+        made = [(f['relative'], root / f['relative'], f.get('note', '')) for f in previous['files']]
+        try:
+            if all(stamp(path) == f['output'] for (_, path, _), f in zip(made, previous['files'])):
+                return made
+        except (OSError, KeyError):
+            pass
+    # Only the movies this made before are removed: a movie that needs nothing now must not stay.
+    for f in previous.get('files', []):
+        if f.get('relative'):
+            (root / f['relative']).unlink(missing_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    listing = root / 'sources.txt'
+    listing.write_text(''.join(f'{relative}\t{source}\n' for relative, source in sources), encoding='utf-8')
+    result = subprocess.run([str(tool), 'wide-movies', size, str(listing), str(root)],
+                            capture_output=True, text=True, encoding='utf-8', errors='replace')
+    if result.returncode:
+        raise ValueError(f'the menu movie tool failed: {(result.stderr or result.stdout).strip()}')
+    made, rows = [], []
+    for line in result.stdout.splitlines():
+        relative, tab, note = line.partition('\t')
+        if not tab or not relative:
+            continue
+        if relative.startswith('!'):
+            print(f'Widescreen: {relative[1:]} left as it is: {note}', flush=True)
+            continue
+        path = root / relative
+        rows.append({'relative': relative, 'output': stamp(path), 'note': note})
+        made.append((relative, path, note))
+    temporary = manifest_path.with_suffix(f'.{os.getpid()}.tmp')
+    temporary.write_text(json.dumps({'key': key, 'files': rows}, indent=2), encoding='utf-8')
+    os.replace(temporary, manifest_path)
+    return made

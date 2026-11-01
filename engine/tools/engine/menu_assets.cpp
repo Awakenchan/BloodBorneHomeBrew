@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <set>
+#include <tuple>
 
 namespace menu_assets {
 namespace {
@@ -183,7 +185,10 @@ Place ReadPlace(const Tag& t) {
     if (t.code == kPlace3) more = std::uint8_t(Le(b, at++, 1));
     p.depth = U16(b, at);
     at += 2;
-    if (t.code == kPlace3 && ((more & 0x08) || ((more & 0x10) && (p.flags & 0x02)))) {
+    // A class name only with HasClassName. The SWF format also has one with HasImage and
+    // HasCharacter, but the game's movies set HasImage on placements of a character with no name
+    // after it (nowloading.gfx's spinner): read so, every placement after it was misplaced.
+    if (t.code == kPlace3 && (more & 0x08)) {
         while (at < b.size() && b[at]) ++at;
         ++at;
     }
@@ -508,6 +513,245 @@ void AddScrollBar(Movie& m) {
     m.tags[at] = WriteSprite(s);
 }
 
+// Widescreen (WideMovie): a placement's matrix as numbers, x' = a*x + c*y + tx, y' = b*x + d*y + ty
+// in twips, as the SWF matrix's ScaleX, RotateSkew0, RotateSkew1, ScaleY and translation.
+struct Affine {
+    double a = 1, b = 0, c = 0, d = 1, tx = 0, ty = 0;
+};
+Affine Of(const Matrix& m) {
+    Affine f;
+    if (m.scaled) f.a = Fixed(m.sx, m.scale_bits), f.d = Fixed(m.sy, m.scale_bits);
+    if (m.rotated) f.b = Fixed(m.r0, m.rotate_bits), f.c = Fixed(m.r1, m.rotate_bits);
+    f.tx = double(m.tx), f.ty = double(m.ty);
+    return f;
+}
+// `inner` applied first, then `outer`.
+Affine Then(const Affine& outer, const Affine& inner) {
+    return {outer.a * inner.a + outer.c * inner.b, outer.b * inner.a + outer.d * inner.b,
+            outer.a * inner.c + outer.c * inner.d, outer.b * inner.c + outer.d * inner.d,
+            outer.a * inner.tx + outer.c * inner.ty + outer.tx, outer.b * inner.tx + outer.d * inner.ty + outer.ty};
+}
+Matrix ToMatrix(const Affine& f) {
+    const auto fixed = [](double v) { return std::int64_t(std::llround(v * 65536.0)); };
+    const auto bits = [](std::int64_t v, int n) { return std::uint32_t(std::uint64_t(v) & ((std::uint64_t(1) << n) - 1)); };
+    Matrix m;
+    const std::int64_t sx = fixed(f.a), sy = fixed(f.d), r0 = fixed(f.b), r1 = fixed(f.c);
+    if (sx != 65536 || sy != 65536) {
+        m.scaled = true;
+        m.scale_bits = std::max(BitsFor(sx), BitsFor(sy));
+        m.sx = bits(sx, m.scale_bits), m.sy = bits(sy, m.scale_bits);
+    }
+    if (r0 || r1) {
+        m.rotated = true;
+        m.rotate_bits = std::max(BitsFor(r0), BitsFor(r1));
+        m.r0 = bits(r0, m.rotate_bits), m.r1 = bits(r1, m.rotate_bits);
+    }
+    m.tx = std::llround(f.tx), m.ty = std::llround(f.ty);
+    return m;
+}
+
+// A shape's bounds (twips) and whether it fills anything; per bitmap fill, how many twips one
+// texel spans across and down (20: one stage pixel).
+struct ShapeInfo {
+    double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    bool filled = false;
+    std::vector<std::pair<double, double>> texels;
+};
+std::optional<ShapeInfo> ReadShape(const Tag& t) {
+    if (t.code != 2 && t.code != 22 && t.code != 32 && t.code != 83) return std::nullopt;
+    const Bytes& b = t.body;
+    ShapeInfo s;
+    try {
+        BitReader r{b, 2};
+        const int n = int(r.Unsigned(5));
+        s.x0 = double(r.Signed(n)), s.x1 = double(r.Signed(n)), s.y0 = double(r.Signed(n)), s.y1 = double(r.Signed(n));
+        std::size_t at = r.End();
+        if (t.code == 83) {
+            BitReader edges{b, at};
+            const int e = int(edges.Unsigned(5));
+            edges.Unsigned(4 * e);
+            at = edges.End() + 1;
+        }
+        const bool rgba = t.code >= 32;
+        std::size_t count = Le(b, at++, 1);
+        if (count == 0xff && t.code != 2) count = U16(b, at), at += 2;
+        for (; count; --count) {
+            const std::uint8_t type = std::uint8_t(Le(b, at++, 1));
+            if (type == 0x00) {
+                at += rgba ? 4 : 3;
+            } else if (type == 0x10 || type == 0x12 || type == 0x13) {
+                BitReader m{b, at};
+                ReadMatrix(m);
+                at = m.End();
+                at += (Le(b, at, 1) & 15) * (rgba ? 5 : 4) + 1 + (type == 0x13 ? 2 : 0);
+            } else if (type >= 0x40 && type <= 0x43) {
+                BitReader m{b, at + 2};
+                const Affine f = Of(ReadMatrix(m));
+                at = m.End();
+                s.texels.emplace_back(std::hypot(f.a, f.b), std::hypot(f.c, f.d));
+            } else {
+                return std::nullopt;
+            }
+            s.filled = true;
+        }
+    } catch (const Error&) {
+        return std::nullopt;
+    }
+    return s;
+}
+
+// Widescreen: the movie's full-screen shapes (a dim, a fade) are drawn for the 1920x1080 stage, and
+// Scaleform shows the stage whole and centred in the wider UI viewport: they stopped at the 16:9
+// edges. Each colour or soft, magnified texture (the death screen's glow) placed over the whole
+// stage is stretched about its centre until it covers what the viewport shows of the movie. A
+// picture (a bitmap shown at less than two pixels a texel) is scaled the same both ways, cropped top
+// and bottom rather than stretched, except on the title screen, whose art keeps its shape with
+// black beside it. The scale goes into every placement that puts the shape on
+// its timeline (initial and animated), one per depth, the largest any position over the stage
+// needs: a zoom over the stage keeps its motion.
+struct Widening {
+    using Key = std::tuple<std::uint16_t, std::uint16_t, std::uint16_t>;  // container, depth, shape
+    struct Need {
+        double kx = 1, ky = 1;
+        bool picture = false;
+        // A band: over the stage's whole width (or a strip over its whole height at its side),
+        // widened across only; a strip about its inner edge (this x, in the shape's twips).
+        bool band = false;
+        std::optional<double> anchor_x;
+    };
+    std::map<std::uint16_t, ShapeInfo> shapes;
+    std::map<std::uint16_t, Sprite> sprites;
+    double vx0 = 0, vx1 = 0, vy0 = 0, vy1 = 0;
+    bool wider = false, taller = false;  // the viewport shows more than the stage across, down
+    std::map<Key, Need> needs;
+    std::set<std::uint16_t> left_pictures;  // bands of a picture, left as they are
+    // A placement is written once in its sprite's timeline, and every instance of the sprite has
+    // it: one also seen drawn small (under half the stage both ways: a panel's background) is left
+    // as it is, or that panel would stretch past its frame.
+    std::set<Key> drawn_small;
+    // Each sprite is walked under at most kPositions of the different matrices its timeline
+    // places it with (an animated parent places it with a new one every frame, and nested ones
+    // multiply): enough to see where it rests and how far it moves.
+    static constexpr std::size_t kPositions = 8;
+    // Over the whole stage (or its whole width or height), give or take 4 pixels: some are authored
+    // a pixel short.
+    static constexpr double kSlack = 4 * 20;
+    std::set<std::tuple<std::uint16_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t>> walked;
+    std::map<std::uint16_t, std::size_t> positions;
+    std::size_t visits = 0;
+
+    void Consider(std::uint16_t container, std::uint16_t depth, std::uint16_t id, const Affine& m) {
+        const ShapeInfo& s = shapes.at(id);
+        if (!s.filled || std::abs(m.b) > 1e-4 || std::abs(m.c) > 1e-4 || std::abs(m.a) < 1e-6 || std::abs(m.d) < 1e-6) return;
+        const double xa = m.a * s.x0 + m.tx, xb = m.a * s.x1 + m.tx, ya = m.d * s.y0 + m.ty, yb = m.d * s.y1 + m.ty;
+        const double x0 = std::min(xa, xb), x1 = std::max(xa, xb), y0 = std::min(ya, yb), y1 = std::max(ya, yb);
+        const bool across = x0 <= kSlack && x1 >= 1920 * 20 - kSlack, down = y0 <= kSlack && y1 >= 1080 * 20 - kSlack;
+        if (x1 - x0 < 960 * 20 && y1 - y0 < 540 * 20) drawn_small.insert({container, depth, id});
+        if (!across || !down) return Band(container, depth, id, m, x0, x1, across, down);
+        const double cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        if (cx <= vx0 || cx >= vx1 || cy <= vy0 || cy >= vy1) return;
+        Need& n = needs[{container, depth, id}];
+        // Only across a side the viewport shows past: one authored a pixel short of the stage's edge
+        // stays as it is where the stage's edge is the screen's.
+        if (wider) n.kx = std::max({n.kx, (cx - vx0) / (cx - x0), (vx1 - cx) / (x1 - cx)});
+        if (taller) n.ky = std::max({n.ky, (cy - vy0) / (cy - y0), (vy1 - cy) / (y1 - cy)});
+        for (const auto& [across, down] : s.texels)
+            n.picture |= across * std::abs(m.a) < 2 * 20 && down * std::abs(m.d) < 2 * 20;
+    }
+
+    // A band over the stage's whole width and part of its height (the dialogue subtitles' dark
+    // band, an area name's): stretched across about its own centre to the viewport's width, its
+    // height and place kept. A strip over the stage's whole height at its left or right side:
+    // stretched outwards from its inner edge to the screen's. A centred column (a framed panel)
+    // stays. Only colours, gradients and soft, magnified textures: a picture would be stretched.
+    void Band(std::uint16_t container, std::uint16_t depth, std::uint16_t id, const Affine& m, double x0, double x1,
+              bool across, bool down) {
+        if (!wider || (!across && !down)) return;
+        const bool left = x0 <= kSlack, right = x1 >= 1920 * 20 - kSlack;
+        if (!across && !left && !right) return;
+        const ShapeInfo& s = shapes.at(id);
+        for (const auto& [texel_x, texel_y] : s.texels)
+            if (texel_x * std::abs(m.a) < 2 * 20 || texel_y * std::abs(m.d) < 2 * 20) {
+                left_pictures.insert(id);
+                return;
+            }
+        Need& n = needs[{container, depth, id}];
+        n.band = true;
+        if (across) {
+            const double cx = (x0 + x1) / 2;
+            if (cx > vx0 && cx < vx1) n.kx = std::max({n.kx, (cx - vx0) / (cx - x0), (vx1 - cx) / (x1 - cx)});
+            return;
+        }
+        // The inner edge in the shape's own twips (its matrix may mirror it).
+        const double inner = left ? x1 : x0;
+        if (!n.anchor_x) n.anchor_x = (inner - m.tx) / m.a;
+        n.kx = std::max(n.kx, left ? (x1 - vx0) / (x1 - x0) : (vx1 - x0) / (x1 - x0));
+    }
+
+    // The placements of a timeline in order: each with the character it places (a move without one
+    // keeps the depth's), its matrix in the parent (a move without one keeps the depth's), and
+    // whether it only moves the character already there. Walk and Apply both read them so.
+    template <typename Tags, typename Visit>
+    static void Placements(Tags& tags, Visit&& visit) {
+        std::map<std::uint16_t, std::pair<std::uint16_t, Affine>> at;
+        for (auto& t : tags) {
+            if (t.code == 5 || t.code == 28) {
+                at.erase(U16(t.body, t.code == 5 ? 2 : 0));
+                continue;
+            }
+            if (!IsPlace(t)) continue;
+            const Place p = ReadPlace(t);
+            const auto was = at.find(p.depth);
+            if ((!p.character && !p.matrix) || (!p.character && was == at.end())) continue;
+            const std::uint16_t id = p.character ? *p.character : was->second.first;
+            const bool kept = !p.matrix && (p.flags & 1) && was != at.end();
+            const Affine local = p.matrix ? Of(*p.matrix) : kept ? was->second.second : Affine{};
+            const bool same = kept && was->second.first == id;
+            at[p.depth] = {id, local};
+            visit(t, p, id, local, same);
+        }
+    }
+
+    void Walk(std::uint16_t container, const std::vector<Tag>& tags, const Affine& parent, int level) {
+        if (level > 16 || ++visits > 100000) return;
+        Placements(tags, [&](const Tag&, const Place& p, std::uint16_t id, const Affine& local, bool) {
+            const Affine m = Then(parent, local);
+            if (shapes.count(id)) {
+                Consider(container, p.depth, id, m);
+            } else if (const auto s = sprites.find(id); s != sprites.end()) {
+                const auto round = [](double v) { return std::int64_t(std::llround(v * 64)); };
+                if (positions[id] < kPositions &&
+                    walked.emplace(id, round(m.a), round(m.d), std::llround(m.tx), std::llround(m.ty)).second) {
+                    ++positions[id];
+                    Walk(id, s->second.tags, m, level + 1);
+                }
+            }
+        });
+    }
+
+    // The placements of the shapes found, scaled. True when a tag changed.
+    bool Apply(std::uint16_t container, std::vector<Tag>& tags) {
+        bool changed = false;
+        Placements(tags, [&](Tag& t, const Place& p, std::uint16_t id, const Affine& local, bool same) {
+            const auto need = needs.find({container, p.depth, id});
+            if (need == needs.end() || same) return;
+            double kx = need->second.kx, ky = need->second.ky;
+            if (need->second.picture) kx = ky = std::max(kx, ky);
+            if (kx < 1.0005 && ky < 1.0005) return;
+            const ShapeInfo& s = shapes.at(id);
+            const double lx = need->second.anchor_x.value_or((s.x0 + s.x1) / 2), ly = (s.y0 + s.y1) / 2;
+            const Matrix scaled = ToMatrix(Then(local, Affine{kx, 0, 0, ky, lx * (1 - kx), ly * (1 - ky)}));
+            Bytes body(t.body.begin(), t.body.begin() + std::ptrdiff_t(p.matrix_at));
+            body[0] |= 0x04;
+            Append(body, WriteMatrix(scaled));
+            body.insert(body.end(), t.body.begin() + std::ptrdiff_t(p.matrix_end), t.body.end());
+            t = Changed(t.code, std::move(body));
+            changed = true;
+        });
+        return changed;
+    }
+};
+
 const char kTsv[] =
 #include "pc_option_messages.inc"
     ;
@@ -808,6 +1052,73 @@ Bytes OptionMovie(const Bytes& gfx) {
     if (!classes.empty()) AddClasses(m, classes);
     AddScrollBar(m);
     return WriteMovie(m);
+}
+
+Bytes WideMovie(const Bytes& gfx, int width, int height, std::string& notes, bool pictures) {
+    if (!Has(gfx, 0, "GFX", 3)) throw Error("not an uncompressed GFX movie");
+    Movie m = ReadMovie(gfx);
+    Widening w;
+    // What the viewport shows of the movie, in twips: the stage shown whole and centred, scaled by
+    // the smaller of the two ratios (ui_composition.h StageScale), plus a pixel for filtering on a
+    // side that shows more than the stage (none on one that shows the stage's edge: at 16:9 nothing
+    // changes).
+    const double scale = std::min(width / 1920.0, height / 1080.0);
+    const double shown_x = width / scale / 2, shown_y = height / scale / 2;
+    w.wider = shown_x > 960.5, w.taller = shown_y > 540.5;
+    const double half_x = w.wider ? shown_x + 1 : 960, half_y = w.taller ? shown_y + 1 : 540;
+    w.vx0 = (960 - half_x) * 20, w.vx1 = (960 + half_x) * 20, w.vy0 = (540 - half_y) * 20, w.vy1 = (540 + half_y) * 20;
+    for (const Tag& t : m.tags) {
+        if (const auto s = ReadShape(t)) w.shapes[U16(t.body, 0)] = *s;
+        else if (t.code == kSprite) w.sprites[U16(t.body, 0)] = ReadSprite(t);
+    }
+    w.Walk(0, m.tags, Affine{}, 0);
+    for (auto need = w.needs.begin(); need != w.needs.end();) {
+        if (pictures || !need->second.picture || (need->second.kx < 1.0005 && need->second.ky < 1.0005)) {
+            ++need;
+            continue;
+        }
+        const auto [container, depth, id] = need->first;
+        notes += (notes.empty() ? "" : ", ") + std::string("shape ") + std::to_string(id) + " (picture) left as it is" +
+                 (container ? " in sprite " + std::to_string(container) : std::string(" on the root")) + " depth " +
+                 std::to_string(depth);
+        need = w.needs.erase(need);
+    }
+    for (const auto& key : w.drawn_small) {
+        const auto need = w.needs.find(key);
+        if (need == w.needs.end() || (need->second.kx < 1.0005 && need->second.ky < 1.0005)) continue;
+        const auto [container, depth, id] = key;
+        notes += (notes.empty() ? "" : ", ") + std::string("shape ") + std::to_string(id) + " left as it is (also drawn small)" +
+                 (container ? " in sprite " + std::to_string(container) : std::string(" on the root")) + " depth " +
+                 std::to_string(depth);
+        w.needs.erase(need);
+    }
+    for (const auto& [key, need] : w.needs) {
+        const auto [container, depth, id] = key;
+        if (need.kx < 1.0005 && need.ky < 1.0005) continue;
+        char line[160];
+        if (need.picture)
+            std::snprintf(line, sizeof line, "shape %u (picture) x%.3f", unsigned(id), std::max(need.kx, need.ky));
+        else if (need.band)
+            std::snprintf(line, sizeof line, "shape %u (%s %s) x%.3f across", unsigned(id),
+                          w.shapes[id].texels.empty() ? "colour" : "soft texture",
+                          need.anchor_x ? "strip at a side" : "band", need.kx);
+        else
+            std::snprintf(line, sizeof line, "shape %u (%s) x%.3f by x%.3f", unsigned(id),
+                          w.shapes[id].texels.empty() ? "colour" : "soft texture", need.kx, need.ky);
+        notes += (notes.empty() ? "" : ", ") + std::string(line) +
+                 (container ? " in sprite " + std::to_string(container) : std::string(" on the root")) + " depth " +
+                 std::to_string(depth);
+    }
+    for (const std::uint16_t id : w.left_pictures)
+        notes += (notes.empty() ? "" : ", ") + std::string("shape ") + std::to_string(id) +
+                 " (a band of a picture) left as it is";
+    bool changed = w.Apply(0, m.tags);
+    for (Tag& t : m.tags) {
+        if (t.code != kSprite) continue;
+        Sprite s = w.sprites.at(U16(t.body, 0));
+        if (w.Apply(s.id, s.tags)) t = WriteSprite(s), changed = true;
+    }
+    return changed ? WriteMovie(m) : Bytes{};
 }
 
 Bytes AltarScripts(const Bytes& file) {
