@@ -21,6 +21,8 @@
 #include "video_core/renderer_vulkan/vk_ssgi.h"
 #include "video_core/renderer_vulkan/vk_ssr_temporal.h"
 #include "video_core/renderer_vulkan/vk_volumetric_light.h"
+#include "video_core/renderer_vulkan/vk_sky_seam.h"
+#include "video_core/renderer_vulkan/vk_sky_zenith.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
@@ -588,6 +590,8 @@ private:
     std::unique_ptr<ContactShadow> contact_shadow;
     std::unique_ptr<PointShadow> point_shadow;
     std::unique_ptr<VolumetricLight> volumetric_light;
+    std::unique_ptr<SkySeam> sky_seam;
+    std::unique_ptr<SkyZenith> sky_zenith;
     bool effects_wanted = false;
     u32 ssr_frame = 0;
     u32 shadow_frame = 0;

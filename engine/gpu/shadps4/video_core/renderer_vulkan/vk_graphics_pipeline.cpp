@@ -7,10 +7,14 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <thread>
 #include <utility>
 #include <boost/container/small_vector.hpp>
@@ -542,6 +546,45 @@ GraphicsPipeline::GraphicsPipeline(
         .pDynamicState = &dynamic_info,
         .layout = *pipeline_layout,
     };
+    if (SpecularCaptureEnabled() &&
+        infos[u32(Shader::SwStage::Fragment)] &&
+        infos[u32(Shader::SwStage::Fragment)]->pgm_hash == 0xd92266b9 &&
+        infos[u32(Shader::SwStage::Vertex)] &&
+        infos[u32(Shader::SwStage::Vertex)]->pgm_hash == 0x8747a367) {
+        if (const char* directory = std::getenv("BB_CAPTURE_DIR"); directory && directory[0]) {
+            std::ostringstream name;
+            name << "pipeline-" << std::hex << std::hash<GraphicsPipelineKey>{}(key) << ".txt";
+            std::ofstream file(std::filesystem::path(directory) / name.str());
+            file << std::setprecision(9) << "version 1\npush_descriptors "
+                 << uses_push_descriptors << "\ndynamic_vertex_input "
+                 << instance.IsVertexInputDynamicState() << "\nsubgroup_size "
+                 << (instance.IsSubgroupSize64Supported() ? 64 : 0) << "\nmultisample "
+                 << u32(sdata.multisampling.rasterizationSamples) << ' '
+                 << sdata.multisampling.sampleShadingEnable << ' '
+                 << sdata.multisampling.minSampleShading << ' '
+                 << sdata.multisampling.alphaToCoverageEnable << ' '
+                 << sdata.multisampling.alphaToOneEnable << "\nclip "
+                 << clip_control.negativeOneToOne << ' ' << key.depth_clip_enable << ' '
+                 << raster_chain.get<vk::PipelineRasterizationStateCreateInfo>().depthClampEnable
+                 << "\nprovoking_last "
+                 << (key.provoking_vtx_last == AmdGpu::ProvokingVtxLast::Last) << '\n';
+            for (u32 i = 0; i < key.num_color_attachments; ++i) {
+                const auto& blend = attachments[i];
+                file << "blend " << i << ' ' << blend.blendEnable << ' '
+                     << u32(blend.srcColorBlendFactor) << ' ' << u32(blend.dstColorBlendFactor)
+                     << ' ' << u32(blend.colorBlendOp) << ' ' << u32(blend.srcAlphaBlendFactor)
+                     << ' ' << u32(blend.dstAlphaBlendFactor) << ' ' << u32(blend.alphaBlendOp)
+                     << ' ' << u32(blend.colorWriteMask) << '\n';
+            }
+            file << "dynamic_states";
+            for (auto state : dynamic_states) file << ' ' << u32(state);
+            file << '\n';
+            file.close();
+            if (!file) std::printf("Specular capture: native pipeline state write failed\n");
+        } else {
+            std::printf("Specular capture: BB_CAPTURE_DIR is required for native pipeline state\n");
+        }
+    }
 
     // bbport (BB_ASYNC_PIPELINES): a pipeline first seen during play is created by a compile
     // thread; the draw recording thread waits for it only when it records the bind (Handle).

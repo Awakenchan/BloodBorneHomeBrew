@@ -25,6 +25,8 @@ namespace BloodborneLauncher.Core
             ("camera_tuning", "original"),
             ("live_resolution", "0"),
             ("frame_gen", "off"),
+            ("graphics_native_sss", "0"),
+            ("graphics_directional_ggx", "0"),
             ("frame_gen_cap", "1"),
             ("dlss_preset", "k"),
             ("fps_position", "0"),

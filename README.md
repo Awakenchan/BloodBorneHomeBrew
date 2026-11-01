@@ -20,8 +20,20 @@ Lantern Engine runs your own copy of Bloodborne on Windows and Linux: a launcher
 2. Run `Lantern Engine` in the unpacked folder, pick your game folder and press **Play**. From a terminal: `./lantern.sh /path/to/CUSA03173`.
 3. It needs a Vulkan driver (Mesa or NVIDIA), Python 3 and glibc 2.38 or newer (Ubuntu 24.04, Fedora 39, Arch, SteamOS 3.6, Bazzite). From 0.9.37 beta 7 the launcher updates itself on Linux too, and DLSS Super Resolution works on RTX cards with NVIDIA's driver (DLSS Frame Generation is Windows only).
 
-## Sponsors
+## Experimental rendering
 
+The launcher and in-game Insert menu offer **Native skin SSS** (live) and
+**Directional GGX (native-anchored)** (restart required). Both are **off by default**
+and independent of Picture tuning. GGX changes only four directional specular lobes,
+not diffuse, local lights or environment/SSR; unsupported compiled shaders retain native
+specular with a warning. Its longer highlight tails can brighten rough or grazing surfaces.
+
+The verified Hunter's Dream sky dome gets a default-on seam correction
+(`BB_SKY_SEAM_FIX=0` disables it). Zenith debanding remains an experimental opt-in
+(`BB_SKY_ZENITH_FIX=1`). See [rendering controls and local-fixture checks](engine/docs/upscaler.md)
+for the exact scope, diagnostics and limitations.
+
+## Sponsors
 Seamless co-op runs on a server in Frankfurt, sponsored by [1337 Hosting](https://1337hosting.com). Thank you!
 
 ## Credits

@@ -12,6 +12,7 @@
 #include "video_core/host_shaders/native_motion_blur_frag.h"
 #include "video_core/host_shaders/ssr_frag.h"
 #include "video_core/renderer_vulkan/vk_pom_patch.h"
+#include "video_core/renderer_vulkan/vk_ggx_patch.h"
 #include "video_core/renderer_vulkan/vk_ssr_composite_patch.h"
 
 namespace Vulkan::EffectShaders {
@@ -170,6 +171,7 @@ bool KeepRecompiled(const Shader::Info& info) {
     }
     return ((info.pgm_hash == SsrCompositeHash || info.pgm_hash == WaterHash) &&
             Wanted(BbSettings::EffectModernSsr)) ||
+           (info.pgm_hash == Ggx::DirectionalHash && BbSettings::Get().startup_directional_ggx) ||
            (Pom::Targets(info.pgm_hash) && Wanted(BbSettings::EffectPomCavity));
 }
 

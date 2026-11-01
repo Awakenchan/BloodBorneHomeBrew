@@ -84,6 +84,9 @@ namespace BloodborneLauncher.Views
 
             // The engine's picture and camera controls (bbport_settings.cpp clamps the same ranges).
             Group(L.T("Picture"));
+            IniToggle(SymbolRegular.Color24, L.T("Native skin SSS (experimental)"),
+                L.T("Off by default. Enables Bloodborne's native material-profile subsurface scattering, preserving authored strengths and separate specular lighting. Independent of Picture tuning. Toggle live in the in-game Insert menu. Unavailable when the current view has no native SSS resources."),
+                "graphics_native_sss");
             var picture = new StackPanel();
             IniToggle(SymbolRegular.Color24, L.T("Picture tuning"), L.T("Turns the settings below on, live. Also in the game's System menu (PC Graphics, PC Effects, PC Colour) and the Insert menu"), "graphics_controls");
             IniToggle(SymbolRegular.CircleHalfFill24, L.T("Vignette"), null, "graphics_vignette", picture);
@@ -134,6 +137,9 @@ namespace BloodborneLauncher.Views
             }
 
             Group(L.T("Lighting"));
+            IniToggle(SymbolRegular.Lightbulb24, L.T("Directional GGX (native-anchored, experimental)"),
+                L.T("Off by default. Changes only the four directional specular lobes; diffuse, local lights and environment/SSR stay native. Softer highlight tails can brighten rough or grazing surfaces. Requires restarting the game. Unsupported shader variants keep native specular and report a warning. Not a full PBR conversion."),
+                "graphics_directional_ggx");
             IniCombo(SymbolRegular.Lightbulb24, L.T("Sun shadow resolution"), L.T("Applied when the game starts"), Choices.ShadowResolution, "graphics_shadow_resolution");
             IniCombo(SymbolRegular.Lightbulb24, L.T("Lamp shadow resolution"), L.T("Applied when the game starts"), Choices.LocalShadowResolution, "graphics_local_shadow_resolution");
             IniCombo(SymbolRegular.Lightbulb24, L.T("Motion blur quality"), L.T("Applied when the game starts"), Choices.MotionBlurQuality, "graphics_motion_blur_quality");
